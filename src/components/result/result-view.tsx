@@ -1,19 +1,22 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { FileText, Home, ScrollText } from 'lucide-react'
+import { ChevronDown, FileText, Home, ScrollText } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { TranscriptList } from '@/components/result/transcript-list'
 import { SummaryCard } from '@/components/result/summary-card'
+import { FullTextView } from '@/components/result/full-text-view'
 import { ExportMenu } from '@/components/result/export-menu'
 import { ErrorAlert } from '@/components/shared/error-alert'
 import { PlatformBadge } from '@/components/shared/platform-badge'
 import { formatDuration } from '@/lib/format'
+import { formatTranscriptToArticle } from '@/lib/article'
 import { useTaskStore } from '@/stores/task-store'
+import { cn } from '@/lib/utils'
 
 interface ResultViewProps {
   taskId: string
@@ -33,6 +36,12 @@ export function ResultView({ taskId }: ResultViewProps) {
   const reset = useTaskStore((state) => state.reset)
   const [recovering, setRecovering] = useState(storeTaskId !== taskId)
   const [retrying, setRetrying] = useState(false)
+  const [transcriptOpen, setTranscriptOpen] = useState(true)
+
+  const paragraphs = useMemo(
+    () => (transcript && summary ? formatTranscriptToArticle(transcript, summary.chapters) : []),
+    [transcript, summary],
+  )
 
   useEffect(() => {
     if (storeTaskId !== taskId) {
@@ -87,7 +96,7 @@ export function ResultView({ taskId }: ResultViewProps) {
           </div>
         </div>
         <div className="flex shrink-0 gap-2 self-start sm:self-auto">
-          {video ? <ExportMenu video={video} transcript={transcript} summary={summary} /> : null}
+          {video ? <ExportMenu video={video} paragraphs={paragraphs} /> : null}
           <Button variant="outline" size="sm" onClick={handleBack} className="gap-1.5">
             <Home className="size-3.5" aria-hidden />
             返回首页
@@ -95,21 +104,38 @@ export function ResultView({ taskId }: ResultViewProps) {
         </div>
       </div>
 
+      {/* 全文阅读：无时间戳文章式排版 */}
+      <FullTextView paragraphs={paragraphs} />
+
       {/* 主体：桌面左右分栏，移动端上下卡片流 */}
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[1.15fr_1fr]">
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
+            <CardTitle className="flex flex-wrap items-center gap-2 text-base">
               <ScrollText className="size-4 text-primary" aria-hidden />
               文字稿
-              <Badge variant="secondary" className="ml-auto font-normal">
+              <Badge variant="secondary" className="font-normal">
                 点击时间可复制
               </Badge>
+              <button
+                type="button"
+                onClick={() => setTranscriptOpen((open) => !open)}
+                aria-expanded={transcriptOpen}
+                className="ml-auto inline-flex items-center gap-1 text-xs font-normal text-muted-foreground transition-colors hover:text-foreground"
+              >
+                {transcriptOpen ? '收起' : '展开'}
+                <ChevronDown
+                  className={cn('size-3.5 transition-transform', transcriptOpen && 'rotate-180')}
+                  aria-hidden
+                />
+              </button>
             </CardTitle>
           </CardHeader>
-          <CardContent>
-            <TranscriptList items={transcript} />
-          </CardContent>
+          {transcriptOpen ? (
+            <CardContent>
+              <TranscriptList items={transcript} />
+            </CardContent>
+          ) : null}
         </Card>
 
         <Card>
