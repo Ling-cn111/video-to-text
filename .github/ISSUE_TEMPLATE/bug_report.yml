@@ -1,0 +1,47 @@
+name: Bug 报告
+description: 报告一个问题以帮助我们改进
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 感谢反馈，请尽量填写完整，便于快速定位问题。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么？
+      description: 描述遇到的问题，以及你期望的正确行为。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开首页
+        2. 粘贴链接「…」
+        3. 点击「解析」
+        4. 出现错误提示「…」
+    validations:
+      required: true
+  - type: dropdown
+    id: env-kind
+    attributes:
+      label: 使用方式
+      options:
+        - 浏览器直接访问
+        - PWA（已安装到桌面 / 主屏幕）
+        - 本地开发环境
+    validations:
+      required: true
+  - type: textarea
+    id: env-detail
+    attributes:
+      label: 环境详情
+      description: 操作系统、浏览器及版本、屏幕尺寸（移动端请注明）
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 控制台日志 / 截图
+      description: 可拖拽截图到此处；控制台错误请粘贴文本

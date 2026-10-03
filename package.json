@@ -2,6 +2,10 @@
   "name": "video-to-text",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@12.5.1",
+  "engines": {
+    "node": ">=18.17.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
