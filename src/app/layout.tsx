@@ -1,7 +1,8 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import { Toaster } from "@/components/ui/sonner";
 import { SiteHeader } from "@/components/layout/site-header";
+import { RegisterSw } from "@/components/pwa/register-sw";
 import "./globals.css";
 
 const geistSans = localFont({
@@ -22,6 +23,18 @@ export const metadata: Metadata = {
   },
   description:
     "粘贴 B站 / 抖音视频链接，自动生成带时间戳的文字稿与 AI 总结，支持导出 TXT / Markdown。",
+  appleWebApp: {
+    capable: true,
+    title: "视频转文字",
+    statusBarStyle: "default",
+  },
+  icons: {
+    apple: "/icons/apple-touch-icon.png",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#7c3aed",
 };
 
 export default function RootLayout({
@@ -36,6 +49,7 @@ export default function RootLayout({
       >
         <SiteHeader />
         <main className="flex-1">{children}</main>
+        <RegisterSw />
         <Toaster richColors position="top-center" />
       </body>
     </html>

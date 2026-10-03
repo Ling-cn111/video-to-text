@@ -1,6 +1,7 @@
 import { AudioLines } from 'lucide-react'
+import { InstallAppButton } from '@/components/pwa/install-app-button'
 
-/** 全局顶栏：品牌 +（PWA 安装按钮在 feat/pwa 中加入） */
+/** 全局顶栏：品牌 + PWA 安装入口 */
 export function SiteHeader() {
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
@@ -11,6 +12,7 @@ export function SiteHeader() {
           </div>
           <span className="text-base font-semibold tracking-tight">视频转文字</span>
         </div>
+        <InstallAppButton />
       </div>
     </header>
   )
