@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { TranscriptList } from '@/components/result/transcript-list'
 import { SummaryCard } from '@/components/result/summary-card'
+import { ExportMenu } from '@/components/result/export-menu'
 import { ErrorAlert } from '@/components/shared/error-alert'
 import { PlatformBadge } from '@/components/shared/platform-badge'
 import { formatDuration } from '@/lib/format'
@@ -85,10 +86,13 @@ export function ResultView({ taskId }: ResultViewProps) {
             <span>共 {transcript.length} 段</span>
           </div>
         </div>
-        <Button variant="outline" size="sm" onClick={handleBack} className="shrink-0 gap-1.5 self-start sm:self-auto">
-          <Home className="size-3.5" aria-hidden />
-          返回首页
-        </Button>
+        <div className="flex shrink-0 gap-2 self-start sm:self-auto">
+          {video ? <ExportMenu video={video} transcript={transcript} summary={summary} /> : null}
+          <Button variant="outline" size="sm" onClick={handleBack} className="gap-1.5">
+            <Home className="size-3.5" aria-hidden />
+            返回首页
+          </Button>
+        </div>
       </div>
 
       {/* 主体：桌面左右分栏，移动端上下卡片流 */}
