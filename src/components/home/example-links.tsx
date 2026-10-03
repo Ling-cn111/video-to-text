@@ -50,16 +50,19 @@ export function ExampleLinks({ onPick }: ExampleLinksProps) {
           type="button"
           onClick={() => onPick(example.url)}
           title={example.url}
-          className="group inline-flex items-center gap-2 rounded-full border bg-card px-3 py-1.5 text-sm transition-colors hover:border-primary/40 hover:bg-accent"
+          className="group inline-flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-full border bg-card px-3 py-1.5 text-sm transition-colors hover:border-primary/40 hover:bg-accent"
         >
-          {example.platform === 'bilibili' || example.platform === 'douyin' ? (
-            <PlatformBadge platform={example.platform} className="border-0 bg-transparent p-0" />
-          ) : (
+          {example.platform === 'unsupported' ? (
             <UnsupportedBadge className="border-0 bg-transparent p-0" />
+          ) : (
+            <PlatformBadge
+              platform={example.platform === 'fail' ? 'bilibili' : example.platform}
+              className="border-0 bg-transparent p-0"
+            />
           )}
           <span className="font-medium">{example.label}</span>
           {example.hint ? (
-            <span className="text-xs text-muted-foreground">（{example.hint}）</span>
+            <span className="whitespace-nowrap text-xs text-muted-foreground">（{example.hint}）</span>
           ) : null}
           <ExternalLink className="size-3 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" aria-hidden />
         </button>
