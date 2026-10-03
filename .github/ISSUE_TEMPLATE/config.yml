@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 功能路线图
+    url: ../blob/main/docs/ROADMAP.md
+    about: 多平台支持、本地视频转写、打包 App 等后续计划
+  - name: 使用文档
+    url: ../blob/main/README.md
+    about: 功能介绍、本地运行与部署说明
