@@ -38,3 +38,11 @@ next-env.d.ts
 # local tooling / assistant workspace state
 .mimosa/
 .zcode/
+
+# backend (python)
+backend/.venv/
+__pycache__/
+.pytest_cache/
+
+# env 备份文件不入库
+.env.local.bak

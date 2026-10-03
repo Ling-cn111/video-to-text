@@ -46,6 +46,8 @@ interface TaskPayload {
   s: number
   /** 注入失败标记 */
   f?: 1
+  /** 真实解析透传的元数据（M1.5 混合模式：解析真实、转写 Mock） */
+  m?: { t: string; c: string; d: number }
 }
 
 function encodeTaskId(payload: TaskPayload): string {
@@ -96,6 +98,15 @@ function computeTaskState(payload: TaskPayload): TaskState {
 }
 
 function getVideoInfo(payload: TaskPayload): VideoInfo {
+  if (payload.m) {
+    return {
+      platform: payload.p,
+      videoId: payload.v,
+      title: payload.m.t,
+      cover: payload.m.c,
+      duration: payload.m.d,
+    }
+  }
   return {
     platform: payload.p,
     videoId: payload.v,
@@ -135,7 +146,10 @@ export async function parseVideoUrl(rawUrl: string): Promise<VideoInfo> {
   }
 }
 
-export async function startTranscription(videoId: string): Promise<StartTaskResponse> {
+export async function startTranscription(
+  videoId: string,
+  video?: VideoInfo,
+): Promise<StartTaskResponse> {
   if (!videoId?.trim()) {
     throw new MockApiError('INVALID_URL', '缺少 videoId，请先解析视频链接')
   }
@@ -146,6 +160,9 @@ export async function startTranscription(videoId: string): Promise<StartTaskResp
     s: Date.now(),
   }
   if (videoId === FAIL_VIDEO_ID) payload.f = 1
+  if (video?.title) {
+    payload.m = { t: video.title, c: video.cover, d: video.duration }
+  }
 
   return { taskId: encodeTaskId(payload), ...computeTaskState(payload) }
 }

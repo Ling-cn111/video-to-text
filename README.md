@@ -45,17 +45,35 @@ pnpm node scripts/generate-icons.mjs   # 修改 scripts/generate-icons.mjs 后�
 ## 项目结构
 
 ```
+backend/                # FastAPI + yt-dlp 真实解析服务（详见 backend/README.md）
+└── app/                # parse 路由 / url_guard(SSRF守卫) / platforms(平台注册表) / services/parser(yt-dlp)
 src/
 ├── app/                  # 路由与 API（/、/processing/[taskId]、/result/[taskId]、/api/*）
 ├── components/           # home / processing / result / shared / layout / pwa / ui(shadcn)
-├── lib/                  # types(契约) api(出口) mock-api(无状态Mock) mock-data(假数据)
+├── lib/                  # types(契约) api(出口) real-api(真实后端) http(共享请求层)
+│                         # mock-api(无状态Mock) mock-data(假数据)
 │                         # platforms/registry(平台注册表) platform(链接解析) url-guard(安全校验)
-│                         # export(导出) format(格式化)
+│                         # article(全文分段) export(导出) format(格式化)
 ├── stores/task-store.ts  # Zustand 任务状态机
 └── hooks/                # 轮询等
 ```
 
-## Mock API 契约
+## 本地联调真实后端（当前仅「解析」为真实实现）
+
+```bash
+# 1) 后端（Python 3.11+）
+cd backend
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+
+# 2) 前端（等价于 npm run dev）
+cp .env.example .env.local   # 把 NEXT_PUBLIC_USE_MOCK 改为 false
+pnpm dev
+```
+
+粘贴 B站链接，进度页 / 结果页即显示真实标题、封面、时长（转写与总结仍为内置 Mock）。
+
+## API 契约
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -65,9 +83,10 @@ src/
 | POST | `/api/summarize` | 生成总结 → `{ summary, keyPoints, chapters }` |
 
 - 错误响应统一为 `{ error: { code, message } }`：`INVALID_URL`(400) / `UNSUPPORTED_PLATFORM`(422) / `INVALID_TASK`(404) / `TRANSCRIBE_FAILED`(500) 等，完整定义见 `src/lib/types.ts`
-- Mock 为**无状态**实现：taskId 自含上下文（base64url），进度按时间推算（全程约 10 秒），可直接部署到 serverless
+- 前端 Mock（Route Handlers）为**无状态**实现：taskId 自含上下文（base64url），进度按时间推算（全程约 10 秒）
 - 演示失败路径：`https://www.bilibili.com/video/BV1FailDemo`（60% 处失败，用于验证重试）
-- 接入真实后端：设置 `NEXT_PUBLIC_API_BASE_URL` 即可，调用方无需改动
+- 真实后端模式下：解析由 FastAPI 完成（yt-dlp，仅放行 B站公开链接，服务端拒绝内网/保留地址），
+  转写 / 总结暂仍由 Mock 承担，真实解析出的元数据会透传展示
 
 ## 后续路线
 
@@ -78,7 +97,7 @@ src/
 推荐 [Vercel](https://vercel.com)：
 
 1. GitHub 导入仓库（框架自动识别 Next.js）
-2. 无需额外环境变量；如需指向自建后端，设置 `NEXT_PUBLIC_API_BASE_URL`
+2. 无需额外环境变量；后端地址用服务端变量 `BACKEND_ORIGIN`（配合 NEXT_PUBLIC_USE_MOCK=false 与 next.config.mjs 代理）
 3. 部署完成后用 Chrome / Edge 打开站点，地址栏出现安装入口（或顶栏「安装应用」按钮），可安装到 Windows 桌面与 Android 主屏幕；iOS 从 Safari「添加到主屏幕」安装
 
 ## 协作规范

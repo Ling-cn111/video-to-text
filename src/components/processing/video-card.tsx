@@ -18,6 +18,7 @@ export function VideoCard({ video }: { video: VideoInfo }) {
           alt=""
           className="size-full object-cover"
           loading="lazy"
+          referrerPolicy="no-referrer"
         />
         <span className="absolute bottom-1.5 right-1.5 rounded-md bg-black/65 px-1.5 py-0.5 text-[11px] font-medium text-white tabular-nums">
           {formatDuration(video.duration)}
