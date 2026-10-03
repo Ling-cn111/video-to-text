@@ -48,9 +48,13 @@ function isReservedIPv6(host: string): boolean {
 
 /**
  * 校验完整 URL 可用于发请求：仅 http/https 且 host 非保留地址。
+ * `options.selfOrigin`：请求自身站点 origin 时视为可信（同源请求不构成 SSRF）。
  * 不合法返回 null。
  */
-export function toSafeHttpUrl(raw: string): URL | null {
+export function toSafeHttpUrl(
+  raw: string,
+  options?: { selfOrigin?: string },
+): URL | null {
   let url: URL
   try {
     url = new URL(raw)
@@ -58,6 +62,9 @@ export function toSafeHttpUrl(raw: string): URL | null {
     return null
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
-  if (isBlockedHost(url.hostname)) return null
+  if (isBlockedHost(url.hostname)) {
+    if (options?.selfOrigin && url.origin === options.selfOrigin) return url
+    return null
+  }
   return url
 }

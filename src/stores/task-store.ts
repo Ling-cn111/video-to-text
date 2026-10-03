@@ -72,7 +72,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     try {
       const video = await api.parseVideo(url)
       set({ video })
-      const task = await api.startTranscription(video.videoId)
+      const task = await api.startTranscription(video.videoId, video)
       set({ taskId: task.taskId, stage: task.stage, progress: task.progress, phase: 'transcribing' })
       return task.taskId
     } catch (error) {
@@ -141,7 +141,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (!video) return null
     set({ phase: 'parsing', error: null, stage: null, progress: 0 })
     try {
-      const task = await api.startTranscription(video.videoId)
+      const task = await api.startTranscription(video.videoId, video)
       set({ taskId: task.taskId, stage: task.stage, progress: task.progress, phase: 'transcribing' })
       return task.taskId
     } catch (error) {
