@@ -68,7 +68,11 @@ def run_transcription_pipeline(
         def on_asr_progress(ratio: float) -> None:
             update_task(task_id, progress=PROGRESS_ASR_START + int(ratio * PROGRESS_ASR_SPAN))
 
-        transcript = asr.transcribe_audio(wav_path, language="zh", progress_callback=on_asr_progress)
+        # 上下文提示：视频标题引导专有名词识别
+        initial_prompt = video.title if video else None
+        transcript = asr.transcribe_audio(
+            wav_path, language="zh", progress_callback=on_asr_progress, initial_prompt=initial_prompt
+        )
         if not transcript:
             raise AppException("TRANSCRIBE_FAILED", "未能识别出语音内容", 500)
         _finish(task_id, transcript)
