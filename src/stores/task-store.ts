@@ -24,6 +24,8 @@ interface TaskState {
   phase: TaskPhase
   taskId: string | null
   video: VideoInfo | null
+  /** 提交时的原始链接（真实转写后端需要下载音频） */
+  sourceUrl: string | null
   stage: TaskStage | null
   progress: number
   transcript: TranscriptItem[] | null
@@ -49,6 +51,7 @@ const IDLE = {
   phase: 'idle' as const,
   taskId: null,
   video: null,
+  sourceUrl: null,
   stage: null,
   progress: 0,
   transcript: null,
@@ -71,8 +74,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set({ ...IDLE, phase: 'parsing' })
     try {
       const video = await api.parseVideo(url)
-      set({ video })
-      const task = await api.startTranscription(video.videoId, video)
+      set({ video, sourceUrl: url })
+      const task = await api.startTranscription(video.videoId, video, url)
       set({ taskId: task.taskId, stage: task.stage, progress: task.progress, phase: 'transcribing' })
       return task.taskId
     } catch (error) {
@@ -137,11 +140,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   retry: async () => {
-    const { video } = get()
+    const { video, sourceUrl } = get()
     if (!video) return null
     set({ phase: 'parsing', error: null, stage: null, progress: 0 })
     try {
-      const task = await api.startTranscription(video.videoId, video)
+      const task = await api.startTranscription(video.videoId, video, sourceUrl ?? undefined)
       set({ taskId: task.taskId, stage: task.stage, progress: task.progress, phase: 'transcribing' })
       return task.taskId
     } catch (error) {

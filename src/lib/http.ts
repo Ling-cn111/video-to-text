@@ -1,4 +1,4 @@
-import type { ApiErrorCode, ApiErrorBody } from '@/lib/types'
+import type { ApiErrorCode, ApiErrorBody, GetTaskResponse, StartTaskResponse, Summary, VideoInfo } from '@/lib/types'
 
 /**
  * HTTP 客户端共享类型与错误解析。
@@ -6,6 +6,14 @@ import type { ApiErrorCode, ApiErrorBody } from '@/lib/types'
  * 各客户端方法内联字面量路径直接 fetch（请求目标为编译期常量，不含 URL 污点流）；
  * 本模块只处理与 Response 相关的错误解析，不接触 URL。
  */
+
+/** 客户端 API 形状契约：mock 与 real 实现均满足此接口 */
+export interface ApiClient {
+  parseVideo: (url: string) => Promise<VideoInfo>
+  startTranscription: (videoId: string, video?: VideoInfo, url?: string) => Promise<StartTaskResponse>
+  getTask: (taskId: string) => Promise<GetTaskResponse>
+  summarize: (taskId: string) => Promise<Summary>
+}
 
 /** 客户端可见的错误码 = 契约错误码 + 网络层补充码 */
 export type ClientErrorCode = ApiErrorCode | 'NETWORK_ERROR' | 'UNKNOWN_ERROR'

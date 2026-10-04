@@ -24,3 +24,8 @@ class UnsupportedPlatformError(AppException):
 class ParseFailedError(AppException):
     def __init__(self, message: str):
         super().__init__(code="INTERNAL_ERROR", message=message, status_code=500)
+
+
+class TaskNotFoundError(AppException):
+    def __init__(self, message: str = "任务不存在或已过期，请重新解析视频链接"):
+        super().__init__(code="INVALID_TASK", message=message, status_code=404)
