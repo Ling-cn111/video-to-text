@@ -3,10 +3,12 @@
 - 无标记：字幕解析 / 任务状态机 / 校验（不访问外网）
 - @pytest.mark.network：真实下载音频 + faster-whisper 推理（CI 跳过，本地全量跑）
 """
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.asr import postprocess_items, transcribe_local
 from app.services.tasks import create_task, get_task
 from app.services.transcribe import run_transcription_pipeline
 from app.services.subtitles import parse_subtitle_body
@@ -70,6 +72,56 @@ def test_parse_vtt():
 
 def test_parse_unparseable_returns_none():
     assert parse_subtitle_body("<html>not a subtitle</html>", "json") is None
+
+
+# ---- ASR 文本后处理与 initial_prompt（不访问外网）----
+
+def test_postprocess_collapses_repeated_words_and_adds_punctuation():
+    items = [
+        {"time": 0.0, "text": "我我我想说一下这个"},
+        {"time": 5.0, "text": "没有标点的句子"},
+        {"time": 9.0, "text": "正常的谢谢大家"},  # 两次重复属正常用语，不折叠
+        {"time": 12.0, "text": "已带标点。"},
+    ]
+    cleaned = postprocess_items(items)
+    assert cleaned[0]["text"] == "我想说一下这个。"
+    assert cleaned[1]["text"] == "没有标点的句子。"
+    assert cleaned[2]["text"] == "正常的谢谢大家。"
+    assert cleaned[3]["text"] == "已带标点。"  # 已有标点不重复追加
+
+
+def test_postprocess_collapses_repeated_english_words():
+    cleaned = postprocess_items([{"time": 1.0, "text": "never gonna give you the the the up"}])
+    assert "the the the" not in cleaned[0]["text"]
+
+
+def test_postprocess_drops_empty_texts():
+    cleaned = postprocess_items([{"time": 1.0, "text": "  "}, {"time": 2.0, "text": "有效"}])
+    assert len(cleaned) == 1 and cleaned[0]["text"] == "有效。"
+
+
+def test_transcribe_local_passes_initial_prompt(monkeypatch):
+    """initial_prompt（视频标题）应透传给 faster-whisper。"""
+
+    class FakeInfo:
+        duration = 0
+
+    recorded: list[dict] = []
+
+    class FakeModel:
+        def transcribe(self, audio, **kwargs):
+            recorded.append(kwargs)
+            return iter([]), FakeInfo()
+
+    monkeypatch.setattr("app.services.asr._LOCAL_MODEL", FakeModel())
+    monkeypatch.setattr(
+        "app.services.asr.decode_audio_16k_mono", lambda p: np.zeros(1600, dtype="float32")
+    )
+
+    transcribe_local("fake.wav", language="zh", initial_prompt="【测试】量子计算入门")
+
+    assert len(recorded) >= 1
+    assert recorded[0].get("initial_prompt") == "【测试】量子计算入门"
 
 
 # ---- 接口校验与状态机（不访问外网）----

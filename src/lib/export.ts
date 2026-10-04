@@ -1,89 +1,43 @@
-import { formatDateTime, formatTimestamp } from '@/lib/format'
+import { formatDurationWords } from '@/lib/format'
 import { getPlatformMeta } from '@/lib/platforms/registry'
-import type { Summary, TranscriptItem, VideoInfo } from '@/lib/types'
+import type { VideoInfo } from '@/lib/types'
 
 /**
- * 导出工具：把转写结果组织为 TXT / Markdown 并触发下载。
+ * 导出工具：导出「全文阅读」式的纯文本文章（不含任何时间戳）。
+ * 段落由 formatTranscriptToArticle 从文字稿派生（见 src/lib/article.ts）。
  */
 
 export type ExportFormat = 'txt' | 'md'
 
 export interface ExportInput {
   video: VideoInfo
-  transcript: TranscriptItem[]
-  summary: Summary
+  /** 无时间戳的自然段落 */
+  paragraphs: string[]
 }
 
-function platformName(video: VideoInfo): string {
-  return getPlatformMeta(video.platform).name
+function metaLine(video: VideoInfo): string {
+  return `来源：${getPlatformMeta(video.platform).name} ｜ 时长：${formatDurationWords(video.duration)}`
 }
 
-function buildHeaderLines(video: VideoInfo): string[] {
-  return [
-    `平台：${platformName(video)}`,
-    `时长：${formatTimestamp(video.duration)}`,
-    `视频 ID：${video.videoId}`,
-    `导出时间：${formatDateTime()}`,
-  ]
-}
-
-export function buildPlainText({ video, transcript, summary }: ExportInput): string {
+export function buildPlainText({ video, paragraphs }: ExportInput): string {
   const lines: string[] = []
   lines.push(`《${video.title}》`)
   lines.push('')
-  lines.push(buildHeaderLines(video).join(' ｜ '))
+  lines.push(metaLine(video))
   lines.push('')
-
-  lines.push('━━━━━━ AI 总结 ━━━━━━')
-  lines.push(`一句话概要：${summary.summary}`)
-  lines.push('')
-  lines.push('核心要点：')
-  summary.keyPoints.forEach((point, index) => {
-    lines.push(`${index + 1}. ${point}`)
-  })
-  lines.push('')
-  lines.push('章节笔记：')
-  summary.chapters.forEach((chapter) => {
-    lines.push(`- [${formatTimestamp(chapter.time)}] ${chapter.title}：${chapter.note}`)
-  })
-  lines.push('')
-
-  lines.push('━━━━━━ 文字稿 ━━━━━━')
-  transcript.forEach((item) => {
-    lines.push(`[${formatTimestamp(item.time)}] ${item.text}`)
-  })
-
+  lines.push(paragraphs.join('\n\n'))
   return lines.join('\n')
 }
 
-export function buildMarkdown({ video, transcript, summary }: ExportInput): string {
+export function buildMarkdown({ video, paragraphs }: ExportInput): string {
   const lines: string[] = []
-  lines.push(`# 《${video.title}》`)
+  lines.push(`# ${video.title}`)
   lines.push('')
-  lines.push(`> ${buildHeaderLines(video).join(' ｜ ')}`)
+  lines.push(`> ${metaLine(video)}`)
   lines.push('')
-  lines.push('## AI 总结')
+  lines.push('## 正文')
   lines.push('')
-  lines.push(`**一句话概要**：${summary.summary}`)
-  lines.push('')
-  lines.push('### 核心要点')
-  lines.push('')
-  summary.keyPoints.forEach((point, index) => {
-    lines.push(`${index + 1}. ${point}`)
-  })
-  lines.push('')
-  lines.push('### 章节笔记')
-  lines.push('')
-  summary.chapters.forEach((chapter) => {
-    lines.push(`- **[${formatTimestamp(chapter.time)}] ${chapter.title}**：${chapter.note}`)
-  })
-  lines.push('')
-  lines.push('## 文字稿')
-  lines.push('')
-  transcript.forEach((item) => {
-    lines.push(`- \`${formatTimestamp(item.time)}\` ${item.text}`)
-  })
-
+  lines.push(paragraphs.join('\n\n'))
   return lines.join('\n')
 }
 

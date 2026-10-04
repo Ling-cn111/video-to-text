@@ -11,30 +11,31 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { exportResult } from '@/lib/export'
-import type { Summary, TranscriptItem, VideoInfo } from '@/lib/types'
+import type { VideoInfo } from '@/lib/types'
 
 interface ExportMenuProps {
   video: VideoInfo
-  transcript: TranscriptItem[]
-  summary: Summary
+  /** 无时间戳的自然段落（formatTranscriptToArticle 派生） */
+  paragraphs: string[]
 }
 
-/** 导出菜单：TXT / Markdown */
-export function ExportMenu({ video, transcript, summary }: ExportMenuProps) {
+/** 导出菜单：TXT / Markdown（纯文本全文，不含时间戳） */
+export function ExportMenu({ video, paragraphs }: ExportMenuProps) {
   const handleExport = (format: 'txt' | 'md') => {
-    exportResult(format, { video, transcript, summary })
+    exportResult(format, { video, paragraphs })
   }
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" className="gap-1.5">
+        <Button variant="outline" size="sm" className="gap-1.5" title="导出纯文本，不含时间戳">
           <FileDown className="size-3.5" aria-hidden />
           导出
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-44">
-        <DropdownMenuLabel>导出文字稿</DropdownMenuLabel>
+      <DropdownMenuContent align="end" className="w-48">
+        <DropdownMenuLabel>导出全文</DropdownMenuLabel>
+        <p className="px-2 pb-1.5 text-xs text-muted-foreground">纯文本 · 不含时间戳</p>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => handleExport('txt')} className="gap-2">
           <FileDown className="size-4 text-muted-foreground" aria-hidden />

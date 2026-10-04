@@ -108,7 +108,7 @@
 | 1 | AI 总结仍为 Mock（`/api/summarize` 为前端同域 Route Handler） | 范围外 | 阶段三接真实 LLM |
 | 2 | B站 AI 字幕需 `BILI_COOKIE`，未实现读取逻辑（仅文档预留） | 边界 | 后续实现 yt-dlp cookie 透传后端到端补验字幕快路径 |
 | 3 | 任务注册表为进程内存：重启后任务丢失（前端刷新会提示任务不存在并可重试） | 边界 | 多 worker 部署前换 Redis |
-| 4 | whisper base 模型对专业词汇/英文歌词有识别误差 | 质量 | `WHISPER_MODEL=small` 可提升；后续支持热词 |
+| 4 | ~~whisper base 模型对专业词汇/英文歌词有识别误差~~ | **已修复**（PR：fix/stage2-accuracy-and-ui） | 三项优化：① ASR 调用注入 `initial_prompt`（视频标题）引导专有名词识别——实测 MV 转写从「中文意译」变为英文歌词原文；② 轻量文本后处理（折叠 3 次以上明显重复词、按语言补齐句末标点）；③ 模型建议文档化（`backend/.env.example` + README）：本地 CPU 建议 `small`/`medium`，GPU 建议 `large-v3`。新增 4 条单测覆盖 |
 | 5 | B站搜索接口限流（HTTP 412）导致自动化找片不稳定 | 边界 | 与转写功能无关；测试视频已固定 |
 
 ## 七、验收命令复现
