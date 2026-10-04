@@ -7,7 +7,8 @@
 
 转写流水线：优先解析 B站 CC 字幕（有则秒级返回）→ 否则 yt-dlp 下载音轨 → FFmpeg 转 16kHz 单声道 WAV → faster-whisper 本地推理（或云端 API）。transcript 格式与前端契约一致：`[{ time, text }]`。
 
-> 说明：B站 AI 字幕的播放器接口通常需登录 Cookie 才暴露，未登录时 yt-dlp 多数视频拿不到字幕，会自动走 ASR 路径。任务注册表为进程内存实现（本地单进程部署够用），多 worker 部署需换 Redis。
+> 说明：B站 AI 字幕的播放器接口通常需登录 Cookie 才暴露，未登录时 yt-dlp 多数视频拿不到字幕，会自动走 ASR 路径（降级已实测验证）；配置 `BILI_COOKIE` 后可启用 AI 字幕快路径（见下文环境变量）。
+> 任务注册表为**进程内存实现**（`services/tasks.py`，单进程 uvicorn 下验证正常）：任务状态只能通过 `create_task / get_task / update_task` 接口访问，路由与流水线不直接触碰存储——**多 worker / 云端部署时把该模块替换为 Redis 等实现即可，无需改业务代码**。
 
 ## 本地运行
 
@@ -48,6 +49,7 @@ pnpm dev                        # 等价于 npm run dev
 | `ASR_API_BASE` | `https://api.openai.com/v1` | 云端 ASR 地址（OpenAI 兼容） |
 | `ASR_API_KEY` | 空 | 云端模式必填 |
 | `ASR_CLOUD_MODEL` | `whisper-1` | 云端模型名 |
+| `BILI_COOKIE` | 空 | 可选。B站登录 Cookie：浏览器登录 bilibili.com → F12 → Application → Cookies 复制整段（含 SESSDATA）。配置后带 AI 字幕的视频可走字幕快路径秒级返回；未配置时自动降级「下载音频 + ASR」（已验证）。注意有效期与隐私，勿提交到 git |
 
 ## 测试
 
