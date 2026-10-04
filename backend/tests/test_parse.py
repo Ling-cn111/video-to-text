@@ -57,6 +57,28 @@ def test_parse_rejects_missing_url():
     assert response.status_code == 422  # pydantic 校验失败
 
 
+def test_parse_rejects_empty_url():
+    response = client.post("/api/parse", json={"url": ""})
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "INVALID_URL"
+    assert body["error"]["message"] == "请输入视频链接"
+
+
+@pytest.mark.network
+def test_parse_invalid_bv_friendly_error():
+    """无效 BV 号：返回中文友好提示，不外泄 yt-dlp 技术细节。"""
+    response = client.post(
+        "/api/parse", json={"url": "https://www.bilibili.com/video/BV1invalid000X"}
+    )
+    assert response.status_code == 500
+    body = response.json()
+    assert body["error"]["code"] == "INTERNAL_ERROR"
+    assert "视频不存在" in body["error"]["message"]
+    assert "yt-dlp" not in body["error"]["message"]
+    assert "HTTP Error" not in body["error"]["message"]
+
+
 @pytest.mark.network
 def test_parse_real_bilibili_video():
     """真实 B站链接解析：返回结构与前端 types.ts 的 VideoInfo 完全一致。"""
