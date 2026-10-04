@@ -46,3 +46,8 @@ __pycache__/
 
 # env 备份文件不入库
 .env.local.bak
+
+# backend 转写音频工作目录
+backend/.audio/
+backend/.audio-body.json
+backend/.audio-debug*/

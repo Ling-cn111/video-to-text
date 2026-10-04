@@ -189,7 +189,9 @@ export async function getTask(taskId: string): Promise<GetTaskResponse> {
 export async function summarizeTask(taskId: string): Promise<Summary> {
   const payload = decodeTaskId(taskId)
   if (!payload) {
-    throw new MockApiError('INVALID_TASK', '任务不存在或已过期，请重新解析视频链接')
+    // M2 混合模式：真实后端的转写任务（uuid taskId）先返回演示总结，
+    // 接入真实总结接口后此分支删除。
+    return getMockData('bilibili').summary
   }
   return getMockData(payload.p).summary
 }

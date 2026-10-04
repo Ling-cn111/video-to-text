@@ -67,6 +67,8 @@ export const TASK_STAGES: StageMeta[] = [
 
 export interface StartTaskRequest {
   videoId: string
+  /** 视频页原始链接（真实后端下载音频用；缺省时由 videoId 按平台规则重建） */
+  url?: string
   /**
    * 可选的真实视频元数据透传：接真实后端（M1.5）时解析由 FastAPI 完成，
    * 转写/总结仍为 Mock；带上该字段可让进度页/结果页展示真实标题、封面、时长。

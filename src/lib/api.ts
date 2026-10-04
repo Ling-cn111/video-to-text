@@ -1,4 +1,4 @@
-import { ApiError, JSON_HEADERS, toJson, throwNetworkError, type ClientErrorCode } from '@/lib/http'
+import { ApiError, JSON_HEADERS, toJson, throwNetworkError, type ApiClient, type ClientErrorCode } from '@/lib/http'
 import { realApi } from '@/lib/real-api'
 import type { GetTaskResponse, StartTaskResponse, Summary, VideoInfo } from '@/lib/types'
 
@@ -14,7 +14,7 @@ export { ApiError, type ClientErrorCode }
  * 请求目标均为编译期字面量路径（真实后端经 /backend-api/* 同源代理，见 next.config.mjs）。
  */
 
-const mockApi = {
+const mockApi: ApiClient = {
   /** POST /api/parse：解析视频链接 */
   parseVideo: (url: string): Promise<VideoInfo> =>
     toJson(
@@ -23,7 +23,7 @@ const mockApi = {
       ),
     ),
 
-  /** POST /api/transcribe：创建转写任务（video 为可选的真实元数据透传） */
+  /** POST /api/transcribe：创建转写任务（url 参数仅在真实模式使用，Mock 忽略） */
   startTranscription: (videoId: string, video?: VideoInfo): Promise<StartTaskResponse> =>
     toJson(
       fetch('/api/transcribe', {

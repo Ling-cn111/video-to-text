@@ -19,3 +19,20 @@ CORS_ORIGIN_REGEX: str = os.getenv("CORS_ORIGIN_REGEX", r"https://.*\.vercel\.ap
 
 # yt-dlp 提取信息的最长等待（秒），避免请求悬挂
 EXTRACT_TIMEOUT_SECONDS: int = int(os.getenv("EXTRACT_TIMEOUT_SECONDS", "30"))
+
+# ---- 转写（M2 阶段一）----
+
+# 音频工作目录（下载 + 转换的临时文件，任务结束自动清理）
+AUDIO_DIR = os.getenv("AUDIO_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), ".audio"))
+
+# ASR 提供方：local（faster-whisper 本地推理）| cloud（OpenAI 兼容 /audio/transcriptions）
+ASR_PROVIDER: str = os.getenv("ASR_PROVIDER", "local")
+
+# 本地模型：base（默认，下载约 140MB）/ small / tiny …
+WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "base")
+WHISPER_COMPUTE_TYPE: str = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+
+# 云端 ASR（OpenAI 兼容协议）；未配置 ASR_API_KEY 时云端模式报友好错误
+ASR_API_BASE: str = os.getenv("ASR_API_BASE", "https://api.openai.com/v1")
+ASR_API_KEY: str = os.getenv("ASR_API_KEY", "")
+ASR_CLOUD_MODEL: str = os.getenv("ASR_CLOUD_MODEL", "whisper-1")

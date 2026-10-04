@@ -1,7 +1,13 @@
-# backend — FastAPI 视频解析服务
+# backend — FastAPI 视频解析与转写服务
 
-当前实现 `POST /api/parse`：用 yt-dlp 解析 B站视频链接，返回与前端契约完全一致的
-`{ title, cover, duration, platform, videoId }`。转写 / 总结尚未实现（M2 起接入）。
+已实现：
+- `POST /api/parse`：yt-dlp 解析 B站视频链接 → `{ title, cover, duration, platform, videoId }`
+- `POST /api/transcribe`：创建转写任务（BackgroundTasks 异步执行）→ `{ taskId, status, progress, stage }`
+- `GET /api/transcribe/{taskId}`：轮询任务 → `{ status, stage, progress, transcript, plainText, video?, error? }`
+
+转写流水线：优先解析 B站 CC 字幕（有则秒级返回）→ 否则 yt-dlp 下载音轨 → FFmpeg 转 16kHz 单声道 WAV → faster-whisper 本地推理（或云端 API）。transcript 格式与前端契约一致：`[{ time, text }]`。
+
+> 说明：B站 AI 字幕的播放器接口通常需登录 Cookie 才暴露，未登录时 yt-dlp 多数视频拿不到字幕，会自动走 ASR 路径。任务注册表为进程内存实现（本地单进程部署够用），多 worker 部署需换 Redis。
 
 ## 本地运行
 
@@ -16,6 +22,8 @@ uvicorn app.main:app --reload --port 8000
 
 自检：<http://localhost:8000/api/health>；接口文档：<http://localhost:8000/docs>
 
+> 转写可选依赖 **FFmpeg**（音轨转 16kHz 单声道 WAV）：未安装时自动降级为 PyAV 解码（faster-whisper 仍可运行）。安装：`winget install Gyan.FFmpeg`
+
 ## 前端联调
 
 ```bash
@@ -24,18 +32,29 @@ cp .env.example .env.local      # 修改 NEXT_PUBLIC_USE_MOCK=false（BACKEND_OR
 pnpm dev                        # 等价于 npm run dev
 ```
 
-粘贴 B站链接，前端进度页/结果页即显示真实标题、封面、时长
-（转写与总结当前仍为内置 Mock，真实元数据会透传展示）。
+粘贴 B站链接，前端进度页/结果页即显示真实标题、封面、时长与真实转写文字稿
+（AI 总结当前仍为内置 Mock）。
 
 前端请求走同源 `/backend-api/*`，由 Next.js rewrites 服务端代理到 `BACKEND_ORIGIN`，
 浏览器不直接跨域访问后端；后端 CORS（本地 + Vercel 域）仍按契约保留。
 
+## 转写配置（环境变量）
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `ASR_PROVIDER` | `local` | `local` = faster-whisper 本地推理；`cloud` = OpenAI 兼容接口 |
+| `WHISPER_MODEL` | `base` | 本地模型：`tiny` / `base` / `small`（越大越准越慢，首次自动下载） |
+| `WHISPER_COMPUTE_TYPE` | `int8` | CPU 推荐 int8 |
+| `ASR_API_BASE` | `https://api.openai.com/v1` | 云端 ASR 地址（OpenAI 兼容） |
+| `ASR_API_KEY` | 空 | 云端模式必填 |
+| `ASR_CLOUD_MODEL` | `whisper-1` | 云端模型名 |
+
 ## 测试
 
 ```bash
-pytest                    # 全量（含 @pytest.mark.network 真实 B站链接集成测试）
-pytest -m "not network"   # 跳过外网集成测试（CI 使用）
-pytest -m network         # 只跑真实链接集成测试
+pytest                    # 全量（含真实 B站下载 + whisper 推理的集成测试，首次较慢）
+pytest -m "not network"   # 跳过外网/重推理集成测试（CI 使用）
+pytest -m network         # 只跑真实集成测试
 ```
 
 ## 结构
@@ -43,13 +62,21 @@ pytest -m network         # 只跑真实链接集成测试
 ```
 backend/app/
 ├── main.py          # FastAPI 入口：CORS、统一错误形状 { error: { code, message } }
-├── config.py        # CORS_ORIGINS / CORS_ORIGIN_REGEX（env 可覆盖）
+├── config.py        # CORS / ASR 配置（env 可覆盖）
 ├── schemas.py       # Pydantic 契约（与 src/lib/types.ts 一致）
 ├── platforms.py     # 平台注册表（与前端 registry 对应；当前仅 bilibili）
 ├── url_guard.py     # URL 安全守卫：仅 http/https，拒绝 localhost/私有/保留地址
-├── errors.py        # AppException（INVALID_URL 400 / UNSUPPORTED_PLATFORM 422 / …）
-├── routers/parse.py # POST /api/parse
-└── services/parser.py  # yt-dlp 封装（extract_info, download=False）
+├── errors.py        # AppException（INVALID_URL 400 / UNSUPPORTED_PLATFORM 422 / INVALID_TASK 404 / …）
+├── routers/
+│   ├── parse.py     # POST /api/parse
+│   └── transcribe.py    # POST /api/transcribe + GET /api/transcribe/{taskId}
+└── services/
+    ├── parser.py        # yt-dlp 元数据解析
+    ├── subtitles.py     # CC/AI 字幕轨道选择与解析（bilibili json / json3 / vtt）
+    ├── audio.py         # yt-dlp 下载音轨 + FFmpeg 转 16kHz 单声道 WAV
+    ├── asr.py           # faster-whisper 本地推理 / 云端 OpenAI 兼容客户端
+    ├── transcribe.py    # 流水线编排（BackgroundTasks 入口，进度更新）
+    └── tasks.py         # 内存任务注册表
 ```
 
 ## 环境变量
