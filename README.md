@@ -1,17 +1,35 @@
 # video-to-text
 
-视频链接转文字 PWA：粘贴 B站 / 抖音视频链接，自动完成解析、语音转写与 AI 总结，输出带时间戳的文字稿和结构化摘要。可安装到 Windows 桌面与手机主屏幕。
+视频链接转文字 PWA：粘贴 B站视频链接，自动完成解析、语音转写（本地 faster-whisper）与 AI 总结，输出带时间戳的文字稿和结构化摘要。可安装到 Windows 桌面与手机主屏幕。
 
-> 当前阶段为**纯前端 Demo**：所有后端能力由 Mock 提供，接口形状按真实后端契约设计（见下文），后续可直接替换。多平台 / 本地视频 / 打包 App 规划见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+> **当前进度**：M1 前端 Demo ✅ → **M2 阶段一（真实解析）✅ + 阶段二（真实转写）✅** → 阶段三（真实 AI 总结）、多平台、本地视频、打包 App 规划见 [docs/ROADMAP.md](docs/ROADMAP.md)。阶段二验收报告见 [docs/acceptance-stage-2.md](docs/acceptance-stage-2.md)。
 
 ## 功能
 
-- 粘贴视频链接 → 模拟解析 → 转写（四阶段进度）→ 结果页
-- 左侧带时间戳文字稿（点击时间戳可复制），右侧 AI 总结（一句话概要 / 要点 / 章节笔记）
-- 导出 TXT / Markdown
+- 粘贴 B站视频链接 → 真实解析（yt-dlp）→ 真实转写（字幕快路径优先，否则 faster-whisper 本地 ASR）→ 结果页
+- 全文阅读：无时间戳的文章式排版（按章节自动分段，段间空行、行高舒适）
+- 带时间戳文字稿（点击时间戳可复制，支持折叠/展开）
+- 右侧 AI 总结（一句话概要 / 要点 / 章节笔记，**当前仍为 Mock**）
+- 导出 TXT / Markdown（纯文本全文，不含时间戳）
 - PWA：可安装、离线可用（应用外壳）
 - 响应式：桌面左右分栏，移动端上下卡片流
 - 错误态：无效链接、不支持平台、转写失败（可重试）
+
+## 支持的平台
+
+| 平台 | 解析 | 转写 |
+| --- | --- | --- |
+| 哔哩哔哩（www.bilibili.com / b23.tv） | ✅ yt-dlp | ✅ CC 字幕快路径 / faster-whisper ASR |
+
+> 未登录状态下 yt-dlp 极少能取到 B站字幕（AI 字幕需登录 Cookie），实际以 ASR 路径为主；配置 `BILI_COOKIE` 可启用 AI 字幕快路径（见 backend/README.md）。更多平台在 `src/lib/platforms/registry.ts` 与 `backend/app/platforms.py` 的注册表中追加即可。
+
+## 已知限制
+
+- AI 总结仍为 Mock 数据（阶段三接入真实 LLM）
+- 转写任务注册表为进程内存实现：单进程 uvicorn 够用，多 worker / 云端部署需替换为 Redis（接口已封装，见 backend/README.md）
+- B站 AI 字幕需登录 Cookie（`BILI_COOKIE`），未配置时自动降级 ASR 路径
+- 本地推理依赖 CPU：base 模型转写 2 分钟音频约 30-60 秒；可切换 small 模型提升准确率（更慢）
+- FFmpeg 可选：未安装时自动降级 PyAV 解码；建议安装以走标准 16kHz WAV 路径
 
 ## 技术栈
 

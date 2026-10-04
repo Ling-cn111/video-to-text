@@ -83,9 +83,11 @@ export function ProcessingView({ taskId }: ProcessingViewProps) {
           <StageSteps current={stage} completed={phase === 'summarizing'} />
         </CardContent>
       </Card>
-      <p className="text-center text-xs text-muted-foreground">
-        演示模式：转写全程约 10 秒，完成后自动进入结果页
-      </p>
+      {process.env.NEXT_PUBLIC_USE_MOCK !== 'false' ? (
+        <p className="text-center text-xs text-muted-foreground">
+          演示模式：转写全程约 10 秒，完成后自动进入结果页
+        </p>
+      ) : null}
     </div>
   )
 }
