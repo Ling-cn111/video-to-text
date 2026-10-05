@@ -53,3 +53,29 @@ jobs:
       # CI 跳过依赖外网真实视频的集成测试（-m network），本地用 `pytest` 全量运行
       - name: Test
         run: pytest -m "not network"
+
+  e2e:
+    name: e2e locked features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      # E2E 使用 Mock 模式（默认构建即 Mock）：验证 UI 锁定，不依赖后端
+      - name: Build
+        run: pnpm build
+
+      - name: Run E2E
+        run: pnpm playwright test

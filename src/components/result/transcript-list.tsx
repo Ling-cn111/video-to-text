@@ -28,7 +28,7 @@ export function TranscriptList({ items }: TranscriptListProps) {
   }
 
   return (
-    <ScrollArea className="h-[420px] pr-3 sm:h-[560px]">
+    <ScrollArea className="h-[420px] pr-3 sm:h-[560px]" data-testid="transcript-list">
       <ul className="flex flex-col">
         {items.map((item, index) => {
           const copied = copiedTime === item.time

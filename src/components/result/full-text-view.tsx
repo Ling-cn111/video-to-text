@@ -19,7 +19,7 @@ export function ArticleView({ paragraphs }: ArticleViewProps) {
           {totalChars} 字 · 约 {readingMinutes} 分钟读完 · 按章节自动分段
         </span>
       </div>
-      <article className="mx-auto max-w-3xl">
+      <article className="mx-auto max-w-3xl" data-testid="fulltext-article">
         {paragraphs.map((paragraph, index) => (
           <p
             key={index}
