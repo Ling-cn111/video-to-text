@@ -63,6 +63,18 @@ def run_transcription_pipeline(
         update_task(task_id, stage="extract_audio", progress=PROGRESS_EXTRACT_DONE)
         wav_path = convert_to_wav_16k_mono(source, work_dir)
 
+        # 可选：人声分离（Demucs）。智能触发：非语音占比超阈值或显式开启；
+        # 分离失败/未安装组件时降级回原音频，不使任务失败。分离后仍走 ASR 的 VAD 兜底链。
+        from app.services import separation
+
+        if separation.is_demucs_available():
+            separate, non_speech_ratio = separation.should_separate(wav_path)
+            if separate:
+                try:
+                    wav_path = separation.separate_vocals(wav_path, work_dir)
+                except Exception:
+                    pass  # 降级：人声分离失败不影响转写主流程
+
         # 阶段三：ASR（本地 faster-whisper 或云端）
         update_task(task_id, stage="asr", progress=PROGRESS_ASR_START)
 
