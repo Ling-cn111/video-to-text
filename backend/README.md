@@ -5,7 +5,14 @@
 - `POST /api/transcribe`：创建转写任务（BackgroundTasks 异步执行）→ `{ taskId, status, progress, stage }`
 - `GET /api/transcribe/{taskId}`：轮询任务 → `{ status, stage, progress, transcript, plainText, video?, error? }`
 
-转写流水线：优先解析 B站 CC 字幕（有则秒级返回）→ 否则 yt-dlp 下载音轨 → FFmpeg 转 16kHz 单声道 WAV → faster-whisper 本地推理（或云端 API）。转写时把**热词 + 视频标题组合为 `initial_prompt`** 传入以引导专有名词识别；输出经轻量后处理（**zhconv 繁→简**、折叠 3 次以上的明显重复词、按语言补齐句末标点）。transcript 格式与前端契约一致：`[{ time, text }]`。
+转写流水线：优先解析 B站 CC 字幕（有则秒级返回）→ 否则 yt-dlp 下载音轨 → FFmpeg 转 16kHz 单声道 WAV →（可选）Demucs 人声分离 → faster-whisper 本地推理（或云端 API）。转写时把**热词 + 视频标题组合为 `initial_prompt`** 传入以引导专有名词识别；输出经轻量后处理（**zhconv 繁→简**、折叠 3 次以上的明显重复词、按语言补齐句末标点）。transcript 格式与前端契约一致：`[{ time, text }]`。
+
+### 人声分离（可选，Demucs）
+
+- 安装：`pip install -r requirements-separation.txt`（连带 torch，体积较大）；未安装时该步骤自动跳过
+- 触发：`ENABLE_VOCAL_SEPARATION=true` 无条件启用；或 VAD 统计**非语音时长占比 > `VOCAL_SEP_TRIGGER_RATIO`（默认 0.4）** 时自动启用（BGM/音乐占比高的音频）
+- 分离输出显式重采样为 16kHz 单声道 WAV，经 PyAV 解码为 float32 后喂给 ASR（与解码链格式契约一致，测试断言覆盖）
+- **实测边界**：对「小模型幻觉型」强 BGM 场景（如快节奏带货解说）无效——幻觉与噪声无关；分离耗时约 0.6× 音频时长（150 秒音频约 91 秒 CPU）。数据见 [docs/asr-benchmark.md](../docs/asr-benchmark.md)
 
 **中文准确率**：模型规格对 CER 的影响见 [docs/asr-benchmark.md](../docs/asr-benchmark.md)（base / small / medium / large-v3 实测对比表）。重建参考稿或新增评测视频：`python scripts/benchmark_asr.py --models base small --seconds 150`。
 

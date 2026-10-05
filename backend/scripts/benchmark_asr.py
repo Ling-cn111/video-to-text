@@ -31,6 +31,7 @@ import zhconv  # noqa: E402
 
 from app.services.asr import LocalWhisperEngine  # noqa: E402
 from app.services.audio import download_audio  # noqa: E402
+from app.services import separation  # noqa: E402
 
 BENCHMARK_DIR = BACKEND_ROOT / "tests" / "asr_benchmark"
 STRIP_CHARS = "，。！？、；：""''「」『』（）()[]{}《》<>·…—～~,.!?;:\"' \t\n\r"
@@ -121,10 +122,15 @@ def main() -> None:
     parser.add_argument("--seconds", type=int, default=150, help="评测音频时长（秒），与参考稿对齐")
     parser.add_argument("--cases", default=str(BENCHMARK_DIR / "cases.json"))
     parser.add_argument("--output", default=str(BENCHMARK_DIR / "results.csv"))
+    parser.add_argument(
+        "--separate", action="store_true",
+        help="转写前先做 Demucs 人声分离（需 backend/requirements-separation.txt），对比分离前后 CER",
+    )
     args = parser.parse_args()
 
     cases = json.loads(Path(args.cases).read_text(encoding="utf-8"))["cases"]
     results: list[dict] = []
+    separate_seconds_by_video: dict[str, float] = {}
 
     for model in args.models:
         # 每个模型规格独立构造引擎，避免全局缓存串味
@@ -140,6 +146,19 @@ def main() -> None:
             print(f"[{model} / {case['category']}] 下载与截取音频…", flush=True)
             wav = prepare_audio(case["url"], args.seconds, cache_dir)
 
+            if args.separate:
+                if case["videoId"] not in separate_seconds_by_video:
+                    sep_start = time.perf_counter()
+                    wav = separation.separate_vocals(wav, cache_dir / "vocal-sep")
+                    separate_seconds_by_video[case["videoId"]] = round(time.perf_counter() - sep_start, 1)
+                    print(
+                        f"[separation] {case['videoId']} Demucs 耗时 "
+                        f"{separate_seconds_by_video[case['videoId']]}s",
+                        flush=True,
+                    )
+                else:
+                    wav = separation.separate_vocals(wav, cache_dir / "vocal-sep")  # 命中缓存
+
             with MemorySampler() as mem:
                 start = time.perf_counter()
                 items = engine.transcribe(
@@ -150,11 +169,12 @@ def main() -> None:
             hypothesis = "".join(item["text"] for item in items)
             score = cer(reference, hypothesis)
             row = {
-                "model": model,
+                "model": model + ("+Demucs" if args.separate else ""),
                 "video_id": case["videoId"],
                 "category": case["category"],
                 "cer": round(score, 4),
                 "transcribe_seconds": round(elapsed, 1),
+                "separate_seconds": separate_seconds_by_video.get(case["videoId"], 0.0),
                 "audio_seconds": args.seconds,
                 "memory_mb": mem.peak_mb,
                 "ref_chars": len(normalize_text(reference)),

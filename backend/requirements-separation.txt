@@ -1,0 +1,5 @@
+# 可选依赖：人声分离（Demucs 人声提取，用于强 BGM 音频的转写优化）
+# 安装：pip install -r requirements-separation.txt
+# 说明：会连带安装 torch（体积较大）；不安装时相关代码路径自动跳过，
+#       CI 的 backend tests job 默认不安装本文件（Demucs 测试以 pytest.mark.separation 标记）。
+demucs>=4.0

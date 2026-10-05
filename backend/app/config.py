@@ -33,6 +33,14 @@ ASR_ENGINE: str = os.getenv("ASR_ENGINE", os.getenv("ASR_PROVIDER", "local"))
 # 本地模型：默认 small（CER 评测后的本地最优平衡点，见 docs/asr-benchmark.md）；
 # 追求速度用 base，追求准确用 medium / large-v3（large-v3 建议 GPU）
 WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "small")
+
+# ---- 人声分离（Demucs，可选依赖 requirements-separation.txt）----
+
+# 总开关：true 时无条件对转写音频做 Demucs 人声分离；false 时按下方阈值智能触发
+ENABLE_VOCAL_SEPARATION: bool = os.getenv("ENABLE_VOCAL_SEPARATION", "false").lower() == "true"
+
+# 智能触发阈值：VAD 统计「非语音时长占比」超过该值（BGM/音乐占比高）时自动开启人声分离
+VOCAL_SEP_TRIGGER_RATIO: float = float(os.getenv("VOCAL_SEP_TRIGGER_RATIO", "0.4"))
 WHISPER_COMPUTE_TYPE: str = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 
 # 云端 ASR（OpenAI 兼容协议）；未配置 ASR_API_KEY 时云端模式报友好错误

@@ -1,0 +1,7 @@
+﻿model,video_id,category,cer,transcribe_seconds,separate_seconds,audio_seconds,memory_mb,ref_chars,hyp_chars
+small+Demucs,BV1gCYc6BEPv,科普,0.2957,26.1,86.4,150,726.2,345,345
+small+Demucs,BV1S6aB63Er7,讲解,0.8525,52.6,91.2,150,747.6,461,801
+small+Demucs,BV1C9aB6aE5f,教程,0.071,44.4,91.0,150,747.5,747,760
+medium+Demucs,BV1gCYc6BEPv,科普,0.713,124.5,86.4,150,2700.6,345,196
+medium+Demucs,BV1S6aB63Er7,讲解,0.9349,137.5,91.2,150,1720.5,461,814
+medium+Demucs,BV1C9aB6aE5f,教程,0.0535,115.2,91.0,150,1711.2,747,763
