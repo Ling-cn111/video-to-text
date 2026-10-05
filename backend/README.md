@@ -5,7 +5,9 @@
 - `POST /api/transcribe`：创建转写任务（BackgroundTasks 异步执行）→ `{ taskId, status, progress, stage }`
 - `GET /api/transcribe/{taskId}`：轮询任务 → `{ status, stage, progress, transcript, plainText, video?, error? }`
 
-转写流水线：优先解析 B站 CC 字幕（有则秒级返回）→ 否则 yt-dlp 下载音轨 → FFmpeg 转 16kHz 单声道 WAV → faster-whisper 本地推理（或云端 API）。转写时把**视频标题作为 `initial_prompt`** 传入以引导专有名词识别；输出经轻量后处理（折叠 3 次以上的明显重复词、补齐句末标点）。transcript 格式与前端契约一致：`[{ time, text }]`。
+转写流水线：优先解析 B站 CC 字幕（有则秒级返回）→ 否则 yt-dlp 下载音轨 → FFmpeg 转 16kHz 单声道 WAV → faster-whisper 本地推理（或云端 API）。转写时把**热词 + 视频标题组合为 `initial_prompt`** 传入以引导专有名词识别；输出经轻量后处理（**zhconv 繁→简**、折叠 3 次以上的明显重复词、按语言补齐句末标点）。transcript 格式与前端契约一致：`[{ time, text }]`。
+
+**中文准确率**：模型规格对 CER 的影响见 [docs/asr-benchmark.md](../docs/asr-benchmark.md)（base / small / medium / large-v3 实测对比表）。重建参考稿或新增评测视频：`python scripts/benchmark_asr.py --models base small --seconds 150`。
 
 > 说明：B站 AI 字幕的播放器接口通常需登录 Cookie 才暴露，未登录时 yt-dlp 多数视频拿不到字幕，会自动走 ASR 路径（降级已实测验证）；配置 `BILI_COOKIE` 后可启用 AI 字幕快路径（见下文环境变量）。
 > 任务注册表为**进程内存实现**（`services/tasks.py`，单进程 uvicorn 下验证正常）：任务状态只能通过 `create_task / get_task / update_task` 接口访问，路由与流水线不直接触碰存储——**多 worker / 云端部署时把该模块替换为 Redis 等实现即可，无需改业务代码**。
@@ -43,8 +45,8 @@ pnpm dev                        # 等价于 npm run dev
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `ASR_PROVIDER` | `local` | `local` = faster-whisper 本地推理；`cloud` = OpenAI 兼容接口 |
-| `WHISPER_MODEL` | `base` | 本地模型：`tiny` / `base` / `small` / `medium`（越大越准越慢，首次自动下载）。**准确率建议：本地 CPU 用 `small` 或 `medium`；GPU 环境建议 `large-v3`** |
+| `ASR_ENGINE` | `local` | `local` = faster-whisper 本地推理；`cloud` = OpenAI 兼容接口（兼容旧变量名 `ASR_PROVIDER`）。场景推荐：速度 `base` / 平衡（推荐）`small` / 准确 `medium` 或 `large-v3` / 高精度云端 `cloud` |
+| `WHISPER_MODEL` | `base` | 本地模型：`tiny` / `base` / `small` / `medium` / `large-v3`（越大越准越慢，首次自动下载）。**准确率建议：本地 CPU 用 `small` 或 `medium`；GPU 环境建议 `large-v3`**。CER 实测数据见 docs/asr-benchmark.md |
 | `WHISPER_COMPUTE_TYPE` | `int8` | CPU 推荐 int8 |
 | `ASR_API_BASE` | `https://api.openai.com/v1` | 云端 ASR 地址（OpenAI 兼容） |
 | `ASR_API_KEY` | 空 | 云端模式必填 |

@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.services.asr import postprocess_items, transcribe_local
+from app.services.asr import LocalWhisperEngine, postprocess_items
 from app.services.tasks import create_task, get_task
 from app.services.transcribe import run_transcription_pipeline
 from app.services.subtitles import parse_subtitle_body
@@ -100,8 +100,13 @@ def test_postprocess_drops_empty_texts():
     assert len(cleaned) == 1 and cleaned[0]["text"] == "有效。"
 
 
-def test_transcribe_local_passes_initial_prompt(monkeypatch):
-    """initial_prompt（视频标题）应透传给 faster-whisper。"""
+def test_postprocess_converts_traditional_to_simplified():
+    cleaned = postprocess_items([{"time": 1.0, "text": "語音轉文字"}])
+    assert cleaned[0]["text"] == "语音转文字。"
+
+
+def test_local_engine_passes_initial_prompt_and_hotwords(monkeypatch):
+    """initial_prompt 与 hotwords 应组合后透传给 faster-whisper。"""
 
     class FakeInfo:
         duration = 0
@@ -113,15 +118,22 @@ def test_transcribe_local_passes_initial_prompt(monkeypatch):
             recorded.append(kwargs)
             return iter([]), FakeInfo()
 
-    monkeypatch.setattr("app.services.asr._LOCAL_MODEL", FakeModel())
+    engine = LocalWhisperEngine()
+    engine._model = FakeModel()  # noqa: SLF001 测试受控注入，跳过模型加载
     monkeypatch.setattr(
         "app.services.asr.decode_audio_16k_mono", lambda p: np.zeros(1600, dtype="float32")
     )
 
-    transcribe_local("fake.wav", language="zh", initial_prompt="【测试】量子计算入门")
+    engine.transcribe(
+        "fake.wav",
+        language="zh",
+        initial_prompt="【测试】量子计算入门",
+        hotwords=["Faster Whisper", "B站"],
+    )
 
     assert len(recorded) >= 1
-    assert recorded[0].get("initial_prompt") == "【测试】量子计算入门"
+    prompt = recorded[0].get("initial_prompt", "")
+    assert "Faster Whisper" in prompt and "B站" in prompt and "量子计算" in prompt
 
 
 # ---- 接口校验与状态机（不访问外网）----

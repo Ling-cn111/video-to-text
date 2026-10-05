@@ -1,0 +1,13 @@
+﻿model,video_id,category,cer,transcribe_seconds,audio_seconds,memory_mb,ref_chars,hyp_chars
+base,BV1gCYc6BEPv,科普,0.542,7.4,150,375.4,345,206
+base,BV1S6aB63Er7,讲解,0.9675,8.4,150,479.1,461,84
+base,BV1C9aB6aE5f,教程,0.162,21.8,150,387.2,747,764
+small,BV1gCYc6BEPv,科普,0.2812,35.5,150,767.0,345,343
+small,BV1S6aB63Er7,讲解,0.8677,69.2,150,763.1,461,796
+small,BV1C9aB6aE5f,教程,0.0629,58.7,150,765.0,747,761
+medium,BV1gCYc6BEPv,科普,0.4493,99.8,150,1870.9,345,208
+medium,BV1S6aB63Er7,讲解,0.9414,162.7,150,1729.5,461,787
+medium,BV1C9aB6aE5f,教程,0.0482,151.7,150,1746.7,747,763
+large-v3,BV1gCYc6BEPv,科普,0.0,141.2,150,3117.6,345,345
+large-v3,BV1S6aB63Er7,讲解,0.0022,180.2,150,4253.3,461,461
+large-v3,BV1C9aB6aE5f,教程,0.0,203.5,150,3006.0,747,747

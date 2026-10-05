@@ -28,11 +28,13 @@ class StartTranscribeRequest(BaseModel):
 
     - videoId 必填；url 缺省时由 videoId 按平台规则重建
     - video 为解析阶段透传的元数据（供前端刷新恢复展示）
+    - hotwords 为可选热词（专有名词列表，经 initial_prompt 引导 ASR 识别）
     """
 
     videoId: str
     url: str | None = None
     video: VideoInfo | None = None
+    hotwords: list[str] | None = None
 
 
 class StartTaskResponse(BaseModel):
