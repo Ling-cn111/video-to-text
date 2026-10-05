@@ -52,3 +52,7 @@ backend/.audio/
 backend/.audio-body.json
 backend/.audio-debug*/
 backend/.audio-bench/
+
+# playwright
+/test-results/
+/playwright-report/
