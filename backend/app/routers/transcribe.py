@@ -41,7 +41,9 @@ def _resolve_target_url(payload: StartTranscribeRequest) -> str:
 def create_transcription(payload: StartTranscribeRequest, background_tasks: BackgroundTasks) -> StartTaskResponse:
     url = _resolve_target_url(payload)
     task_id = create_task(payload.video)
-    background_tasks.add_task(run_transcription_pipeline, task_id, url, payload.video, True)
+    background_tasks.add_task(
+        run_transcription_pipeline, task_id, url, payload.video, True, payload.hotwords
+    )
     return StartTaskResponse(taskId=task_id, status="processing", stage="parse_link", progress=0)
 
 

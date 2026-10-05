@@ -51,3 +51,4 @@ __pycache__/
 backend/.audio/
 backend/.audio-body.json
 backend/.audio-debug*/
+backend/.audio-bench/

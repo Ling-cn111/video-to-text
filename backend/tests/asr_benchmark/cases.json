@@ -1,0 +1,26 @@
+{
+  "notes": "阶段二 ASR 准确率基准用例集：科普/讲解/教程三类 5-10 分钟中文视频（无可用字幕）。参考稿取前 150 秒（refs/ 目录），生成方式与局限见 refs/README.md。",
+  "cases": [
+    {
+      "videoId": "BV1gCYc6BEPv",
+      "category": "科普",
+      "url": "https://www.bilibili.com/video/BV1gCYc6BEPv",
+      "title": "你知道当你骨折后，体内细胞为了救你有多拼命吗？",
+      "reference": "refs/BV1gCYc6BEPv.txt"
+    },
+    {
+      "videoId": "BV1S6aB63Er7",
+      "category": "讲解",
+      "url": "https://www.bilibili.com/video/BV1S6aB63Er7",
+      "title": "【短的发布会】iQOO 电竞宇宙来了",
+      "reference": "refs/BV1S6aB63Er7.txt"
+    },
+    {
+      "videoId": "BV1C9aB6aE5f",
+      "category": "教程",
+      "url": "https://www.bilibili.com/video/BV1C9aB6aE5f",
+      "title": "小天才套牢9岁小学生的大脑",
+      "reference": "refs/BV1C9aB6aE5f.txt"
+    }
+  ]
+}

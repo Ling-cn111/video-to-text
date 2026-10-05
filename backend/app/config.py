@@ -25,11 +25,14 @@ EXTRACT_TIMEOUT_SECONDS: int = int(os.getenv("EXTRACT_TIMEOUT_SECONDS", "30"))
 # 音频工作目录（下载 + 转换的临时文件，任务结束自动清理）
 AUDIO_DIR = os.getenv("AUDIO_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), ".audio"))
 
-# ASR 提供方：local（faster-whisper 本地推理）| cloud（OpenAI 兼容 /audio/transcriptions）
-ASR_PROVIDER: str = os.getenv("ASR_PROVIDER", "local")
+# ASR 引擎：local（faster-whisper 本地推理）| cloud（OpenAI 兼容 /audio/transcriptions）
+# 兼容旧变量名 ASR_PROVIDER
+ASR_ENGINE: str = os.getenv("ASR_ENGINE", os.getenv("ASR_PROVIDER", "local"))
 
 # 本地模型：base（默认，下载约 140MB）/ small / tiny …
-WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "base")
+# 本地模型：默认 small（CER 评测后的本地最优平衡点，见 docs/asr-benchmark.md）；
+# 追求速度用 base，追求准确用 medium / large-v3（large-v3 建议 GPU）
+WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "small")
 WHISPER_COMPUTE_TYPE: str = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 
 # 云端 ASR（OpenAI 兼容协议）；未配置 ASR_API_KEY 时云端模式报友好错误

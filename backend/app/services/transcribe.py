@@ -40,6 +40,7 @@ def run_transcription_pipeline(
     url: str,
     video: VideoInfo | None = None,
     prefer_subtitles: bool = True,
+    hotwords: list[str] | None = None,
 ) -> None:
     """后台转写主流程。任何异常都收敛为任务 failed + 友好信息。"""
     work_dir = Path(AUDIO_DIR) / task_id
@@ -68,10 +69,14 @@ def run_transcription_pipeline(
         def on_asr_progress(ratio: float) -> None:
             update_task(task_id, progress=PROGRESS_ASR_START + int(ratio * PROGRESS_ASR_SPAN))
 
-        # 上下文提示：视频标题引导专有名词识别
+        # 上下文提示：热词（专有名词）+ 视频标题，引导 ASR 识别
         initial_prompt = video.title if video else None
         transcript = asr.transcribe_audio(
-            wav_path, language="zh", progress_callback=on_asr_progress, initial_prompt=initial_prompt
+            wav_path,
+            language="zh",
+            progress_callback=on_asr_progress,
+            initial_prompt=initial_prompt,
+            hotwords=hotwords,
         )
         if not transcript:
             raise AppException("TRANSCRIBE_FAILED", "未能识别出语音内容", 500)
