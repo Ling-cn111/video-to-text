@@ -25,6 +25,7 @@ class TranscribeTask:
     plain_text: str | None = None
     error: dict | None = None  # { code, message }
     engine: str | None = None  # 本次任务的 ASR 引擎（local | cloud | 引擎名），重试沿用
+    transcript_source: str | None = None  # 文字稿来源：subtitle_cc | subtitle_ai | asr
     created_at: float = field(default_factory=time.time)
 
 

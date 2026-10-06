@@ -34,6 +34,7 @@ export function ResultView({ taskId }: ResultViewProps) {
   const transcript = useTaskStore((state) => state.transcript)
   const summary = useTaskStore((state) => state.summary)
   const error = useTaskStore((state) => state.error)
+  const transcriptSource = useTaskStore((state) => state.transcriptSource)
   const recover = useTaskStore((state) => state.recover)
   const retry = useTaskStore((state) => state.retry)
   const reset = useTaskStore((state) => state.reset)
@@ -94,6 +95,11 @@ export function ResultView({ taskId }: ResultViewProps) {
           <h1 className="truncate text-lg font-semibold sm:text-xl">{video?.title ?? '转写结果'}</h1>
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             {video ? <PlatformBadge platform={video.platform} /> : null}
+            {transcriptSource?.startsWith('subtitle') ? (
+              <Badge variant="secondary" data-testid="source-badge" className="font-normal">
+                来源：B站字幕
+              </Badge>
+            ) : null}
             {video ? <span>{formatDuration(video.duration)}</span> : null}
             <span>共 {transcript.length} 段</span>
           </div>

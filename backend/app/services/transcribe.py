@@ -21,10 +21,18 @@ PROGRESS_ASR_START = 40
 PROGRESS_ASR_SPAN = 55
 
 
-def _finish(task_id: str, transcript: list[dict]) -> None:
+def _finish(task_id: str, transcript: list[dict], source: str) -> None:
     items = [TranscriptItem(time=float(item["time"]), text=str(item["text"]).strip()) for item in transcript if str(item["text"]).strip()]
     plain_text = "".join(item.text for item in items)
-    update_task(task_id, status="completed", stage="asr", progress=100, transcript=items, plain_text=plain_text)
+    update_task(
+        task_id,
+        status="completed",
+        stage="asr",
+        progress=100,
+        transcript=items,
+        plain_text=plain_text,
+        transcript_source=source,
+    )
 
 
 def _fail(task_id: str, exc: Exception) -> None:
@@ -50,16 +58,17 @@ def run_transcription_pipeline(
     """
     work_dir = Path(AUDIO_DIR) / task_id
     try:
-        # 阶段一：字幕快路径（CC / AI 字幕存在则秒级返回）
+        # 阶段一：字幕快路径（分层降级：yt-dlp CC → dm/view AI；秒级返回）
         update_task(task_id, stage="parse_link", progress=PROGRESS_PARSE)
         if prefer_subtitles:
             try:
-                subtitle_items = try_extract_subtitle_transcript(url)
+                subtitle_result = try_extract_subtitle_transcript(url)
             except Exception:
-                subtitle_items = None  # 字幕路径失败不阻断，回退 ASR
-            if subtitle_items:
+                subtitle_result = None  # 字幕路径失败不阻断，回退 ASR
+            if subtitle_result:
+                subtitle_items, subtitle_source = subtitle_result
                 update_task(task_id, stage="asr", progress=PROGRESS_ASR_START)
-                _finish(task_id, subtitle_items)
+                _finish(task_id, subtitle_items, subtitle_source)
                 return
 
         # 阶段二：下载音轨 + FFmpeg 转 16kHz 单声道 WAV
@@ -98,7 +107,7 @@ def run_transcription_pipeline(
         )
         if not transcript:
             raise AppException("TRANSCRIBE_FAILED", "未能识别出语音内容", 500)
-        _finish(task_id, transcript)
+        _finish(task_id, transcript, "asr")
     except Exception as exc:
         _fail(task_id, exc)
     finally:

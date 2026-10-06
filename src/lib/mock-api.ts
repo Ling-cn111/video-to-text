@@ -46,6 +46,8 @@ interface TaskPayload {
   s: number
   /** 注入失败标记 */
   f?: 1
+  /** 文字稿来源标记（E2E 锁定 5 用：字幕来源任务显示来源 Badge） */
+  src?: 'subtitle_cc' | 'subtitle_ai'
   /** 真实解析透传的元数据（M1.5 混合模式：解析真实、转写 Mock） */
   m?: { t: string; c: string; d: number }
 }
@@ -174,7 +176,7 @@ export async function getTask(taskId: string): Promise<GetTaskResponse> {
   }
 
   const state = computeTaskState(payload)
-  const base = { taskId, video: getVideoInfo(payload), ...state }
+  const base = { taskId, video: getVideoInfo(payload), ...state, transcriptSource: payload.src }
 
   if (state.status === 'failed') {
     return { ...base, error: { code: 'TRANSCRIBE_FAILED', message: '语音识别失败，请重试' } }
