@@ -3,6 +3,7 @@ import { api, ApiError, type ClientErrorCode } from '@/lib/api'
 import type {
   Summary,
   TaskStage,
+  TranscribeEngine,
   TranscriptItem,
   VideoInfo,
 } from '@/lib/types'
@@ -32,6 +33,8 @@ interface TaskState {
   plainText: string | null
   summary: Summary | null
   error: UiError | null
+  /** 转写引擎手动选择（首页设置；用户偏好，跨任务保留，不随 reset 清空） */
+  engine: TranscribeEngine
 
   /** 首页提交链接：解析 + 创建转写任务。成功返回 taskId（供路由跳转），失败返回 null。 */
   submitUrl: (url: string) => Promise<string | null>
@@ -41,6 +44,8 @@ interface TaskState {
   recover: (taskId: string) => Promise<void>
   /** 失败后重试：用已解析的视频重新创建任务 */
   retry: () => Promise<string | null>
+  /** 首页切换转写模式 */
+  setEngine: (engine: TranscribeEngine) => void
   reset: () => void
 }
 
@@ -69,13 +74,14 @@ function toAppError(error: unknown): UiError {
 
 export const useTaskStore = create<TaskState>((set, get) => ({
   ...IDLE,
+  engine: 'local',
 
   submitUrl: async (url) => {
     set({ ...IDLE, phase: 'parsing' })
     try {
       const video = await api.parseVideo(url)
       set({ video, sourceUrl: url })
-      const task = await api.startTranscription(video.videoId, video, url)
+      const task = await api.startTranscription(video.videoId, video, url, get().engine)
       set({ taskId: task.taskId, stage: task.stage, progress: task.progress, phase: 'transcribing' })
       return task.taskId
     } catch (error) {
@@ -144,7 +150,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (!video) return null
     set({ phase: 'parsing', error: null, stage: null, progress: 0 })
     try {
-      const task = await api.startTranscription(video.videoId, video, sourceUrl ?? undefined)
+      // 重试沿用提交时的转写模式（engine 为用户偏好，跨任务保留）
+      const task = await api.startTranscription(video.videoId, video, sourceUrl ?? undefined, get().engine)
       set({ taskId: task.taskId, stage: task.stage, progress: task.progress, phase: 'transcribing' })
       return task.taskId
     } catch (error) {
@@ -153,7 +160,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
-  reset: () => set({ ...IDLE }),
+  setEngine: (engine) => set({ engine }),
+
+  reset: () => set({ ...IDLE }),  // 不清 engine：模式选择是用户偏好，跨任务保留
 }))
 
 /** 非组件场景读取状态（如导出前校验） */

@@ -24,13 +24,14 @@ class TranscribeTask:
     transcript: list[TranscriptItem] = field(default_factory=list)
     plain_text: str | None = None
     error: dict | None = None  # { code, message }
+    engine: str | None = None  # 本次任务的 ASR 引擎（local | cloud | 引擎名），重试沿用
     created_at: float = field(default_factory=time.time)
 
 
-def create_task(video: VideoInfo | None) -> str:
+def create_task(video: VideoInfo | None, engine: str | None = None) -> str:
     task_id = uuid.uuid4().hex
     with _LOCK:
-        _TASKS[task_id] = TranscribeTask(task_id=task_id, video=video)
+        _TASKS[task_id] = TranscribeTask(task_id=task_id, video=video, engine=engine)
     return task_id
 
 

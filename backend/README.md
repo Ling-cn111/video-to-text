@@ -2,7 +2,7 @@
 
 已实现：
 - `POST /api/parse`：yt-dlp 解析 B站视频链接 → `{ title, cover, duration, platform, videoId }`
-- `POST /api/transcribe`：创建转写任务（BackgroundTasks 异步执行）→ `{ taskId, status, progress, stage }`
+- `POST /api/transcribe`：创建转写任务（BackgroundTasks 异步执行）→ `{ taskId, status, progress, stage }`；可选 `engine` 字段手动选择转写引擎（`local` 默认 / `cloud`，见下文云端 ASR 章节）
 - `GET /api/transcribe/{taskId}`：轮询任务 → `{ status, stage, progress, transcript, plainText, video?, error? }`
 
 转写流水线：优先解析 B站 CC 字幕（有则秒级返回）→ 否则 yt-dlp 下载音轨 → FFmpeg 转 16kHz 单声道 WAV →（可选）Demucs 人声分离 → faster-whisper 本地推理（或云端 API）。转写时把**热词 + 视频标题组合为 `initial_prompt`** 传入以引导专有名词识别；输出经轻量后处理（**zhconv 繁→简**、折叠 3 次以上的明显重复词、按语言补齐句末标点）。transcript 格式与前端契约一致：`[{ time, text }]`。
@@ -52,13 +52,47 @@ pnpm dev                        # 等价于 npm run dev
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `ASR_ENGINE` | `local` | `local` = faster-whisper 本地推理；`cloud` = OpenAI 兼容接口（兼容旧变量名 `ASR_PROVIDER`）。场景推荐：速度 `base` / 平衡（推荐）`small` / 准确 `medium` 或 `large-v3` / 高精度云端 `cloud` |
+| `ASR_ENGINE` | `local` | 默认引擎：`local` = faster-whisper 本地推理；`cloud` = OpenAI 兼容接口。另有本地引擎 `qwen3` / `funasr`（需 requirements-asr.txt，评测数据见 docs/asr-benchmark.md）。兼容旧变量名 `ASR_PROVIDER` |
+| `ASR_ENGINE_FALLBACK` | `faster-whisper` | 主引擎**运行期**失败时的自动降级引擎（含云端网络/HTTP 故障）；留空禁用 |
 | `WHISPER_MODEL` | `base` | 本地模型：`tiny` / `base` / `small` / `medium` / `large-v3`（越大越准越慢，首次自动下载）。**准确率建议：本地 CPU 用 `small` 或 `medium`；GPU 环境建议 `large-v3`**。CER 实测数据见 docs/asr-benchmark.md |
 | `WHISPER_COMPUTE_TYPE` | `int8` | CPU 推荐 int8 |
-| `ASR_API_BASE` | `https://api.openai.com/v1` | 云端 ASR 地址（OpenAI 兼容） |
-| `ASR_API_KEY` | 空 | 云端模式必填 |
-| `ASR_CLOUD_MODEL` | `whisper-1` | 云端模型名 |
+| `CLOUD_ASR_BASE_URL` | `https://api.siliconflow.cn/v1` | 云端 ASR 服务地址（OpenAI 兼容），见下节 |
+| `CLOUD_ASR_API_KEY` | 空 | 云端模式必填，见下节 |
+| `CLOUD_ASR_MODEL` | `whisper-large-v3` | 云端模型名 |
 | `BILI_COOKIE` | 空 | 可选。B站登录 Cookie：浏览器登录 bilibili.com → F12 → Application → Cookies 复制整段（含 SESSDATA）。配置后带 AI 字幕的视频可走字幕快路径秒级返回；未配置时自动降级「下载音频 + ASR」（已验证）。注意有效期与隐私，勿提交到 git |
+
+> 旧变量名 `ASR_API_BASE` / `ASR_API_KEY` / `ASR_CLOUD_MODEL` 仍被兼容读取，新配置请用 `CLOUD_ASR_*`。
+
+## 云端 ASR（手动选择，任务 D）
+
+引擎切换**纯手动**：首页「转写模式」选择 `本地`（默认）/ `云端`，随 `POST /api/transcribe` 的
+`engine` 字段提交（`local` / `cloud`，缺省跟随 `ASR_ENGINE` 环境变量）；
+后端不做任何基于 VAD / 信噪比 / 时长的自动切换。
+
+**默认指向硅基流动，使用云端必须配置 Key**（`backend/.env.local`）：
+
+```bash
+CLOUD_ASR_BASE_URL=https://api.siliconflow.cn/v1
+CLOUD_ASR_API_KEY=sk-xxxx        # 必填，勿提交到 git
+CLOUD_ASR_MODEL=whisper-large-v3
+```
+
+兼容的 OpenAI 协议服务商（按优先级）：
+
+| 服务商 | `CLOUD_ASR_BASE_URL` | 模型示例 |
+| --- | --- | --- |
+| 硅基流动 SiliconFlow | `https://api.siliconflow.cn/v1` | `whisper-large-v3` |
+| OpenRouter | `https://openrouter.ai/api/v1` | 按其模型目录 |
+| OpenAI 直连 | `https://api.openai.com/v1` | `whisper-1` |
+
+行为约定：
+
+- **未配置 `CLOUD_ASR_API_KEY` 时，前端选择云端在提交即报 400 `CLOUD_NOT_CONFIGURED`**
+  （明确中文提示「请先在后端设置 CLOUD_ASR_API_KEY…或使用本地模式」），不会静默创建任务、也不会静默降级。
+- 云端**运行期**故障（网络 / HTTP 错误）按 `ASR_ENGINE_FALLBACK`（默认 `faster-whisper`）自动降级本地，任务不失败。
+- 服务地址在每次请求前经 url_guard 校验：仅允许公网 http/https（拒绝 localhost / 环回 / 私有 / 保留地址）。
+- **隐私提示**：云端模式会把下载的音频上传至所配置的第三方服务商处理，前端首页选择云端时已明确提示用户。
+- 通义听悟 / 火山引擎等非 OpenAI 协议暂不支持：按 `services/asr.py` 的 `BaseASREngine` 接口新增引擎类即可（预留扩展点）。
 
 ## 测试
 

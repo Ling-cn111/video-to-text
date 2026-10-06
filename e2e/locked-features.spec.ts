@@ -75,4 +75,21 @@ test.describe("前端功能锁定协议", () => {
     expect(content).toContain("> 来源："); // 引用元信息
     expect(content).not.toMatch(TIMESTAMP_PATTERN); // 零时间戳
   });
+
+  test("锁定 4：首页转写模式默认本地，选云端出现隐私提示，Mock 模式附无实际效果小字", async ({ page }) => {
+    await page.goto("/");
+
+    const mode = page.getByTestId("transcribe-mode");
+    await expect(mode).toBeVisible();
+    // 默认选中「本地」（锁定默认值）
+    await expect(page.getByRole("button", { name: "本地" })).toHaveAttribute("aria-pressed", "true");
+    // 未选云端时不出现隐私提示；Mock 模式的小字提示始终存在
+    await expect(page.getByTestId("cloud-privacy-notice")).toHaveCount(0);
+    await expect(page.getByTestId("mock-no-effect-hint")).toContainText("无实际效果");
+
+    // 切换云端：选中态生效且隐私提示必须出现（锁定项）
+    await page.getByRole("button", { name: "云端" }).click();
+    await expect(page.getByRole("button", { name: "云端" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("cloud-privacy-notice")).toContainText("上传至第三方");
+  });
 });

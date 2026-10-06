@@ -12,6 +12,12 @@ export type Platform = 'bilibili' | 'douyin'
 /** 任务来源：链接解析或本地文件（本地文件在 M3 落地，见 docs/ROADMAP.md） */
 export type TaskSource = 'url' | 'file'
 
+/**
+ * 转写引擎手动选择：local（本地 faster-whisper，默认）/ cloud（云端 OpenAI 兼容接口）。
+ * 纯手动选择，无自动切换；云端运行期故障由后端 ASR_ENGINE_FALLBACK 降级本地。
+ */
+export type TranscribeEngine = 'local' | 'cloud'
+
 export interface VideoInfo {
   title: string
   /** 封面图 URL（Demo 为本地占位图） */
@@ -74,6 +80,8 @@ export interface StartTaskRequest {
    * 转写/总结仍为 Mock；带上该字段可让进度页/结果页展示真实标题、封面、时长。
    */
   video?: VideoInfo
+  /** 可选转写引擎手动选择，缺省跟随后端 ASR_ENGINE 环境变量 */
+  engine?: TranscribeEngine
 }
 
 export interface StartTaskResponse {
@@ -110,6 +118,7 @@ export type ApiErrorCode =
   | 'UNSUPPORTED_PLATFORM'
   | 'INVALID_TASK'
   | 'TRANSCRIBE_FAILED'
+  | 'CLOUD_NOT_CONFIGURED'
   | 'FILE_TOO_LARGE'
   | 'FILE_FORMAT_UNSUPPORTED'
   | 'INTERNAL_ERROR'

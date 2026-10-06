@@ -210,7 +210,7 @@ def test_transcribe_audio_falls_back_when_primary_fails(monkeypatch):
         def transcribe(self, *args, **kwargs):
             return [{"time": 0.0, "text": "降级成功"}]
 
-    monkeypatch.setattr(asr_mod, "get_engine", lambda: FailingEngine())
+    monkeypatch.setattr(asr_mod, "get_engine", lambda name=None: FailingEngine())
     monkeypatch.setattr(asr_mod, "ASR_ENGINE_FALLBACK", "faster-whisper")
     monkeypatch.setattr(asr_mod, "build_engine", lambda name: OkEngine())
 
@@ -233,7 +233,7 @@ def test_transcribe_audio_raises_primary_error_when_fallback_fails(monkeypatch):
         def transcribe(self, *args, **kwargs):
             raise RuntimeError("fallback boom")
 
-    monkeypatch.setattr(asr_mod, "get_engine", lambda: FailingEngine())
+    monkeypatch.setattr(asr_mod, "get_engine", lambda name=None: FailingEngine())
     monkeypatch.setattr(asr_mod, "ASR_ENGINE_FALLBACK", "faster-whisper")
     monkeypatch.setattr(asr_mod, "build_engine", lambda name: AlsoFailing())
 
@@ -251,7 +251,7 @@ def test_transcribe_audio_no_fallback_configured(monkeypatch):
         def transcribe(self, *args, **kwargs):
             raise RuntimeError("qwen3 boom")
 
-    monkeypatch.setattr(asr_mod, "get_engine", lambda: FailingEngine())
+    monkeypatch.setattr(asr_mod, "get_engine", lambda name=None: FailingEngine())
     monkeypatch.setattr(asr_mod, "ASR_ENGINE_FALLBACK", "")
 
     with pytest.raises(RuntimeError, match="qwen3 boom"):
