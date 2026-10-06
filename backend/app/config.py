@@ -59,7 +59,10 @@ ENABLE_VOCAL_SEPARATION: bool = os.getenv("ENABLE_VOCAL_SEPARATION", "false").lo
 VOCAL_SEP_TRIGGER_RATIO: float = float(os.getenv("VOCAL_SEP_TRIGGER_RATIO", "0.4"))
 WHISPER_COMPUTE_TYPE: str = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 
-# 云端 ASR（OpenAI 兼容协议）；未配置 ASR_API_KEY 时云端模式报友好错误
-ASR_API_BASE: str = os.getenv("ASR_API_BASE", "https://api.openai.com/v1")
-ASR_API_KEY: str = os.getenv("ASR_API_KEY", "")
-ASR_CLOUD_MODEL: str = os.getenv("ASR_CLOUD_MODEL", "whisper-1")
+# ---- 云端 ASR（OpenAI 兼容协议，手动选择，无自动切换）----
+# 默认指向硅基流动；使用云端模式必须配置 CLOUD_ASR_API_KEY，
+# 未配置时前端选择云端会直接报「云端转写未配置」错误（不会静默降级）。
+# 兼容旧变量名 ASR_API_BASE / ASR_API_KEY / ASR_CLOUD_MODEL。
+CLOUD_ASR_BASE_URL: str = os.getenv("CLOUD_ASR_BASE_URL", os.getenv("ASR_API_BASE", "https://api.siliconflow.cn/v1"))
+CLOUD_ASR_API_KEY: str = os.getenv("CLOUD_ASR_API_KEY", os.getenv("ASR_API_KEY", ""))
+CLOUD_ASR_MODEL: str = os.getenv("CLOUD_ASR_MODEL", os.getenv("ASR_CLOUD_MODEL", "whisper-large-v3"))

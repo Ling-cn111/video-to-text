@@ -6,13 +6,14 @@
   自定义 PyAV 解码（绕开新版 PyAV 的 av.open(metadata_errors=...) 不兼容）；
   Silero VAD 过滤纯音乐时自动去 VAD 重试
 - CloudASREngine：OpenAI 兼容 /audio/transcriptions（verbose_json 分段时间戳）；
-  ASR_API_KEY 未配置时报友好错误。通义听悟 / 火山引擎等非 OpenAI 协议的厂商
-  可按同一接口新增引擎类
+  CLOUD_ASR_API_KEY 未配置时报友好错误；请求前经 url_guard 校验服务地址（仅公网 http/https）。
+  通义听悟 / 火山引擎等非 OpenAI 协议的厂商可按同一接口新增引擎类（扩展点，暂不实现）
 - Qwen3ASREngine：Qwen3-ASR-1.7B（qwen-asr 包）+ ForcedAligner-0.6B 时间戳；
   context 注入热词；官方支持 Songs with BGM（针对 faster-whisper 强 BGM 幻觉）
 - FunASRNanoEngine：Fun-ASR-Nano-2512（funasr 包，0.8B 级 CPU 友好，无时间戳输出）
 - ASR_ENGINE=faster-whisper|qwen3|funasr|cloud 切换（兼容旧值 local；旧变量名 ASR_PROVIDER）
-- ASR_ENGINE_FALLBACK：主引擎失败自动降级（默认 faster-whisper，留空禁用）
+- 引擎切换完全手动（环境变量 / 请求 engine 字段），不做基于 VAD / 信噪比的自动判断；
+  ASR_ENGINE_FALLBACK：主引擎失败自动降级（默认 faster-whisper，留空禁用）
 - 输出统一过 postprocess_items：zhconv 繁→简、折叠明显重复词、按语言补句末标点
 - initial_prompt：热词（hotwords）+ 视频标题组合，引导专有名词识别
 """
@@ -23,15 +24,16 @@ import httpx
 import zhconv
 
 from app.config import (
-    ASR_API_BASE,
-    ASR_API_KEY,
-    ASR_CLOUD_MODEL,
     ASR_ENGINE,
     ASR_ENGINE_FALLBACK,
+    CLOUD_ASR_API_KEY,
+    CLOUD_ASR_BASE_URL,
+    CLOUD_ASR_MODEL,
     WHISPER_COMPUTE_TYPE,
     WHISPER_MODEL,
 )
-from app.errors import ParseFailedError
+from app.errors import InvalidUrlError, ParseFailedError
+from app.url_guard import validate_public_http_url
 
 ProgressCallback = None | object  # callable(ratio: float)
 
@@ -151,7 +153,11 @@ class LocalWhisperEngine(BaseASREngine):
 
 
 class CloudASREngine(BaseASREngine):
-    """OpenAI 兼容云端转写引擎（verbose_json 带分段时间戳）。"""
+    """OpenAI 兼容云端转写引擎（verbose_json 带分段时间戳）。
+
+    服务地址 / Key / 模型由 CLOUD_ASR_* 配置（默认硅基流动）；
+    请求前校验服务地址为公网 http/https（url_guard），未配置 Key 报友好中文错误。
+    """
 
     name = "cloud"
 
@@ -163,13 +169,22 @@ class CloudASREngine(BaseASREngine):
         initial_prompt: str | None = None,
         hotwords: list[str] | None = None,
     ) -> list[dict]:
-        if not ASR_API_KEY:
-            raise ParseFailedError("云端语音识别未配置：请设置 ASR_API_KEY 环境变量")
+        if not CLOUD_ASR_API_KEY:
+            raise ParseFailedError(
+                "云端语音识别未配置：请先在后端设置 CLOUD_ASR_API_KEY 环境变量（默认指向硅基流动），"
+                "或在首页选择本地模式"
+            )
+        try:
+            validate_public_http_url(CLOUD_ASR_BASE_URL)
+        except InvalidUrlError as exc:
+            raise ParseFailedError(
+                f"云端语音识别服务地址不可用：请检查 CLOUD_ASR_BASE_URL（{exc.message}）"
+            ) from exc
 
         prompt = build_initial_prompt(initial_prompt, hotwords)
         audio_bytes = audio_path.read_bytes()
         data: dict = {
-            "model": ASR_CLOUD_MODEL,
+            "model": CLOUD_ASR_MODEL,
             "response_format": "verbose_json",
             "language": language,
         }
@@ -177,8 +192,8 @@ class CloudASREngine(BaseASREngine):
             data["prompt"] = prompt
         try:
             response = httpx.post(
-                f"{ASR_API_BASE.rstrip('/')}/audio/transcriptions",
-                headers={"Authorization": f"Bearer {ASR_API_KEY}"},
+                f"{CLOUD_ASR_BASE_URL.rstrip('/')}/audio/transcriptions",
+                headers={"Authorization": f"Bearer {CLOUD_ASR_API_KEY}"},
                 files={"file": (audio_path.name, audio_bytes)},
                 data=data,
                 timeout=600,
@@ -330,7 +345,7 @@ class FunASRNanoEngine(BaseASREngine):
         return postprocess_items([{"time": 0.0, "text": text}])
 
 
-_ENGINE: BaseASREngine | None = None
+_ENGINES: dict[str, BaseASREngine] = {}
 _ENGINE_LOCK = threading.Lock()
 
 _ENGINE_BUILDERS = {
@@ -349,13 +364,18 @@ def build_engine(name: str) -> BaseASREngine:
     return builder()
 
 
-def get_engine() -> BaseASREngine:
-    """按 ASR_ENGINE 返回引擎单例；新增引擎时在 _ENGINE_BUILDERS 注册。"""
-    global _ENGINE
+def get_engine(name: str | None = None) -> BaseASREngine:
+    """按名字返回引擎缓存实例（缺省用 ASR_ENGINE）；新增引擎时在 _ENGINE_BUILDERS 注册。
+
+    按名缓存避免请求级切换时重复加载本地模型；引擎实例需无状态或自带线程安全。
+    """
+    key = (name or ASR_ENGINE).strip()
     with _ENGINE_LOCK:
-        if _ENGINE is None:
-            _ENGINE = build_engine(ASR_ENGINE)
-    return _ENGINE
+        engine = _ENGINES.get(key)
+        if engine is None:
+            engine = build_engine(key)
+            _ENGINES[key] = engine
+    return engine
 
 
 def transcribe_audio(
@@ -364,9 +384,11 @@ def transcribe_audio(
     progress_callback: ProgressCallback = None,
     initial_prompt: str | None = None,
     hotwords: list[str] | None = None,
+    engine: str | None = None,
 ) -> list[dict]:
-    """业务入口：主引擎失败时按 ASR_ENGINE_FALLBACK 自动降级（配置留空禁用）。"""
-    primary = get_engine()
+    """业务入口。engine 为请求级手动选择（前端 local|cloud），缺省跟随 ASR_ENGINE；
+    主引擎失败时按 ASR_ENGINE_FALLBACK 自动降级（配置留空禁用）。"""
+    primary = get_engine(engine)
     try:
         return primary.transcribe(audio_path, language, progress_callback, initial_prompt, hotwords)
     except Exception as exc:

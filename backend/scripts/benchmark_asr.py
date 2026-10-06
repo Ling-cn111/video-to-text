@@ -121,7 +121,7 @@ def main() -> None:
     parser.add_argument("--models", nargs="+", default=["base", "small", "medium"])
     parser.add_argument(
         "--engine", default="faster-whisper",
-        help="faster-whisper（配合 --models 选规格）| qwen3 | funasr",
+        help="faster-whisper（配合 --models 选规格）| qwen3 | funasr | cloud（OpenAI 兼容，CLOUD_ASR_* 配置）",
     )
     parser.add_argument("--seconds", type=int, default=150, help="评测音频时长（秒），与参考稿对齐")
     parser.add_argument("--cases", default=str(BENCHMARK_DIR / "cases.json"))
@@ -130,20 +130,23 @@ def main() -> None:
         "--separate", action="store_true",
         help="转写前先做 Demucs 人声分离（需 backend/requirements-separation.txt），对比分离前后 CER",
     )
+    parser.add_argument(
+        "--cloud-price-per-hour", type=float, default=0.0,
+        help="云端服务每小时音频单价（货币单位与计费方一致），用于成本估算列；本地引擎恒为 0",
+    )
     args = parser.parse_args()
 
     cases = json.loads(Path(args.cases).read_text(encoding="utf-8"))["cases"]
     results: list[dict] = []
     separate_seconds_by_video: dict[str, float] = {}
 
-    def build_engine_for_run(model: str):
-        if args.engine == "faster-whisper":
-            return LocalWhisperEngine(model_size=model)
-        return build_engine(args.engine)
+    # faster-whisper 按 --models 逐规格跑；其余引擎（qwen3/funasr/cloud）单次跑，--models 忽略
+    if args.engine == "faster-whisper":
+        runs = [(f"faster-whisper {model}", LocalWhisperEngine(model_size=model)) for model in args.models]
+    else:
+        runs = [(args.engine, build_engine(args.engine))]
 
-    for model in args.models:
-        engine = build_engine_for_run(model)
-        engine_label = f"{args.engine} {model}".strip()
+    for engine_label, engine in runs:
         print(f"\n===== {engine_label} =====", flush=True)
 
         for case in cases:
@@ -175,6 +178,7 @@ def main() -> None:
 
             hypothesis = "".join(item["text"] for item in items)
             score = cer(reference, hypothesis)
+            cost = round(args.cloud_price_per_hour * args.seconds / 3600, 4) if args.engine == "cloud" else 0.0
             row = {
                 "model": engine_label + ("+Demucs" if args.separate else ""),
                 "video_id": case["videoId"],
@@ -184,13 +188,15 @@ def main() -> None:
                 "separate_seconds": separate_seconds_by_video.get(case["videoId"], 0.0),
                 "audio_seconds": args.seconds,
                 "memory_mb": mem.peak_mb,
+                "cost": cost,
                 "ref_chars": len(normalize_text(reference)),
                 "hyp_chars": len(normalize_text(hypothesis)),
             }
             results.append(row)
+            cost_note = f" 成本={cost}" if args.engine == "cloud" else ""
             print(
-                f"[{model} / {case['category']}] CER={score:.2%} 耗时={elapsed:.1f}s "
-                f"内存峰值={mem.peak_mb}MB",
+                f"[{engine_label} / {case['category']}] CER={score:.2%} 耗时={elapsed:.1f}s "
+                f"内存峰值={mem.peak_mb}MB{cost_note}",
                 flush=True,
             )
 

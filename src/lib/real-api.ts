@@ -1,5 +1,5 @@
 import { JSON_HEADERS, toJson, throwNetworkError, type ApiClient } from '@/lib/http'
-import type { GetTaskResponse, StartTaskResponse, Summary, VideoInfo } from '@/lib/types'
+import type { GetTaskResponse, StartTaskResponse, Summary, TranscribeEngine, VideoInfo } from '@/lib/types'
 
 /**
  * 真实后端客户端（FastAPI + yt-dlp + faster-whisper，代码见 backend/）。
@@ -20,12 +20,17 @@ export const realApi: ApiClient = {
       ),
     ),
 
-  startTranscription: (videoId: string, video?: VideoInfo, url?: string): Promise<StartTaskResponse> =>
+  startTranscription: (
+    videoId: string,
+    video?: VideoInfo,
+    url?: string,
+    engine?: TranscribeEngine,
+  ): Promise<StartTaskResponse> =>
     toJson(
       fetch('/backend-api/transcribe', {
         method: 'POST',
         headers: JSON_HEADERS,
-        body: JSON.stringify({ videoId, video, url }),
+        body: JSON.stringify({ videoId, video, url, engine }),
       }).catch(throwNetworkError),
     ),
 

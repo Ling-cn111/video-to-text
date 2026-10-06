@@ -6,6 +6,8 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { UrlForm } from '@/components/home/url-form'
 import { ExampleLinks } from '@/components/home/example-links'
+import { TranscribeMode } from '@/components/home/transcribe-mode'
+import { useTaskStore } from '@/stores/task-store'
 
 const FEATURES = [
   { icon: Link2, title: '粘贴链接', description: '支持 B站 / 抖音视频链接，无需下载视频文件' },
@@ -17,6 +19,8 @@ const FEATURES = [
 export function HomeView() {
   const [url, setUrl] = useState('')
   const inputRef = useRef<HTMLDivElement>(null)
+  const engine = useTaskStore((s) => s.engine)
+  const setEngine = useTaskStore((s) => s.setEngine)
 
   const pickExample = (exampleUrl: string) => {
     setUrl(exampleUrl)
@@ -44,6 +48,7 @@ export function HomeView() {
         <div ref={inputRef}>
           <UrlForm url={url} onUrlChange={setUrl} />
         </div>
+        <TranscribeMode value={engine} onChange={setEngine} />
         <ExampleLinks onPick={pickExample} />
       </section>
 

@@ -1,4 +1,6 @@
 """Pydantic 契约模型：与前端 src/lib/types.ts 保持一致（camelCase 字段）。"""
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -29,12 +31,15 @@ class StartTranscribeRequest(BaseModel):
     - videoId 必填；url 缺省时由 videoId 按平台规则重建
     - video 为解析阶段透传的元数据（供前端刷新恢复展示）
     - hotwords 为可选热词（专有名词列表，经 initial_prompt 引导 ASR 识别）
+    - engine 为可选转写引擎手动选择：local（本地 faster-whisper）/ cloud（云端 OpenAI 兼容）；
+      缺省跟随后端 ASR_ENGINE 环境变量。纯手动选择，无自动切换
     """
 
     videoId: str
     url: str | None = None
     video: VideoInfo | None = None
     hotwords: list[str] | None = None
+    engine: Literal["local", "cloud"] | None = None
 
 
 class StartTaskResponse(BaseModel):

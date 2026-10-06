@@ -41,8 +41,13 @@ def run_transcription_pipeline(
     video: VideoInfo | None = None,
     prefer_subtitles: bool = True,
     hotwords: list[str] | None = None,
+    engine: str | None = None,
 ) -> None:
-    """后台转写主流程。任何异常都收敛为任务 failed + 友好信息。"""
+    """后台转写主流程。任何异常都收敛为任务 failed + 友好信息。
+
+    engine 为请求级手动选择（local | cloud，缺省跟随 ASR_ENGINE）；
+    云端运行期故障由 asr.transcribe_audio 内的 ASR_ENGINE_FALLBACK 降级本地。
+    """
     work_dir = Path(AUDIO_DIR) / task_id
     try:
         # 阶段一：字幕快路径（CC / AI 字幕存在则秒级返回）
@@ -89,6 +94,7 @@ def run_transcription_pipeline(
             progress_callback=on_asr_progress,
             initial_prompt=initial_prompt,
             hotwords=hotwords,
+            engine=engine,
         )
         if not transcript:
             raise AppException("TRANSCRIBE_FAILED", "未能识别出语音内容", 500)

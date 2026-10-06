@@ -1,4 +1,12 @@
-import type { ApiErrorCode, ApiErrorBody, GetTaskResponse, StartTaskResponse, Summary, VideoInfo } from '@/lib/types'
+import type {
+  ApiErrorCode,
+  ApiErrorBody,
+  GetTaskResponse,
+  StartTaskResponse,
+  Summary,
+  TranscribeEngine,
+  VideoInfo,
+} from '@/lib/types'
 
 /**
  * HTTP 客户端共享类型与错误解析。
@@ -10,7 +18,12 @@ import type { ApiErrorCode, ApiErrorBody, GetTaskResponse, StartTaskResponse, Su
 /** 客户端 API 形状契约：mock 与 real 实现均满足此接口 */
 export interface ApiClient {
   parseVideo: (url: string) => Promise<VideoInfo>
-  startTranscription: (videoId: string, video?: VideoInfo, url?: string) => Promise<StartTaskResponse>
+  startTranscription: (
+    videoId: string,
+    video?: VideoInfo,
+    url?: string,
+    engine?: TranscribeEngine,
+  ) => Promise<StartTaskResponse>
   getTask: (taskId: string) => Promise<GetTaskResponse>
   summarize: (taskId: string) => Promise<Summary>
 }

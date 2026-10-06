@@ -1,7 +1,8 @@
 """转写路由：POST 创建任务（BackgroundTasks 异步执行）+ GET 轮询详情。"""
 from fastapi import APIRouter, BackgroundTasks
 
-from app.errors import InvalidUrlError, TaskNotFoundError, UnsupportedPlatformError
+from app.config import ASR_ENGINE, CLOUD_ASR_API_KEY
+from app.errors import CloudNotConfiguredError, InvalidUrlError, TaskNotFoundError, UnsupportedPlatformError
 from app.platforms import detect_platform
 from app.schemas import StartTaskResponse, StartTranscribeRequest, TaskDetailResponse
 from app.services.tasks import create_task, get_task
@@ -12,6 +13,18 @@ router = APIRouter()
 
 # 平台 → 视频页 URL 模板（videoId 重建链接用）
 _URL_TEMPLATES = {"bilibili": "https://www.bilibili.com/video/{videoId}"}
+
+
+def _resolve_engine(payload: StartTranscribeRequest) -> str:
+    """解析本次任务的 ASR 引擎：请求字段优先，缺省跟随后端 ASR_ENGINE 环境变量。
+
+    云端模式在提交时预检 Key：未配置直接报 CLOUD_NOT_CONFIGURED（明确中文提示），
+    不创建任务、不静默降级；运行期云端故障仍由 ASR_ENGINE_FALLBACK 降级本地。
+    """
+    engine = payload.engine or ASR_ENGINE
+    if engine == "cloud" and not CLOUD_ASR_API_KEY:
+        raise CloudNotConfiguredError()
+    return engine
 
 
 def _resolve_target_url(payload: StartTranscribeRequest) -> str:
@@ -40,9 +53,10 @@ def _resolve_target_url(payload: StartTranscribeRequest) -> str:
 @router.post("/api/transcribe", response_model=StartTaskResponse)
 def create_transcription(payload: StartTranscribeRequest, background_tasks: BackgroundTasks) -> StartTaskResponse:
     url = _resolve_target_url(payload)
-    task_id = create_task(payload.video)
+    engine = _resolve_engine(payload)
+    task_id = create_task(payload.video, engine)
     background_tasks.add_task(
-        run_transcription_pipeline, task_id, url, payload.video, True, payload.hotwords
+        run_transcription_pipeline, task_id, url, payload.video, True, payload.hotwords, engine
     )
     return StartTaskResponse(taskId=task_id, status="processing", stage="parse_link", progress=0)
 
