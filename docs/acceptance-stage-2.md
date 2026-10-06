@@ -117,7 +117,7 @@
 | 1 | AI 总结仍为 Mock（`/api/summarize` 为前端同域 Route Handler） | 范围外 | 阶段三接真实 LLM |
 | 2 | B站 AI 字幕需 `BILI_COOKIE`，未实现读取逻辑（仅文档预留） | 边界 | 后续实现 yt-dlp cookie 透传后端到端补验字幕快路径 |
 | 3 | 任务注册表为进程内存：重启后任务丢失（前端刷新会提示任务不存在并可重试） | 边界 | 多 worker 部署前换 Redis |
-| 4 | ~~whisper base 模型对专业词汇/英文歌词有识别误差~~ | **已修复 + 量化验证**（PR：fix/stage2-accuracy-and-ui → fix/asr-accuracy） | 第一轮：`initial_prompt`（标题）注入、轻量文本后处理（重复词折叠/按语言补标点）、模型建议文档化。第二轮（CER 专项）：建立可量化基准（3 视频 × 4 模型，docs/asr-benchmark.md），**默认模型 base → small**（平均 CER 55.72% → 40.39%；清晰口播类 16.20% → 6.29%，降幅 61%）；zhconv 繁→简；热词 `hotwords` 经 initial_prompt 注入（实测 MV 转写从中译变为英文原文）；ASREngine 抽象 + CloudASREngine（`ASR_ENGINE=cloud`）作为强 BGM 音频兜底（实测：讲解类视频本地模型 CER 86-96% 全崩，仅 large-v3/云端可用）。遗留：参考稿为 large-v3 生成（非人工），绝对 CER 待人工修订参考稿后成立 |
+| 4 | ~~whisper base 模型对专业词汇/英文歌词有识别误差~~ | **已修复 + 量化验证 + 引擎横向对比**（PR：fix/stage2-accuracy-and-ui → fix/asr-accuracy → fix/asr-engine-swap） | 第一轮：`initial_prompt`（标题）注入、轻量文本后处理、模型建议文档化。第二轮（CER 专项）：建立可量化基准（3 视频 × 4 模型，docs/asr-benchmark.md），**默认模型 base → small**（平均 CER 55.72% → 40.39%；清晰口播类 16.20% → 6.29%，降幅 61%）；zhconv 繁→简；热词 `hotwords` 经 initial_prompt 注入；ASREngine 抽象 + CloudASREngine（`ASR_ENGINE=cloud`）作为强 BGM 音频兜底。第三轮（引擎横向对比）：Qwen3-ASR-1.7B 平均 48.93%（教程类 5.35% 最优，但 CPU 耗时 10-18 倍）；Fun-ASR-Nano 幻觉严重不可用（平均 90.33%）；Demucs 人声分离对幻觉型场景无效（85.25%）——**最终结论：默认保持 faster-whisper small（40.39%），强 BGM 场景的唯一可靠解是云端 ASR 或 GPU + large-v3**。遗留：参考稿为 large-v3 生成（非人工），绝对 CER 待人工修订参考稿后成立 |
 | 5 | B站搜索接口限流（HTTP 412）导致自动化找片不稳定 | 边界 | 与转写功能无关；测试视频已固定 |
 
 ## 七、验收命令复现

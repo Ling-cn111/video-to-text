@@ -25,9 +25,18 @@ EXTRACT_TIMEOUT_SECONDS: int = int(os.getenv("EXTRACT_TIMEOUT_SECONDS", "30"))
 # 音频工作目录（下载 + 转换的临时文件，任务结束自动清理）
 AUDIO_DIR = os.getenv("AUDIO_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), ".audio"))
 
-# ASR 引擎：local（faster-whisper 本地推理）| cloud（OpenAI 兼容 /audio/transcriptions）
-# 兼容旧变量名 ASR_PROVIDER
-ASR_ENGINE: str = os.getenv("ASR_ENGINE", os.getenv("ASR_PROVIDER", "local"))
+# ASR 引擎：faster-whisper（本地，默认）| qwen3（Qwen3-ASR-1.7B 本地）| funasr（Fun-ASR-Nano 本地）
+# | cloud（OpenAI 兼容接口）。兼容旧值：local = faster-whisper、旧变量名 ASR_PROVIDER
+# 场景推荐：
+#   追求速度     → faster-whisper + WHISPER_MODEL=base
+#   平衡         → faster-whisper + WHISPER_MODEL=small
+#   强 BGM/唱歌  → qwen3（Qwen3-ASR 官方支持 Songs with BGM，实测幻觉显著更低）
+#   追求准确     → qwen3 或 large-v3（GPU）
+#   高精度云端   → ASR_ENGINE=cloud
+ASR_ENGINE: str = os.getenv("ASR_ENGINE", os.getenv("ASR_PROVIDER", "faster-whisper"))
+
+# 主引擎失败时的自动降级引擎（qwen3/funasr 等新引擎失败时回退 faster-whisper；留空禁用）
+ASR_ENGINE_FALLBACK: str = os.getenv("ASR_ENGINE_FALLBACK", "faster-whisper")
 
 # 本地模型：base（默认，下载约 140MB）/ small / tiny …
 # 本地模型：默认 small（CER 评测后的本地最优平衡点，见 docs/asr-benchmark.md）；

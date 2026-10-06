@@ -1,0 +1,4 @@
+﻿model,video_id,category,cer,transcribe_seconds,separate_seconds,audio_seconds,memory_mb,ref_chars,hyp_chars
+funasr funasr-nano,BV1gCYc6BEPv,科普,0.7565,69.9,0.0,150,6869.0,345,161
+funasr funasr-nano,BV1S6aB63Er7,讲解,0.9696,75.5,0.0,150,5131.6,461,402
+funasr funasr-nano,BV1C9aB6aE5f,教程,0.9839,75.8,0.0,150,5526.6,747,775

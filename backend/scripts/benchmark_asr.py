@@ -29,7 +29,7 @@ import cn2an  # noqa: E402
 import psutil  # noqa: E402
 import zhconv  # noqa: E402
 
-from app.services.asr import LocalWhisperEngine  # noqa: E402
+from app.services.asr import LocalWhisperEngine, build_engine  # noqa: E402
 from app.services.audio import download_audio  # noqa: E402
 from app.services import separation  # noqa: E402
 
@@ -119,6 +119,10 @@ def prepare_audio(url: str, seconds: int, cache_dir: Path) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description="ASR 准确率评测（CER）")
     parser.add_argument("--models", nargs="+", default=["base", "small", "medium"])
+    parser.add_argument(
+        "--engine", default="faster-whisper",
+        help="faster-whisper（配合 --models 选规格）| qwen3 | funasr",
+    )
     parser.add_argument("--seconds", type=int, default=150, help="评测音频时长（秒），与参考稿对齐")
     parser.add_argument("--cases", default=str(BENCHMARK_DIR / "cases.json"))
     parser.add_argument("--output", default=str(BENCHMARK_DIR / "results.csv"))
@@ -132,18 +136,21 @@ def main() -> None:
     results: list[dict] = []
     separate_seconds_by_video: dict[str, float] = {}
 
-    for model in args.models:
-        # 每个模型规格独立构造引擎，避免全局缓存串味
-        from faster_whisper import WhisperModel  # noqa: F401 确认依赖可用
+    def build_engine_for_run(model: str):
+        if args.engine == "faster-whisper":
+            return LocalWhisperEngine(model_size=model)
+        return build_engine(args.engine)
 
-        engine = LocalWhisperEngine(model_size=model)
-        print(f"\n===== 模型 {model} =====", flush=True)
+    for model in args.models:
+        engine = build_engine_for_run(model)
+        engine_label = f"{args.engine} {model}".strip()
+        print(f"\n===== {engine_label} =====", flush=True)
 
         for case in cases:
             reference = load_reference(BENCHMARK_DIR / case["reference"])
             cache_dir = BENCHMARK_DIR.parent.parent / ".audio-bench" / case["videoId"]
 
-            print(f"[{model} / {case['category']}] 下载与截取音频…", flush=True)
+            print(f"[{engine_label} / {case['category']}] 下载与截取音频…", flush=True)
             wav = prepare_audio(case["url"], args.seconds, cache_dir)
 
             if args.separate:
@@ -169,7 +176,7 @@ def main() -> None:
             hypothesis = "".join(item["text"] for item in items)
             score = cer(reference, hypothesis)
             row = {
-                "model": model + ("+Demucs" if args.separate else ""),
+                "model": engine_label + ("+Demucs" if args.separate else ""),
                 "video_id": case["videoId"],
                 "category": case["category"],
                 "cer": round(score, 4),

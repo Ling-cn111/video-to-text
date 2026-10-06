@@ -1,0 +1,13 @@
+# 可选依赖：本地大模型 ASR 引擎（Qwen3-ASR / Fun-ASR-Nano）
+# 安装：pip install -r requirements-asr.txt
+# 说明：
+#   qwen-asr —— Qwen3-ASR 官方推理包（含 ForcedAligner 时间戳），ASR_ENGINE=qwen3 时必需；
+#              首次运行自动下载 Qwen3-ASR-1.7B（约 3.4GB）与 ForcedAligner-0.6B（约 1.2GB）
+#   funasr   —— Fun-ASR-Nano-2512（0.8B 级，CPU RTF≈0.45）推理包，ASR_ENGINE=funasr 时必需；
+#              torchaudio 取 CPU 版（PyPI 默认源会连带拉 CUDA 版 torch，注意加
+#              --extra-index-url https://download.pytorch.org/whl/cpu）
+# 国内网络建议：export HF_ENDPOINT=https://hf-mirror.com（模型下载走镜像）
+qwen-asr>=1.0
+funasr>=1.4
+torchaudio==2.11.0+cpu; platform_system == "Windows"
+kaldi-native-fbank
