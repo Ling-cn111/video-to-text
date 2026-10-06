@@ -71,3 +71,5 @@ class TaskDetailResponse(BaseModel):
     transcript: list[TranscriptItem] = Field(default_factory=list)
     plainText: str | None = None
     error: AppErrorBody | None = None
+    # 文字稿来源：subtitle_cc（B站 CC 字幕）/ subtitle_ai（B站 AI 字幕）/ asr（语音识别）
+    transcriptSource: str | None = None

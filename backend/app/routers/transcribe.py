@@ -75,4 +75,5 @@ def get_transcription(task_id: str) -> TaskDetailResponse:
         transcript=task.transcript,
         plainText=task.plain_text,
         error=task.error,
+        transcriptSource=task.transcript_source,
     )

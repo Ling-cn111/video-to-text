@@ -336,10 +336,10 @@ def test_get_unknown_task_returns_404():
 
 
 def test_pipeline_subtitle_fast_path(monkeypatch):
-    """字幕快路径：注入字幕轨道后任务秒级完成（不下载音频）。"""
+    """字幕快路径：注入字幕轨道后任务秒级完成（不下载音频），来源标记为字幕。"""
     monkeypatch.setattr(
         "app.services.transcribe.try_extract_subtitle_transcript",
-        lambda url: [{"time": 0.5, "text": "你好"}, {"time": 2.0, "text": "世界"}],
+        lambda url: ([{"time": 0.5, "text": "你好"}, {"time": 2.0, "text": "世界"}], "subtitle_cc"),
     )
 
     task_id = create_task(None)
@@ -350,6 +350,7 @@ def test_pipeline_subtitle_fast_path(monkeypatch):
     assert task.progress == 100
     assert [(i.time, i.text) for i in task.transcript] == [(0.5, "你好"), (2.0, "世界")]
     assert task.plain_text == "你好世界"
+    assert task.transcript_source == "subtitle_cc"
 
 
 def test_pipeline_failure_sets_friendly_error(monkeypatch):
@@ -374,10 +375,10 @@ def test_pipeline_failure_sets_friendly_error(monkeypatch):
 
 
 def test_http_subtitle_flow(monkeypatch):
-    """HTTP 层：POST 创建任务 → BackgroundTasks 执行字幕快路径 → GET 拿到文字稿。"""
+    """HTTP 层：POST 创建任务 → BackgroundTasks 执行字幕快路径 → GET 拿到文字稿与来源。"""
     monkeypatch.setattr(
         "app.services.transcribe.try_extract_subtitle_transcript",
-        lambda url: [{"time": 1.0, "text": "接口级字幕"}],
+        lambda url: ([{"time": 1.0, "text": "接口级字幕"}], "subtitle_ai"),
     )
 
     created = client.post("/api/transcribe", json={"videoId": "BV1GJ411x7h7", "video": VIDEO_META})
@@ -392,6 +393,7 @@ def test_http_subtitle_flow(monkeypatch):
     assert data["status"] == "completed"
     assert data["video"]["title"] == "测试视频"  # 元数据透传（刷新恢复用）
     assert data["transcript"] == [{"time": 1.0, "text": "接口级字幕"}]
+    assert data["transcriptSource"] == "subtitle_ai"
     assert data["plainText"] == "接口级字幕"
 
 

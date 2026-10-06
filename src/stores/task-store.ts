@@ -5,6 +5,7 @@ import type {
   TaskStage,
   TranscribeEngine,
   TranscriptItem,
+  TranscriptSource,
   VideoInfo,
 } from '@/lib/types'
 
@@ -35,6 +36,8 @@ interface TaskState {
   error: UiError | null
   /** 转写引擎手动选择（首页设置；用户偏好，跨任务保留，不随 reset 清空） */
   engine: TranscribeEngine
+  /** 文字稿来源（字幕来源任务在结果页显示来源 Badge） */
+  transcriptSource: TranscriptSource | null
 
   /** 首页提交链接：解析 + 创建转写任务。成功返回 taskId（供路由跳转），失败返回 null。 */
   submitUrl: (url: string) => Promise<string | null>
@@ -63,6 +66,7 @@ const IDLE = {
   plainText: null,
   summary: null,
   error: null,
+  transcriptSource: null,
 }
 
 function toAppError(error: unknown): UiError {
@@ -105,7 +109,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         return
       }
       if (task.status === 'completed') {
-        set({ phase: 'summarizing', transcript: task.transcript ?? null, plainText: task.plainText ?? null })
+        set({
+          phase: 'summarizing',
+          transcript: task.transcript ?? null,
+          plainText: task.plainText ?? null,
+          transcriptSource: task.transcriptSource ?? null,
+        })
         const summary = await api.summarize(taskId)
         if (get().taskId !== taskId) return
         set({ phase: 'done', summary })
@@ -137,7 +146,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         set({ phase: 'error', error: { code: 'INVALID_TASK', message: '任务不存在或已过期，请重新解析视频链接' } })
         return
       }
-      set({ phase: 'summarizing', transcript: task.transcript, plainText: task.plainText ?? null })
+      set({ phase: 'summarizing', transcript: task.transcript, plainText: task.plainText ?? null, transcriptSource: task.transcriptSource ?? null })
       const summary = await api.summarize(taskId)
       set({ phase: 'done', summary })
     } catch (error) {

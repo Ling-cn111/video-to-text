@@ -92,4 +92,18 @@ test.describe("前端功能锁定协议", () => {
     await expect(page.getByRole("button", { name: "云端" })).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByTestId("cloud-privacy-notice")).toContainText("上传至第三方");
   });
+
+  test("锁定 5：字幕来源任务显示来源 Badge，ASR 来源任务不显示", async ({ page }) => {
+    // 字幕来源的 Mock 任务（payload 携带 src 标记）
+    const subtitlePayload = { v: "BV1GJ411x7h7", p: "bilibili", s: Date.now() - 11_000, src: "subtitle_ai" };
+    const subtitleTaskId = Buffer.from(JSON.stringify(subtitlePayload)).toString("base64url");
+    await page.goto(`/result/${subtitleTaskId}`);
+    await expect(page.getByTestId("fulltext-article")).toBeVisible();
+    await expect(page.getByTestId("source-badge")).toContainText("来源：B站字幕");
+
+    // 普通（ASR 来源）任务：严禁出现来源 Badge
+    await page.goto(`/result/${mockTaskId()}`);
+    await expect(page.getByTestId("fulltext-article")).toBeVisible();
+    await expect(page.getByTestId("source-badge")).toHaveCount(0);
+  });
 });

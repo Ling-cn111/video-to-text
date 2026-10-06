@@ -5,7 +5,20 @@
 - `POST /api/transcribe`：创建转写任务（BackgroundTasks 异步执行）→ `{ taskId, status, progress, stage }`；可选 `engine` 字段手动选择转写引擎（`local` 默认 / `cloud`，见下文云端 ASR 章节）
 - `GET /api/transcribe/{taskId}`：轮询任务 → `{ status, stage, progress, transcript, plainText, video?, error? }`
 
-转写流水线：优先解析 B站 CC 字幕（有则秒级返回）→ 否则 yt-dlp 下载音轨 → FFmpeg 转 16kHz 单声道 WAV →（可选）Demucs 人声分离 → faster-whisper 本地推理（或云端 API）。转写时把**热词 + 视频标题组合为 `initial_prompt`** 传入以引导专有名词识别；输出经轻量后处理（**zhconv 繁→简**、折叠 3 次以上的明显重复词、按语言补齐句末标点）。transcript 格式与前端契约一致：`[{ time, text }]`。
+转写流水线：**分层字幕快路径**（yt-dlp CC 字幕 → B站弹幕元数据接口 AI 字幕，命中即秒级返回）→ 否则 yt-dlp 下载音轨 → FFmpeg 转 16kHz 单声道 WAV →（可选）Demucs 人声分离 → faster-whisper 本地推理（或云端 API）。转写时把**热词 + 视频标题组合为 `initial_prompt`** 传入以引导专有名词识别；输出经轻量后处理（**zhconv 繁→简**、折叠 3 次以上的明显重复词、按语言补齐句末标点）。transcript 格式与前端契约一致：`[{ time, text }]`，并带 `transcriptSource` 来源标记（subtitle_cc / subtitle_ai / asr，前端据此显示「来源：B站字幕」Badge）。
+
+### 字幕快路径（分层降级，任务 G）
+
+有字幕的视频完全不需要 ASR：直接读字幕，秒级返回、零成本、质量优于任何 ASR。
+
+| 层级 | 来源 | 认证 | 说明 |
+| --- | --- | --- | --- |
+| 1 | yt-dlp CC 字幕（UP 主手传） | 无 | 未登录即可，覆盖率低但质量最高 |
+| 2 | **弹幕元数据接口 `/x/v2/dm/view?aid=&oid=&type=1`** 的 AI 字幕 | **无** | 未登录零 Cookie 零签名可取（`ai-zh` 中文自动生成 + 多语种翻译）；`ai_status=2`（已生成）才收录。覆盖实测 6 视频中 5 个，侦察报告见 [docs/bili-subtitle-recon.md](docs/bili-subtitle-recon.md) |
+| 3 | （预留）yt-dlp + `BILI_COOKIE` | Cookie | 兜底层，未实现；dm/view 覆盖不到位时再启用 |
+| 4 | ASR（本地 small / 云端） | — | 全部无字幕时的兜底（见 docs/asr-benchmark.md） |
+
+每层失败静默降级不中断；命中层写入 `transcriptSource`。注意 B站 AI 字幕**非全覆盖**（如央视新闻部分视频为 0 轨道），层 4 兜底必要。
 
 ### 人声分离（可选，Demucs）
 
@@ -16,8 +29,10 @@
 
 **中文准确率**：模型规格对 CER 的影响见 [docs/asr-benchmark.md](../docs/asr-benchmark.md)（base / small / medium / large-v3 实测对比表）。重建参考稿或新增评测视频：`python scripts/benchmark_asr.py --models base small --seconds 150`。
 
-> 说明：B站 AI 字幕的播放器接口通常需登录 Cookie 才暴露，未登录时 yt-dlp 多数视频拿不到字幕，会自动走 ASR 路径（降级已实测验证）；配置 `BILI_COOKIE` 后可启用 AI 字幕快路径（见下文环境变量）。
-> 任务注册表为**进程内存实现**（`services/tasks.py`，单进程 uvicorn 下验证正常）：任务状态只能通过 `create_task / get_task / update_task` 接口访问，路由与流水线不直接触碰存储——**多 worker / 云端部署时把该模块替换为 Redis 等实现即可，无需改业务代码**。
+> 说明：B站 AI 字幕通过**弹幕元数据接口 `/x/v2/dm/view`** 未登录即可获取（任务 G，无需 Cookie）；
+> yt-dlp 层未登录仅能拿到 UP 主手传 CC 字幕（AI 字幕轨道为空，实测）。`BILI_COOKIE` 保留为
+> 层 3 预留兜底（未实现）：浏览器登录 bilibili.com → F12 → Application/存储 → Cookies →
+> 复制整段（含 SESSDATA）。任务状态为**进程内存实现**（`services/tasks.py`，单进程 uvicorn 下验证正常）：任务状态只能通过 `create_task / get_task / update_task` 接口访问，路由与流水线不直接触碰存储——**多 worker / 云端部署时把该模块替换为 Redis 等实现即可，无需改业务代码**。
 
 ## 本地运行
 
@@ -59,7 +74,7 @@ pnpm dev                        # 等价于 npm run dev
 | `CLOUD_ASR_BASE_URL` | `https://api.siliconflow.cn/v1` | 云端 ASR 服务地址（OpenAI 兼容），见下节 |
 | `CLOUD_ASR_API_KEY` | 空 | 云端模式必填，见下节 |
 | `CLOUD_ASR_MODEL` | `XingChenAGI/XingChenASR-V3.2-Ultra` | 云端模型名 |
-| `BILI_COOKIE` | 空 | 可选。B站登录 Cookie：浏览器登录 bilibili.com → F12 → Application → Cookies 复制整段（含 SESSDATA）。配置后带 AI 字幕的视频可走字幕快路径秒级返回；未配置时自动降级「下载音频 + ASR」（已验证）。注意有效期与隐私，勿提交到 git |
+| `BILI_COOKIE` | 空 | **预留兜底层，未实现**（AI 字幕已由 dm/view 接口未登录覆盖，见上「字幕快路径」）。启用后语义：yt-dlp 携带 Cookie 拿 AI 字幕。获取方式：浏览器登录 bilibili.com → F12 → Application → Cookies 复制整段（含 SESSDATA）。注意有效期与隐私，勿提交到 git |
 
 > 旧变量名 `ASR_API_BASE` / `ASR_API_KEY` / `ASR_CLOUD_MODEL` 仍被兼容读取，新配置请用 `CLOUD_ASR_*`。
 

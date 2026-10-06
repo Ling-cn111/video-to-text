@@ -52,6 +52,12 @@ export interface Summary {
 
 export type TaskStatus = 'processing' | 'completed' | 'failed'
 
+/**
+ * 文字稿来源：subtitle_cc（B站 CC 字幕）/ subtitle_ai（B站 AI 字幕，未登录弹幕接口获取）
+ * / asr（语音识别兜底）。字幕来源任务在结果页显示「来源：B站字幕」Badge。
+ */
+export type TranscriptSource = 'subtitle_cc' | 'subtitle_ai' | 'asr'
+
 /** 转写流水线阶段 */
 export type TaskStage = 'parse_link' | 'extract_audio' | 'asr' | 'summarize'
 
@@ -105,6 +111,8 @@ export interface GetTaskResponse {
   plainText?: string
   /** status=failed 时返回 */
   error?: AppError
+  /** 文字稿来源（字幕来源任务显示来源 Badge）；缺省视为 asr */
+  transcriptSource?: TranscriptSource
 }
 
 export interface SummarizeRequest {

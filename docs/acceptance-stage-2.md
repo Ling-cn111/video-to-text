@@ -32,6 +32,15 @@
 
 字幕路径对真实 AI 字幕生效的端到端验证，在 `BILI_COOKIE` 支持实现后补做（已列入 backend/.env.example 文档与遗留问题）。
 
+> **✅ 已补验并升级（2026-10-06，任务 G，PR：feat/bili-player-api-subtitle）**：发现 B站**弹幕元数据接口
+> `/x/v2/dm/view?aid=&oid=&type=1` 未登录即可返回 AI 字幕轨道**（无需 Cookie / wbi 签名；player/v2 与
+> wbi/v2 未登录恒为空，18 组合矩阵实证），字幕快路径改造为分层降级（yt-dlp CC → dm/view AI →
+> 预留 BILI_COOKIE 层 → ASR），来源标记 `transcriptSource`（subtitle_cc / subtitle_ai / asr）随任务返回，
+> 前端结果页显示「来源：B站字幕」Badge（E2E 锁定 5）。真实端到端已验证：BV1S6aB63Er7 未登录全链路
+> 6.8s 拿到 171 条带时间戳字幕（含原验收用例 av116187438517161 在内的 6 视频中 5 个有 AI 字幕轨道）。
+> **注意：本节原「AI 字幕的播放器接口需登录」的实测结论已被修正**——需登录的只是 player API，
+> 弹幕元数据接口不受限。侦察证据链见 backend/docs/bili-subtitle-recon.md。
+
 ### 2.2 无字幕路径（音频下载 → FFmpeg → faster-whisper）✅
 
 以无字幕的 135 秒科普视频走 HTTP 全链路（`POST /backend-api/transcribe` → 轮询）：
@@ -115,7 +124,7 @@
 | # | 问题 | 级别 | 去向 |
 | --- | --- | --- | --- |
 | 1 | AI 总结仍为 Mock（`/api/summarize` 为前端同域 Route Handler） | 范围外 | 阶段三接真实 LLM |
-| 2 | B站 AI 字幕需 `BILI_COOKIE`，未实现读取逻辑（仅文档预留） | 边界 | 后续实现 yt-dlp cookie 透传后端到端补验字幕快路径 |
+| 2 | ~~B站 AI 字幕需 `BILI_COOKIE`，未实现读取逻辑（仅文档预留）~~ | **已修复 + 端到端验证（无需 Cookie）**（PR：feat/bili-player-api-subtitle，任务 G） | 发现弹幕元数据接口 `/x/v2/dm/view` 未登录可取 AI 字幕（零 Cookie 零签名），字幕快路径升级为分层降级（yt-dlp CC → dm/view AI → 预留 Cookie 层 → ASR），`transcriptSource` 来源标记 + 前端来源 Badge + E2E 锁定 5；真实未登录链路 6.8s / 171 条字幕实测通过（详见 2.1 补记与 backend/docs/bili-subtitle-recon.md）。`BILI_COOKIE` 降级为预留兜底（未实现） |
 | 3 | 任务注册表为进程内存：重启后任务丢失（前端刷新会提示任务不存在并可重试） | 边界 | 多 worker 部署前换 Redis |
 | 4 | ~~whisper base 模型对专业词汇/英文歌词有识别误差~~ | **已修复 + 量化验证 + 引擎横向对比**（PR：fix/stage2-accuracy-and-ui → fix/asr-accuracy → fix/asr-engine-swap） | 第一轮：`initial_prompt`（标题）注入、轻量文本后处理、模型建议文档化。第二轮（CER 专项）：建立可量化基准（3 视频 × 4 模型，docs/asr-benchmark.md），**默认模型 base → small**（平均 CER 55.72% → 40.39%；清晰口播类 16.20% → 6.29%，降幅 61%）；zhconv 繁→简；热词 `hotwords` 经 initial_prompt 注入；ASREngine 抽象 + CloudASREngine（`ASR_ENGINE=cloud`）作为强 BGM 音频兜底。第三轮（引擎横向对比）：Qwen3-ASR-1.7B 平均 48.93%（教程类 5.35% 最优，但 CPU 耗时 10-18 倍）；Fun-ASR-Nano 幻觉严重不可用（平均 90.33%）；Demucs 人声分离对幻觉型场景无效（85.25%）——**最终结论：默认保持 faster-whisper small（40.39%），强 BGM 场景的唯一可靠解是云端 ASR 或 GPU + large-v3**。遗留：参考稿为 large-v3 生成（非人工），绝对 CER 待人工修订参考稿后成立 |
 | 5 | B站搜索接口限流（HTTP 412）导致自动化找片不稳定 | 边界 | 与转写功能无关；测试视频已固定 |
