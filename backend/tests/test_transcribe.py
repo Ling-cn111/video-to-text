@@ -3,6 +3,8 @@
 - 无标记：字幕解析 / 任务状态机 / 校验（不访问外网）
 - @pytest.mark.network：真实下载音频 + faster-whisper 推理（CI 跳过，本地全量跑）
 """
+from pathlib import Path
+
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
@@ -134,6 +136,172 @@ def test_local_engine_passes_initial_prompt_and_hotwords(monkeypatch):
     assert len(recorded) >= 1
     prompt = recorded[0].get("initial_prompt", "")
     assert "Faster Whisper" in prompt and "B站" in prompt and "量子计算" in prompt
+
+
+def test_qwen3_engine_context_and_stamps(monkeypatch):
+    """Qwen3 引擎：hotwords+标题经 context 注入；time_stamps 正确转 transcript。"""
+    from app.services.asr import Qwen3ASREngine
+
+    class FakeStamp:
+        def __init__(self, start_time, text):
+            self.start_time = start_time
+            self.text = text
+
+    class FakeRecord:
+        language = "Chinese"
+        text = "测试全文"
+        time_stamps = [FakeStamp(0.5, "语音"), FakeStamp(2.0, "转写")]
+
+    recorded: list[dict] = []
+
+    class FakeModel:
+        def transcribe(self, **kwargs):
+            recorded.append(kwargs)
+            return [FakeRecord()]
+
+    engine = Qwen3ASREngine()
+    engine._model = FakeModel()  # noqa: SLF001 测试受控注入，跳过模型下载
+
+    items = engine.transcribe(
+        "fake.wav", language="zh", initial_prompt="标题", hotwords=["Qwen3-ASR"]
+    )
+
+    assert recorded[0]["context"] == "Qwen3-ASR，标题"
+    assert recorded[0]["language"] == "Chinese"
+    assert recorded[0]["return_time_stamps"] is True
+    assert items == [
+        {"time": 0.5, "text": "语音。"},
+        {"time": 2.0, "text": "转写。"},
+    ]
+
+
+def test_qwen3_engine_falls_back_to_full_text_without_stamps(monkeypatch):
+    """对齐器未产出时间戳时保底整段单条。"""
+    from app.services.asr import Qwen3ASREngine
+
+    class FakeRecord:
+        language = "Chinese"
+        text = "整段全文"
+        time_stamps = []
+
+    class FakeModel:
+        def transcribe(self, **kwargs):
+            return [FakeRecord()]
+
+    engine = Qwen3ASREngine()
+    engine._model = FakeModel()  # noqa: SLF001
+    items = engine.transcribe("fake.wav")
+    assert items == [{"time": 0.0, "text": "整段全文。"}]
+
+
+def test_transcribe_audio_falls_back_when_primary_fails(monkeypatch):
+    """主引擎失败 → 按 ASR_ENGINE_FALLBACK 降级到备用引擎。"""
+    from app.services import asr as asr_mod
+
+    class FailingEngine:
+        name = "qwen3"
+
+        def transcribe(self, *args, **kwargs):
+            raise RuntimeError("qwen3 boom")
+
+    class OkEngine:
+        name = "faster-whisper"
+
+        def transcribe(self, *args, **kwargs):
+            return [{"time": 0.0, "text": "降级成功"}]
+
+    monkeypatch.setattr(asr_mod, "get_engine", lambda: FailingEngine())
+    monkeypatch.setattr(asr_mod, "ASR_ENGINE_FALLBACK", "faster-whisper")
+    monkeypatch.setattr(asr_mod, "build_engine", lambda name: OkEngine())
+
+    assert asr_mod.transcribe_audio("fake.wav") == [{"time": 0.0, "text": "降级成功"}]
+
+
+def test_transcribe_audio_raises_primary_error_when_fallback_fails(monkeypatch):
+    """降级也失败时抛主引擎的原始错误。"""
+    from app.services import asr as asr_mod
+
+    class FailingEngine:
+        name = "qwen3"
+
+        def transcribe(self, *args, **kwargs):
+            raise RuntimeError("qwen3 boom")
+
+    class AlsoFailing:
+        name = "faster-whisper"
+
+        def transcribe(self, *args, **kwargs):
+            raise RuntimeError("fallback boom")
+
+    monkeypatch.setattr(asr_mod, "get_engine", lambda: FailingEngine())
+    monkeypatch.setattr(asr_mod, "ASR_ENGINE_FALLBACK", "faster-whisper")
+    monkeypatch.setattr(asr_mod, "build_engine", lambda name: AlsoFailing())
+
+    with pytest.raises(RuntimeError, match="qwen3 boom"):
+        asr_mod.transcribe_audio("fake.wav")
+
+
+def test_transcribe_audio_no_fallback_configured(monkeypatch):
+    """ASR_ENGINE_FALLBACK 留空时直接抛主引擎错误。"""
+    from app.services import asr as asr_mod
+
+    class FailingEngine:
+        name = "qwen3"
+
+        def transcribe(self, *args, **kwargs):
+            raise RuntimeError("qwen3 boom")
+
+    monkeypatch.setattr(asr_mod, "get_engine", lambda: FailingEngine())
+    monkeypatch.setattr(asr_mod, "ASR_ENGINE_FALLBACK", "")
+
+    with pytest.raises(RuntimeError, match="qwen3 boom"):
+        asr_mod.transcribe_audio("fake.wav")
+
+
+# ---- 本地大模型引擎真实推理（需下载模型权重，CI 跳过）----
+
+REAL_BENCHMARK_WAV_SCRIPT = None  # 占位：真实音频由 benchmark 的 prepare_audio 提供
+
+
+@pytest.mark.asr_heavy
+def test_qwen3_engine_real_transcription():
+    """Qwen3-ASR-1.7B 真实转写：150 秒无字幕中文视频 → 带时间戳文字稿。"""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts.benchmark_asr import prepare_audio, BENCHMARK_DIR
+
+    from app.services.asr import Qwen3ASREngine
+
+    case_url = "https://www.bilibili.com/video/av116187438517161"
+    wav = prepare_audio(case_url, 150, BENCHMARK_DIR.parent.parent / ".audio-bench" / "qwen3-test")
+
+    engine = Qwen3ASREngine()
+    items = engine.transcribe(wav, language="zh", initial_prompt="生理科普短视频")
+
+    assert len(items) > 0, "应产出真实文字稿"
+    assert all(item["text"] for item in items)
+    assert all(item["time"] >= 0 for item in items)
+
+
+@pytest.mark.asr_heavy
+def test_funasr_nano_engine_real_transcription():
+    """Fun-ASR-Nano 真实转写：输出整段文本（无时间戳属已知边界）。"""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts.benchmark_asr import prepare_audio, BENCHMARK_DIR
+
+    from app.services.asr import FunASRNanoEngine
+
+    case_url = "https://www.bilibili.com/video/av116187438517161"
+    wav = prepare_audio(case_url, 150, BENCHMARK_DIR.parent.parent / ".audio-bench" / "funasr-test")
+
+    engine = FunASRNanoEngine()
+    items = engine.transcribe(wav, language="zh")
+
+    assert len(items) >= 1
+    assert items[0]["text"], "Fun-ASR-Nano 应产出真实文字稿"
 
 
 # ---- 接口校验与状态机（不访问外网）----

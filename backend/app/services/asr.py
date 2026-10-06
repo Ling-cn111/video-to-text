@@ -8,7 +8,11 @@
 - CloudASREngine：OpenAI 兼容 /audio/transcriptions（verbose_json 分段时间戳）；
   ASR_API_KEY 未配置时报友好错误。通义听悟 / 火山引擎等非 OpenAI 协议的厂商
   可按同一接口新增引擎类
-- ASR_ENGINE=local|cloud 切换（兼容旧变量名 ASR_PROVIDER）
+- Qwen3ASREngine：Qwen3-ASR-1.7B（qwen-asr 包）+ ForcedAligner-0.6B 时间戳；
+  context 注入热词；官方支持 Songs with BGM（针对 faster-whisper 强 BGM 幻觉）
+- FunASRNanoEngine：Fun-ASR-Nano-2512（funasr 包，0.8B 级 CPU 友好，无时间戳输出）
+- ASR_ENGINE=faster-whisper|qwen3|funasr|cloud 切换（兼容旧值 local；旧变量名 ASR_PROVIDER）
+- ASR_ENGINE_FALLBACK：主引擎失败自动降级（默认 faster-whisper，留空禁用）
 - 输出统一过 postprocess_items：zhconv 繁→简、折叠明显重复词、按语言补句末标点
 - initial_prompt：热词（hotwords）+ 视频标题组合，引导专有名词识别
 """
@@ -23,6 +27,7 @@ from app.config import (
     ASR_API_KEY,
     ASR_CLOUD_MODEL,
     ASR_ENGINE,
+    ASR_ENGINE_FALLBACK,
     WHISPER_COMPUTE_TYPE,
     WHISPER_MODEL,
 )
@@ -193,19 +198,163 @@ class CloudASREngine(BaseASREngine):
         return postprocess_items(items)
 
 
+class Qwen3ASREngine(BaseASREngine):
+    """Qwen3-ASR-1.7B（qwen-asr 包，transformers 后端）+ ForcedAligner 时间戳。
+
+    - context 注入热词与视频标题（Qwen3-ASR 的上下文机制，实测引导专有名词）
+    - 显式 language（"Chinese"），中英混合不自动检测
+    - 官方支持 Songs with BGM——针对 faster-whisper 在强 BGM 下的幻觉问题引入
+    """
+
+    name = "qwen3"
+
+    _LANGUAGE_NAMES = {"zh": "Chinese", "en": "English", "yue": "Cantonese"}
+
+    def __init__(self):
+        self._model = None
+        self._model_lock = threading.Lock()
+
+    def _get_model(self):
+        if self._model is None:
+            with self._model_lock:
+                if self._model is None:
+                    try:
+                        import torch
+                        from qwen_asr import Qwen3ASRModel
+                    except ImportError as exc:
+                        raise ParseFailedError(
+                            "Qwen3-ASR 组件未安装（requirements-asr.txt 中的 qwen-asr）"
+                        ) from exc
+                    self._model = Qwen3ASRModel.from_pretrained(
+                        "Qwen/Qwen3-ASR-1.7B",
+                        dtype=torch.bfloat16,
+                        device_map="cpu",
+                        max_inference_batch_size=8,
+                        max_new_tokens=1024,
+                        forced_aligner="Qwen/Qwen3-ForcedAligner-0.6B",
+                        forced_aligner_kwargs=dict(dtype=torch.bfloat16, device_map="cpu"),
+                    )
+        return self._model
+
+    @staticmethod
+    def _stamps_to_items(stamps) -> list[dict]:
+        items: list[dict] = []
+        for stamp in stamps or []:
+            if isinstance(stamp, dict):
+                start = stamp.get("start", stamp.get("start_time", 0))
+                text = str(stamp.get("text", "")).strip()
+            else:
+                start = getattr(stamp, "start_time", None)
+                if start is None:
+                    start = getattr(stamp, "start", 0)
+                text = str(getattr(stamp, "text", "")).strip()
+            if text:
+                items.append({"time": round(float(start), 2), "text": text})
+        return items
+
+    def transcribe(
+        self,
+        audio_path,
+        language: str = "zh",
+        progress_callback: ProgressCallback = None,
+        initial_prompt: str | None = None,
+        hotwords: list[str] | None = None,
+    ) -> list[dict]:
+        model = self._get_model()
+        context = build_initial_prompt(initial_prompt, hotwords)
+        language_name = self._LANGUAGE_NAMES.get(language)  # 未知语言走自动检测
+
+        kwargs: dict = {"audio": str(audio_path), "return_time_stamps": True}
+        if language_name:
+            kwargs["language"] = language_name
+        if context:
+            kwargs["context"] = context
+
+        results = model.transcribe(**kwargs)
+        record = results[0]
+        items = self._stamps_to_items(getattr(record, "time_stamps", None))
+        if not items and getattr(record, "text", "").strip():
+            # 对齐器未产出时间戳时保底：整段单条
+            items = [{"time": 0.0, "text": record.text.strip()}]
+        return postprocess_items(items)
+
+
+class FunASRNanoEngine(BaseASREngine):
+    """Fun-ASR-Nano-2512（funasr 包，0.8B 级，CPU 友好）。
+
+    注意：Nano 输出无时间戳，转写结果为整段单条（time=0）；
+    时间戳定位视图在该引擎下退化展示，属已知边界。
+    """
+
+    name = "funasr"
+
+    def __init__(self):
+        self._model = None
+        self._model_lock = threading.Lock()
+
+    def _get_model(self):
+        if self._model is None:
+            with self._model_lock:
+                if self._model is None:
+                    try:
+                        from funasr import AutoModel
+                    except ImportError as exc:
+                        raise ParseFailedError("Fun-ASR 组件未安装（requirements-asr.txt 中的 funasr）") from exc
+                    self._model = AutoModel(
+                        model="FunAudioLLM/Fun-ASR-Nano-2512", device="cpu", disable_update=True
+                    )
+        return self._model
+
+    def transcribe(
+        self,
+        audio_path,
+        language: str = "zh",
+        progress_callback: ProgressCallback = None,
+        initial_prompt: str | None = None,
+        hotwords: list[str] | None = None,
+    ) -> list[dict]:
+        model = self._get_model()
+        generate_kwargs: dict = {"input": str(audio_path)}
+        hotword_text = " ".join(w.strip() for w in (hotwords or []) if w and w.strip())
+        if hotword_text:
+            generate_kwargs["hotword"] = hotword_text
+        try:
+            results = model.generate(**generate_kwargs)
+        except TypeError:
+            # 旧版 funasr 不支持 hotword 参数
+            generate_kwargs.pop("hotword", None)
+            results = model.generate(**generate_kwargs)
+
+        record = (results or [{}])[0]
+        text = str(record.get("text", "")).strip()
+        return postprocess_items([{"time": 0.0, "text": text}])
+
+
 _ENGINE: BaseASREngine | None = None
 _ENGINE_LOCK = threading.Lock()
 
+_ENGINE_BUILDERS = {
+    "faster-whisper": lambda: LocalWhisperEngine(),
+    "local": lambda: LocalWhisperEngine(),  # 兼容旧值
+    "qwen3": lambda: Qwen3ASREngine(),
+    "funasr": lambda: FunASRNanoEngine(),
+    "cloud": lambda: CloudASREngine(),
+}
+
+
+def build_engine(name: str) -> BaseASREngine:
+    builder = _ENGINE_BUILDERS.get(name)
+    if builder is None:
+        raise ParseFailedError(f"未知 ASR 引擎：{name}")
+    return builder()
+
 
 def get_engine() -> BaseASREngine:
-    """按 ASR_ENGINE 返回引擎单例；新增云端厂商时在此注册新引擎类。"""
+    """按 ASR_ENGINE 返回引擎单例；新增引擎时在 _ENGINE_BUILDERS 注册。"""
     global _ENGINE
     with _ENGINE_LOCK:
         if _ENGINE is None:
-            if ASR_ENGINE == "cloud":
-                _ENGINE = CloudASREngine()
-            else:
-                _ENGINE = LocalWhisperEngine()
+            _ENGINE = build_engine(ASR_ENGINE)
     return _ENGINE
 
 
@@ -216,8 +365,19 @@ def transcribe_audio(
     initial_prompt: str | None = None,
     hotwords: list[str] | None = None,
 ) -> list[dict]:
-    """业务入口（兼容旧调用方）。"""
-    return get_engine().transcribe(audio_path, language, progress_callback, initial_prompt, hotwords)
+    """业务入口：主引擎失败时按 ASR_ENGINE_FALLBACK 自动降级（配置留空禁用）。"""
+    primary = get_engine()
+    try:
+        return primary.transcribe(audio_path, language, progress_callback, initial_prompt, hotwords)
+    except Exception as exc:
+        fallback_name = ASR_ENGINE_FALLBACK.strip()
+        if not fallback_name or fallback_name == primary.name:
+            raise
+        fallback = build_engine(fallback_name)
+        try:
+            return fallback.transcribe(audio_path, language, progress_callback, initial_prompt, hotwords)
+        except Exception:
+            raise exc  # 降级也失败：抛主引擎的原始错误
 
 
 def decode_audio_16k_mono(audio_path) -> "ndarray":

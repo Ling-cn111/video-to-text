@@ -50,10 +50,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # CI 跳过依赖外网真实视频的集成测试（-m network）与需要可选依赖 Demucs 的测试
-      # （-m separation，见 backend/requirements-separation.txt）；本地用 `pytest` 全量运行
+      # CI 跳过依赖外网真实视频的集成测试（-m network）、需要可选依赖 Demucs 的测试
+      # （-m separation，见 backend/requirements-separation.txt）与需要大模型权重的
+      # 本地引擎测试（-m asr_heavy，见 backend/requirements-asr.txt）；本地用 `pytest` 全量运行
       - name: Test
-        run: pytest -m "not network and not separation"
+        run: pytest -m "not network and not separation and not asr_heavy"
 
   e2e:
     name: e2e locked features

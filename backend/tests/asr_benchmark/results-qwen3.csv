@@ -1,0 +1,4 @@
+﻿model,video_id,category,cer,transcribe_seconds,separate_seconds,audio_seconds,memory_mb,ref_chars,hyp_chars
+qwen3 qwen3-1.7b,BV1gCYc6BEPv,科普,0.4319,656.3,0.0,150,6625.9,345,414
+qwen3 qwen3-1.7b,BV1S6aB63Er7,讲解,0.9826,821.8,0.0,150,8064.9,461,33
+qwen3 qwen3-1.7b,BV1C9aB6aE5f,教程,0.0535,719.7,0.0,150,8081.6,747,749
