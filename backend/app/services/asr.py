@@ -153,10 +153,13 @@ class LocalWhisperEngine(BaseASREngine):
 
 
 class CloudASREngine(BaseASREngine):
-    """OpenAI 兼容云端转写引擎（verbose_json 带分段时间戳）。
+    """OpenAI 兼容云端转写引擎。
 
-    服务地址 / Key / 模型由 CLOUD_ASR_* 配置（默认硅基流动）；
-    请求前校验服务地址为公网 http/https（url_guard），未配置 Key 报友好中文错误。
+    首选 verbose_json（带分段时间戳）；部分兼容服务商不支持（HTTP 400，如硅基流动的
+    Qwen3-ASR-1.7B），自动降级 response_format=json——输出退化为整段单条（time=0，
+    时间戳定位视图退化为单行，属已知边界）。服务地址 / Key / 模型由 CLOUD_ASR_* 配置
+    （默认硅基流动 XingChenASR-V3.2-Ultra）；请求前经 url_guard 校验服务地址
+    （仅公网 http/https），未配置 Key 报友好中文错误。
     """
 
     name = "cloud"
@@ -183,33 +186,45 @@ class CloudASREngine(BaseASREngine):
 
         prompt = build_initial_prompt(initial_prompt, hotwords)
         audio_bytes = audio_path.read_bytes()
-        data: dict = {
+        base_data: dict = {
             "model": CLOUD_ASR_MODEL,
-            "response_format": "verbose_json",
             "language": language,
         }
         if prompt:
-            data["prompt"] = prompt
+            base_data["prompt"] = prompt
+
+        url = f"{CLOUD_ASR_BASE_URL.rstrip('/')}/audio/transcriptions"
+        headers = {"Authorization": f"Bearer {CLOUD_ASR_API_KEY}"}
+        files = {"file": (audio_path.name, audio_bytes)}
         try:
-            response = httpx.post(
-                f"{CLOUD_ASR_BASE_URL.rstrip('/')}/audio/transcriptions",
-                headers={"Authorization": f"Bearer {CLOUD_ASR_API_KEY}"},
-                files={"file": (audio_path.name, audio_bytes)},
-                data=data,
-                timeout=600,
-            )
+            response = None
+            # 400 时降级重试：verbose_json → json（部分服务商不支持分段时间戳）
+            for response_format in ("verbose_json", "json"):
+                response = httpx.post(
+                    url,
+                    headers=headers,
+                    files=files,
+                    data={**base_data, "response_format": response_format},
+                    timeout=600,
+                )
+                if response.status_code != 400:
+                    break
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             raise ParseFailedError(f"云端语音识别失败（HTTP {exc.response.status_code}）") from exc
         except httpx.HTTPError as exc:
             raise ParseFailedError("云端语音识别服务连接失败，请稍后重试") from exc
 
-        segments = response.json().get("segments") or []
+        payload = response.json()
+        segments = payload.get("segments") or []
         items: list[dict] = []
         for segment in segments:
             text = str(segment.get("text", "")).strip()
             if text:
                 items.append({"time": round(float(segment.get("start", 0)), 2), "text": text})
+        if not items and str(payload.get("text", "")).strip():
+            # json 格式（无分段）：整段单条，时间戳视图退化展示
+            items = [{"time": 0.0, "text": str(payload["text"]).strip()}]
         return postprocess_items(items)
 
 

@@ -62,7 +62,11 @@ WHISPER_COMPUTE_TYPE: str = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 # ---- 云端 ASR（OpenAI 兼容协议，手动选择，无自动切换）----
 # 默认指向硅基流动；使用云端模式必须配置 CLOUD_ASR_API_KEY，
 # 未配置时前端选择云端会直接报「云端转写未配置」错误（不会静默降级）。
+# 硅基流动在售 ASR 模型（2026-10 实测）：XingChenASR-V3.2(-Ultra) 带 verbose_json 分段
+# 时间戳；Qwen3-ASR-1.7B / SenseVoiceSmall 仅整段 text（引擎自动降级 json，无时间戳）。
 # 兼容旧变量名 ASR_API_BASE / ASR_API_KEY / ASR_CLOUD_MODEL。
 CLOUD_ASR_BASE_URL: str = os.getenv("CLOUD_ASR_BASE_URL", os.getenv("ASR_API_BASE", "https://api.siliconflow.cn/v1"))
 CLOUD_ASR_API_KEY: str = os.getenv("CLOUD_ASR_API_KEY", os.getenv("ASR_API_KEY", ""))
-CLOUD_ASR_MODEL: str = os.getenv("CLOUD_ASR_MODEL", os.getenv("ASR_CLOUD_MODEL", "whisper-large-v3"))
+CLOUD_ASR_MODEL: str = os.getenv(
+    "CLOUD_ASR_MODEL", os.getenv("ASR_CLOUD_MODEL", "XingChenAGI/XingChenASR-V3.2-Ultra")
+)

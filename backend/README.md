@@ -58,7 +58,7 @@ pnpm dev                        # 等价于 npm run dev
 | `WHISPER_COMPUTE_TYPE` | `int8` | CPU 推荐 int8 |
 | `CLOUD_ASR_BASE_URL` | `https://api.siliconflow.cn/v1` | 云端 ASR 服务地址（OpenAI 兼容），见下节 |
 | `CLOUD_ASR_API_KEY` | 空 | 云端模式必填，见下节 |
-| `CLOUD_ASR_MODEL` | `whisper-large-v3` | 云端模型名 |
+| `CLOUD_ASR_MODEL` | `XingChenAGI/XingChenASR-V3.2-Ultra` | 云端模型名 |
 | `BILI_COOKIE` | 空 | 可选。B站登录 Cookie：浏览器登录 bilibili.com → F12 → Application → Cookies 复制整段（含 SESSDATA）。配置后带 AI 字幕的视频可走字幕快路径秒级返回；未配置时自动降级「下载音频 + ASR」（已验证）。注意有效期与隐私，勿提交到 git |
 
 > 旧变量名 `ASR_API_BASE` / `ASR_API_KEY` / `ASR_CLOUD_MODEL` 仍被兼容读取，新配置请用 `CLOUD_ASR_*`。
@@ -74,16 +74,20 @@ pnpm dev                        # 等价于 npm run dev
 ```bash
 CLOUD_ASR_BASE_URL=https://api.siliconflow.cn/v1
 CLOUD_ASR_API_KEY=sk-xxxx        # 必填，勿提交到 git
-CLOUD_ASR_MODEL=whisper-large-v3
+CLOUD_ASR_MODEL=XingChenAGI/XingChenASR-V3.2-Ultra
 ```
 
 兼容的 OpenAI 协议服务商（按优先级）：
 
 | 服务商 | `CLOUD_ASR_BASE_URL` | 模型示例 |
 | --- | --- | --- |
-| 硅基流动 SiliconFlow | `https://api.siliconflow.cn/v1` | `whisper-large-v3` |
+| 硅基流动 SiliconFlow | `https://api.siliconflow.cn/v1` | `XingChenAGI/XingChenASR-V3.2-Ultra`（默认，带分段时间戳）、`Qwen/Qwen3-ASR-1.7B`、`FunAudioLLM/SenseVoiceSmall`（两者仅整段 text，无时间戳） |
 | OpenRouter | `https://openrouter.ai/api/v1` | 按其模型目录 |
 | OpenAI 直连 | `https://api.openai.com/v1` | `whisper-1` |
+
+> 注：硅基流动已不再提供 whisper-large-v3（2026-10 实测）；引擎首选 `response_format=verbose_json`
+> 取分段时间戳，服务商不支持（HTTP 400）时自动降级 `json`——输出退化为整段单条，
+> 「时间戳定位」视图在该模型下退化为单行（全文阅读不受影响）。
 
 行为约定：
 
