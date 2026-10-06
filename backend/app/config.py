@@ -1,6 +1,13 @@
 """应用配置：CORS 与运行参数（均可通过环境变量覆盖）。"""
 import os
 
+# HuggingFace 端点默认走国内镜像：本机直连 huggingface.co 会触发 SSL 证书校验失败，
+# 导致已缓存的模型在加载时仍联网校验而报错（转写任务失败）。
+# 必须在 huggingface_hub 被导入前设置，故置于 config 顶部；用户显式设置的值优先。
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+# 新版 huggingface_hub 的 Xet 下载协议与镜像端点不兼容（CAS 401），禁用之
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
 
 def _split_origins(raw: str) -> list[str]:
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
