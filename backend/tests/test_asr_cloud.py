@@ -31,13 +31,19 @@ VIDEO_BODY = {
 
 
 class _FakeCloudResponse:
-    """模拟 OpenAI 兼容 /audio/transcriptions 的 verbose_json 响应。"""
+    """模拟 OpenAI 兼容 /audio/transcriptions 响应（含 400 降级场景）。"""
 
-    def __init__(self, payload: dict):
-        self._payload = payload
+    def __init__(self, payload: dict | None = None, status_code: int = 200):
+        self._payload = payload or {}
+        self.status_code = status_code
 
     def raise_for_status(self) -> None:
-        pass
+        if self.status_code >= 400:
+            request = httpx.Request("POST", "https://cloud.test/v1/audio/transcriptions")
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}", request=request,
+                response=httpx.Response(self.status_code, request=request),
+            )
 
     def json(self) -> dict:
         return self._payload
@@ -69,7 +75,7 @@ def test_unknown_engine_raises():
 def test_cloud_request_shape_and_verbose_json_parsing(monkeypatch, tmp_path):
     monkeypatch.setattr(asr_module, "CLOUD_ASR_API_KEY", "test-key")
     monkeypatch.setattr(asr_module, "CLOUD_ASR_BASE_URL", "https://api.siliconflow.cn/v1")
-    monkeypatch.setattr(asr_module, "CLOUD_ASR_MODEL", "whisper-large-v3")
+    monkeypatch.setattr(asr_module, "CLOUD_ASR_MODEL", "XingChenAGI/XingChenASR-V3.2-Ultra")
 
     captured: dict = {}
 
@@ -93,7 +99,7 @@ def test_cloud_request_shape_and_verbose_json_parsing(monkeypatch, tmp_path):
 
     assert captured["url"] == "https://api.siliconflow.cn/v1/audio/transcriptions"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
-    assert captured["data"]["model"] == "whisper-large-v3"
+    assert captured["data"]["model"] == "XingChenAGI/XingChenASR-V3.2-Ultra"
     assert captured["data"]["response_format"] == "verbose_json"
     assert captured["data"]["language"] == "zh"
     assert captured["data"]["prompt"] == "标题"
@@ -101,6 +107,41 @@ def test_cloud_request_shape_and_verbose_json_parsing(monkeypatch, tmp_path):
     # 分段时间戳保留、后处理补句末标点
     assert items[0] == {"time": 0.5, "text": "第一句内容。"}
     assert items[1]["time"] == 2.1
+
+
+def test_cloud_falls_back_to_json_when_verbose_json_unsupported(monkeypatch, tmp_path):
+    """服务商不支持 verbose_json（400）时自动降级 json：整段单条输出。"""
+    monkeypatch.setattr(asr_module, "CLOUD_ASR_API_KEY", "test-key")
+    monkeypatch.setattr(asr_module, "CLOUD_ASR_BASE_URL", "https://api.siliconflow.cn/v1")
+
+    formats_seen: list[str] = []
+
+    def fake_post(url, data=None, **kwargs):
+        formats_seen.append(data["response_format"])
+        if data["response_format"] == "verbose_json":
+            return _FakeCloudResponse(status_code=400)
+        return _FakeCloudResponse({"text": "整段全文内容"})
+
+    monkeypatch.setattr(asr_module.httpx, "post", fake_post)
+
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"fake")
+    items = CloudASREngine().transcribe(audio)
+
+    assert formats_seen == ["verbose_json", "json"]  # 先试分段，400 后降级
+    assert items == [{"time": 0.0, "text": "整段全文内容。"}]
+
+
+def test_cloud_persists_400_after_fallback_raises(monkeypatch, tmp_path):
+    """降级 json 后仍 400（如参数/鉴权问题）：抛友好错误而非静默返回空。"""
+    monkeypatch.setattr(asr_module, "CLOUD_ASR_API_KEY", "test-key")
+    monkeypatch.setattr(asr_module, "CLOUD_ASR_BASE_URL", "https://api.siliconflow.cn/v1")
+    monkeypatch.setattr(asr_module.httpx, "post", lambda url, **kwargs: _FakeCloudResponse(status_code=400))
+
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"fake")
+    with pytest.raises(Exception, match="HTTP 400"):
+        CloudASREngine().transcribe(audio)
 
 
 def test_cloud_missing_key_friendly_chinese_error(monkeypatch, tmp_path):
