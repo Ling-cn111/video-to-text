@@ -126,11 +126,11 @@ def _chat(base_url: str, api_key: str, model: str, user_content: str) -> tuple[s
     payload = response.json()
     usage = payload.get("usage") or {}
     price = LLM_PRICE_TABLE.get(model)
-    if price:
-        cost = usage.get("prompt_tokens", 0) / 1e6 * price["input"] + usage.get("completion_tokens", 0) / 1e6 * price["output"]
+    if price and usage:
+        cost = usage.get("prompt_tokens", 0) / 1e6 * float(price["input"]) + usage.get("completion_tokens", 0) / 1e6 * float(price["output"])
         logger.info(
-            "LLM 成本：%s 输入 %s tok + 输出 %s tok ≈ ¥%.4f",
-            model, usage.get("prompt_tokens"), usage.get("completion_tokens"), cost,
+            "LLM 成本：%s 输入 %s tok + 输出 %s tok ≈ ¥%.4f（%s，cache-miss 空闲价）",
+            model, usage.get("prompt_tokens"), usage.get("completion_tokens"), cost, price.get("currency"),
         )
     else:
         logger.info("LLM 用量：%s 输入 %s tok + 输出 %s tok（单价表缺该模型，未计成本）", model, usage.get("prompt_tokens"), usage.get("completion_tokens"))
