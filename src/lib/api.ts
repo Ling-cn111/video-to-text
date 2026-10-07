@@ -3,6 +3,7 @@ import { realApi } from '@/lib/real-api'
 import type {
   Capabilities,
   GetTaskResponse,
+  HealthResponse,
   StartTaskResponse,
   SummarizeRequest,
   Summary,
@@ -56,6 +57,10 @@ const mockApi: ApiClient = {
   /** GET /api/capabilities：Mock 模式恒为已配置（不阻塞演示） */
   getCapabilities: (): Promise<Capabilities> =>
     toJson(fetch('/api/capabilities').catch(throwNetworkError)),
+
+  /** GET /api/health：Mock 模式同源健康检查（恒 200，供 E2E 拦截制造失败） */
+  healthCheck: (signal?: AbortSignal): Promise<HealthResponse> =>
+    toJson(fetch('/api/health', { signal }).catch(throwNetworkError)),
 } as const
 
 const useMock = process.env.NEXT_PUBLIC_USE_MOCK !== 'false'

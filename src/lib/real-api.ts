@@ -2,6 +2,7 @@ import { JSON_HEADERS, toJson, throwNetworkError, type ApiClient } from '@/lib/h
 import type {
   Capabilities,
   GetTaskResponse,
+  HealthResponse,
   StartTaskResponse,
   SummarizeRequest,
   Summary,
@@ -59,4 +60,7 @@ export const realApi: ApiClient = {
   /** GET /backend-api/capabilities：只读配置状态（布尔），用于前端禁用/提示 */
   getCapabilities: (): Promise<Capabilities> =>
     toJson(fetch('/backend-api/capabilities').catch(throwNetworkError)),
+  /** GET /backend-api/health → 代理到后端 GET /api/health（仅 {status}，无配置信息） */
+  healthCheck: (signal?: AbortSignal): Promise<HealthResponse> =>
+    toJson(fetch('/backend-api/health', { signal }).catch(throwNetworkError)),
 } as const
