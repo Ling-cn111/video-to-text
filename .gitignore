@@ -56,3 +56,6 @@ backend/.audio-bench/
 # playwright
 /test-results/
 /playwright-report/
+
+# 任务持久化数据库（任务 H）
+backend/data/

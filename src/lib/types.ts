@@ -76,7 +76,7 @@ export interface SummarizeRequest {
   duration: number
 }
 
-export type TaskStatus = 'processing' | 'completed' | 'failed'
+export type TaskStatus = 'processing' | 'completed' | 'failed' | 'interrupted'
 
 /**
  * 文字稿来源：subtitle_cc（B站 CC 字幕）/ subtitle_ai（B站 AI 字幕，未登录弹幕接口获取）
@@ -156,6 +156,7 @@ export type ApiErrorCode =
   | 'SUMMARIZE_NOT_CONFIGURED'
   | 'TRANSCRIPT_TOO_LONG'
   | 'SUMMARIZE_FAILED'
+  | 'TASK_INTERRUPTED'
   | 'FILE_TOO_LARGE'
   | 'FILE_FORMAT_UNSUPPORTED'
   | 'INTERNAL_ERROR'

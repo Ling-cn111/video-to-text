@@ -33,7 +33,7 @@
 > 说明：B站 AI 字幕通过**弹幕元数据接口 `/x/v2/dm/view`** 未登录即可获取（任务 G，无需 Cookie）；
 > yt-dlp 层未登录仅能拿到 UP 主手传 CC 字幕（AI 字幕轨道为空，实测）。`BILI_COOKIE` 保留为
 > 层 3 预留兜底（未实现）：浏览器登录 bilibili.com → F12 → Application/存储 → Cookies →
-> 复制整段（含 SESSDATA）。任务状态为**进程内存实现**（`services/tasks.py`，单进程 uvicorn 下验证正常）：任务状态只能通过 `create_task / get_task / update_task` 接口访问，路由与流水线不直接触碰存储——**多 worker / 云端部署时把该模块替换为 Redis 等实现即可，无需改业务代码**。
+> 复制整段（含 SESSDATA）。任务状态为 **SQLite 持久化**（任务 H，`services/tasks.py`）：存储于 `backend/data/tasks.db`（`TASK_DB_PATH` 可配），表 `tasks(task_id, status, progress, stage, created_at, updated_at, payload_json)`，全部查询参数绑定。内存作一级缓存（进程内轮询零 SQL），写操作同步落盘；**服务重启后历史任务可查，重启时未完成任务自动标记 `interrupted`**，前端显示「任务已中断，请重试」+ 重试按钮。任务状态只能通过 `create_task / get_task / update_task` 接口访问，路由与流水线不直接触碰存储——**多 worker / 云端部署时把该模块替换为 Redis 等实现即可，无需改业务代码**（SQLite 为单机文件库，`backend/data/` 已入 .gitignore）。
 
 ## 本地运行
 
@@ -94,6 +94,16 @@ DEEPSEEK_API_KEY=sk-xxxx         # 二选一；qwen 用 DASHSCOPE_API_KEY
 - **keyPoints 时间戳三重保障**：输入文字稿格式化为 `[mm:ss] text` → prompt 明确禁止编造 → 后端对输出 time 就近吸附到真实时间戳
 - 长文 chunking：超 6000 字按条目边界切块（条目不拆），逐块提取要点 → 合并终稿；时间戳全程指向原 transcript
 - 成本：每次调用记录 usage tokens 与估算成本（`LLM_PRICE_TABLE`，占位单价待官网核对）→ 日志；实测数据见 [docs/llm-cost.md](../docs/llm-cost.md)
+
+## 请求限流（任务 H）
+
+内存令牌桶，**仅拦截 POST**（GET 轮询不限）：每 IP 每分钟 `RATE_LIMIT_PER_MINUTE` 次（默认 10，**0 = 禁用**）。IP 取 `X-Forwarded-For` 首段（同源代理场景），缺省用直连地址。超限返回 429：
+
+```json
+{ "error": { "code": "RATE_LIMITED", "message": "请求太频繁，请稍后再试" } }
+```
+
+实现：`app/services/rate_limit.py`（`TokenBucketLimiter` + 纯 ASR 中间件，跨线程安全）。
 
 ## 云端 ASR（手动选择，任务 D）
 
@@ -157,7 +167,7 @@ backend/app/
     ├── audio.py         # yt-dlp 下载音轨 + FFmpeg 转 16kHz 单声道 WAV
     ├── asr.py           # faster-whisper 本地推理 / 云端 OpenAI 兼容客户端
     ├── transcribe.py    # 流水线编排（BackgroundTasks 入口，进度更新）
-    └── tasks.py         # 内存任务注册表
+    └── tasks.py         # 任务注册表（SQLite 持久化 backend/data/tasks.db + 内存写穿缓存）
 ```
 
 ## 环境变量

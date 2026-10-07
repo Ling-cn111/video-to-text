@@ -104,6 +104,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
       set({ stage: task.stage, progress: task.progress, video: task.video ?? get().video })
 
+      if (task.status === 'interrupted') {
+        // 服务重启后未完成的历史任务（SQLite 持久化恢复）：引导重试
+        set({ phase: 'error', error: { code: 'TASK_INTERRUPTED', message: '任务已中断（服务重启过），请重试' } })
+        return
+      }
       if (task.status === 'failed') {
         set({ phase: 'error', error: task.error ?? { code: 'TRANSCRIBE_FAILED', message: '转写失败，请重试' } })
         return
@@ -138,6 +143,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       const task = await api.getTask(taskId)
       set({ taskId, video: task.video ?? null, stage: task.stage, progress: task.progress })
 
+      if (task.status === 'interrupted') {
+        set({ phase: 'error', error: { code: 'TASK_INTERRUPTED', message: '任务已中断（服务重启过），请重试' } })
+        return
+      }
       if (task.status === 'failed') {
         set({ phase: 'error', error: task.error ?? { code: 'TRANSCRIBE_FAILED', message: '转写失败，请重试' } })
         return

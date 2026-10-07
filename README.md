@@ -36,7 +36,7 @@
 
 ## 已知限制
 
-- 转写任务注册表为进程内存实现：单进程 uvicorn 够用，多 worker / 云端部署需替换为 Redis（接口已封装，见 backend/README.md）
+- 转写任务已持久化到 SQLite（`backend/data/tasks.db`）：服务重启后历史任务可查，重启时未完成任务标记「已中断」并引导重试；多 worker / 云端部署仍需替换为 Redis（接口已封装，见 backend/README.md）
 - 当前仅支持 B站；抖音解析在前端 Mock 中预置，真实后端待接入
 - B站 AI 字幕非全覆盖（实测 6 视频中 5 个有轨道），无字幕时走 ASR 兜底
 - LLM 总结需配置 `DEEPSEEK_API_KEY`（或通义 `DASHSCOPE_API_KEY`），未配置时总结步骤明确报错

@@ -32,6 +32,12 @@ EXTRACT_TIMEOUT_SECONDS: int = int(os.getenv("EXTRACT_TIMEOUT_SECONDS", "30"))
 # 音频工作目录（下载 + 转换的临时文件，任务结束自动清理）
 AUDIO_DIR = os.getenv("AUDIO_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), ".audio"))
 
+# 任务持久化（SQLite，任务 H）：重启后历史任务可查，未完成任务标记 interrupted
+TASK_DB_PATH: str = os.getenv("TASK_DB_PATH", os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "tasks.db"))
+
+# 请求限流（令牌桶，任务 H）：每 IP 每分钟 POST 请求数上限；0 = 禁用
+RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "10"))
+
 # ASR 引擎：faster-whisper（本地，默认）| qwen3（Qwen3-ASR-1.7B 本地）| funasr（Fun-ASR-Nano 本地）
 # | cloud（OpenAI 兼容接口）。兼容旧值：local = faster-whisper、旧变量名 ASR_PROVIDER
 # 场景推荐：

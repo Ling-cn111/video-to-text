@@ -8,6 +8,11 @@ from app.errors import AppException
 from app.routers.parse import router as parse_router
 from app.routers.summarize import router as summarize_router
 from app.routers.transcribe import router as transcribe_router
+from app.services import tasks as task_store
+from app.services.rate_limit import RateLimitMiddleware
+
+# 任务持久化初始化（SQLite）：加载历史任务，未完成的标记 interrupted
+task_store.init_task_store()
 
 app = FastAPI(
     title="video-to-text API",
@@ -22,6 +27,8 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+# 请求限流（任务 H）：每 IP 每分钟 POST 上限（RATE_LIMIT_PER_MINUTE，0 禁用）
+app.add_middleware(RateLimitMiddleware)
 
 app.include_router(parse_router)
 app.include_router(transcribe_router)
