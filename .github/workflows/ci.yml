@@ -79,5 +79,16 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Run E2E
+      - name: Run E2E (mock mode, all locks)
         run: pnpm playwright test
+
+      # 真实模式构建：验证「Mock 标识在真实模式不出现」（E2E 锁定 7 第二阶段，任务 K）
+      - name: Build (real mode)
+        run: pnpm build
+        env:
+          NEXT_PUBLIC_USE_MOCK: "false"
+
+      - name: Run E2E (real mode, lock 7)
+        run: pnpm playwright test -g "锁定 7"
+        env:
+          VTT_EXPECT_MODE: real
