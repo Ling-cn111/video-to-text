@@ -8,7 +8,8 @@ cd /d "%~dp0"
 
 set "ACTION=%~1"
 
-if "%ACTION%"=="" goto :usage
+rem 无参数（双击）＝直接启动；查看用法请运行 run.bat help
+if "%ACTION%"=="" goto :start
 
 if /i "%ACTION%"=="start" goto :start
 
@@ -26,13 +27,14 @@ goto :usage
 
 echo 用法：
 
-echo   run.bat start     启动前后端并打开浏览器
+echo   双击 run.bat（或 run.bat start）  启动前后端并打开浏览器
 
 echo   run.bat stop      关闭前后端
 
 echo   run.bat restart   重启
 
 echo   run.bat status    查看运行状态
+echo   run.bat help      显示本帮助
 
 exit /b 0
 
@@ -47,6 +49,7 @@ rem ============ start ============
 if not exist "backend\.venv\Scripts\python.exe" (
 
     echo [错误] 未找到 backend\.venv，请先运行 setup.bat
+    pause
 
     exit /b 1
 
@@ -55,6 +58,7 @@ if not exist "backend\.venv\Scripts\python.exe" (
 if not exist "node_modules" (
 
     echo [错误] 未找到 node_modules，请先运行 setup.bat
+    pause
 
     exit /b 1
 
@@ -81,6 +85,7 @@ if "%PORT_BUSY%"=="1" (
     if errorlevel 2 (
 
         echo 已取消。可运行 run.bat status 查看详情。
+        pause
 
         exit /b 1
 
@@ -147,6 +152,7 @@ goto :wait_front
 :wait_timeout
 
 echo [警告] 30 秒内前端未就绪，请查看 logs\frontend-%TS%.log 排查。
+pause
 
 start "" http://localhost:3000
 
