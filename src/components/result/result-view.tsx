@@ -8,9 +8,9 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { TranscriptList } from '@/components/result/transcript-list'
-import { SummaryCard } from '@/components/result/summary-card'
 import { ArticleView } from '@/components/result/full-text-view'
 import { ExportMenu } from '@/components/result/export-menu'
+import { SummaryCard, SummaryErrorState, SummaryEmptyState, SummarySkeleton } from '@/components/result/summary-card'
 import { ErrorAlert } from '@/components/shared/error-alert'
 import { PlatformBadge } from '@/components/shared/platform-badge'
 import { formatDuration } from '@/lib/format'
@@ -33,19 +33,29 @@ export function ResultView({ taskId }: ResultViewProps) {
   const video = useTaskStore((state) => state.video)
   const transcript = useTaskStore((state) => state.transcript)
   const summary = useTaskStore((state) => state.summary)
+  const summaryError = useTaskStore((state) => state.summaryError)
   const error = useTaskStore((state) => state.error)
   const transcriptSource = useTaskStore((state) => state.transcriptSource)
   const recover = useTaskStore((state) => state.recover)
   const retry = useTaskStore((state) => state.retry)
+  const retrySummary = useTaskStore((state) => state.retrySummary)
+  const loadCapabilities = useTaskStore((state) => state.loadCapabilities)
+  const capabilities = useTaskStore((state) => state.capabilities)
   const reset = useTaskStore((state) => state.reset)
   const [recovering, setRecovering] = useState(storeTaskId !== taskId)
   const [retrying, setRetrying] = useState(false)
+  const [summaryRetrying, setSummaryRetrying] = useState(false)
   const [tab, setTab] = useState<TranscriptTab>('article')
 
+  // P0：summary 可为 null（总结失败/进行中）——分段只用可选的 chapters，导出与页面同源不受影响
   const paragraphs = useMemo(
-    () => (transcript && summary ? formatTranscriptToArticle(transcript, summary.chapters) : []),
+    () => (transcript ? formatTranscriptToArticle(transcript, summary?.chapters) : []),
     [transcript, summary],
   )
+
+  useEffect(() => {
+    void loadCapabilities() // 幂等；直访结果页时用于判断总结不可重试场景
+  }, [loadCapabilities])
 
   useEffect(() => {
     if (storeTaskId !== taskId) {
@@ -61,12 +71,18 @@ export function ResultView({ taskId }: ResultViewProps) {
     if (newTaskId) router.replace(`/processing/${newTaskId}`)
   }
 
+  const handleSummaryRetry = async () => {
+    setSummaryRetrying(true)
+    await retrySummary()
+    setSummaryRetrying(false)
+  }
+
   const handleBack = () => {
     reset()
     router.push('/')
   }
 
-  if (recovering || phase === 'parsing' || phase === 'summarizing') {
+  if (recovering || phase === 'parsing') {
     return <ResultSkeleton />
   }
 
@@ -83,7 +99,8 @@ export function ResultView({ taskId }: ResultViewProps) {
     )
   }
 
-  if (phase !== 'done' || !transcript || !summary) {
+  // P0：只要文字稿就绪即可渲染主体（总结失败/进行中不再整页骨架）
+  if (!transcript) {
     return <ResultSkeleton />
   }
 
@@ -98,6 +115,10 @@ export function ResultView({ taskId }: ResultViewProps) {
             {transcriptSource?.startsWith('subtitle') ? (
               <Badge variant="secondary" data-testid="source-badge" className="font-normal">
                 来源：B站字幕
+              </Badge>
+            ) : transcriptSource === 'asr' ? (
+              <Badge variant="outline" data-testid="source-badge" className="font-normal">
+                来源：语音识别
               </Badge>
             ) : null}
             {video ? <span>{formatDuration(video.duration)}</span> : null}
@@ -156,7 +177,20 @@ export function ResultView({ taskId }: ResultViewProps) {
             </div>
           </CardHeader>
           <CardContent>
-            <SummaryCard summary={summary} />
+            {summary ? (
+              <SummaryCard summary={summary} />
+            ) : summaryError ? (
+              <SummaryErrorState
+                message={summaryError}
+                onRetry={handleSummaryRetry}
+                retrying={summaryRetrying}
+                retryable={capabilities?.summarizeConfigured !== false}
+              />
+            ) : phase === 'summarizing' ? (
+              <SummarySkeleton />
+            ) : (
+              <SummaryEmptyState />
+            )}
           </CardContent>
         </Card>
       </div>

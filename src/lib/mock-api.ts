@@ -46,8 +46,10 @@ interface TaskPayload {
   s: number
   /** 注入失败标记 */
   f?: 1
-  /** 文字稿来源标记（E2E 锁定 5 用：字幕来源任务显示来源 Badge） */
-  src?: 'subtitle_cc' | 'subtitle_ai'
+  /** 注入总结失败标记（E2E 锁定 8：验证总结失败降级不拖垮文字稿） */
+  sumFail?: 1
+  /** 文字稿来源标记（E2E 锁定 5 用：字幕来源显示「来源：B站字幕」，asr 显示「来源：语音识别」） */
+  src?: 'subtitle_cc' | 'subtitle_ai' | 'asr'
   /** 真实解析透传的元数据（M1.5 混合模式：解析真实、转写 Mock） */
   m?: { t: string; c: string; d: number }
 }
@@ -193,6 +195,10 @@ export async function summarizeTask(taskId: string): Promise<Summary> {
   if (!payload) {
     // Mock 模式下所有任务均为本模块编码的 taskId；无法解码视为非法请求
     throw new MockApiError('INVALID_TASK', '任务不存在或已过期，请重新解析视频链接')
+  }
+  if (payload.sumFail) {
+    // E2E 锁定 8：模拟总结失败（验证 P0 降级——文字稿照常渲染 + 总结区错误与重试）
+    throw new MockApiError('SUMMARIZE_FAILED', 'AI 总结生成失败，请稍后重试')
   }
   return getMockData(payload.p).summary
 }

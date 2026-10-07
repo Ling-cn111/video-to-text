@@ -76,32 +76,43 @@ test.describe("前端功能锁定协议", () => {
     expect(content).not.toMatch(TIMESTAMP_PATTERN); // 零时间戳
   });
 
-  test("锁定 4：首页转写模式默认本地，选云端出现隐私提示，Mock 模式附无实际效果小字", async ({ page }) => {
+  test("锁定 4：首页转写模式默认本地，说明随选择变化，Mock 模式附无实际效果小字", async ({ page }) => {
     await page.goto("/");
 
     const mode = page.getByTestId("transcribe-mode");
     await expect(mode).toBeVisible();
     // 默认选中「本地」（锁定默认值）
     await expect(page.getByRole("button", { name: "本地" })).toHaveAttribute("aria-pressed", "true");
-    // 未选云端时不出现隐私提示；Mock 模式的小字提示始终存在
-    await expect(page.getByTestId("cloud-privacy-notice")).toHaveCount(0);
+    // Mock 模式的小字提示始终存在
     await expect(page.getByTestId("mock-no-effect-hint")).toContainText("无实际效果");
 
-    // 切换云端：选中态生效且隐私提示必须出现（锁定项）
+    // 说明行常显且随选择变化——断言严格限定在 mode-description 区域内（与锁定 1 的 fulltext-article 做法一致）
+    const description = page.getByTestId("mode-description");
+    await expect(description).toContainText("本地模式");
+    await expect(description).not.toContainText("上传至第三方");
+
+    // 切换云端：选中态生效；说明行切换为云端文案并含隐私提示（原隐私提示已并入，锁定项）
     await page.getByRole("button", { name: "云端" }).click();
     await expect(page.getByRole("button", { name: "云端" })).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByTestId("cloud-privacy-notice")).toContainText("上传至第三方");
+    await expect(description).toContainText("云端模式");
+    await expect(description).toContainText("准确率更高");
+    await expect(description).toContainText("上传至第三方");
   });
 
-  test("锁定 5：字幕来源任务显示来源 Badge，ASR 来源任务不显示", async ({ page }) => {
-    // 字幕来源的 Mock 任务（payload 携带 src 标记）
+  test("锁定 5：来源 Badge 按 transcriptSource 显示（字幕 / 语音识别 / 缺省不显示）", async ({ page }) => {
+    // 字幕来源 → 「来源：B站字幕」
     const subtitlePayload = { v: "BV1GJ411x7h7", p: "bilibili", s: Date.now() - 11_000, src: "subtitle_ai" };
-    const subtitleTaskId = Buffer.from(JSON.stringify(subtitlePayload)).toString("base64url");
-    await page.goto(`/result/${subtitleTaskId}`);
+    await page.goto(`/result/${Buffer.from(JSON.stringify(subtitlePayload)).toString("base64url")}`);
     await expect(page.getByTestId("fulltext-article")).toBeVisible();
-    await expect(page.getByTestId("source-badge")).toContainText("来源：B站字幕");
+    await expect(page.getByTestId("source-badge")).toHaveText(/来源：B站字幕/);
 
-    // 普通（ASR 来源）任务：严禁出现来源 Badge
+    // ASR 来源 → 「来源：语音识别」（用户可据此区分字幕快路径与否）
+    const asrPayload = { v: "BV1GJ411x7h7", p: "bilibili", s: Date.now() - 11_000, src: "asr" };
+    await page.goto(`/result/${Buffer.from(JSON.stringify(asrPayload)).toString("base64url")}`);
+    await expect(page.getByTestId("fulltext-article")).toBeVisible();
+    await expect(page.getByTestId("source-badge")).toHaveText(/来源：语音识别/);
+
+    // 缺省（无来源信息）→ 不显示 Badge
     await page.goto(`/result/${mockTaskId()}`);
     await expect(page.getByTestId("fulltext-article")).toBeVisible();
     await expect(page.getByTestId("source-badge")).toHaveCount(0);
@@ -140,5 +151,56 @@ test.describe("前端功能锁定协议", () => {
     }
     // 历史硬编码文案不得回退（两种模式都不出现）
     await expect(page.getByText("前端 Demo · Mock 数据演示")).toHaveCount(0);
+  });
+
+  test("锁定 8：总结失败降级——文字稿可见 + 错误卡与重试 + 导出同源", async ({ page }) => {
+    // 注入总结失败的 Mock 任务（sumFail 标记 → /api/summarize 返回错误）
+    const failPayload = { v: "BV1GJ411x7h7", p: "bilibili", s: Date.now() - 11_000, sumFail: 1 };
+    const failTaskId = Buffer.from(JSON.stringify(failPayload)).toString("base64url");
+    await page.goto(`/result/${failTaskId}`);
+
+    // 文字稿照常渲染（默认全文阅读 Tab、零时间戳）——总结失败不得拖垮主体
+    const article = page.getByTestId("fulltext-article");
+    await expect(article).toBeVisible();
+    const articleText = await article.innerText();
+    expect(articleText.length).toBeGreaterThan(50);
+    expect(articleText).not.toMatch(TIMESTAMP_PATTERN);
+
+    // 总结区：错误卡 + 重试按钮（不再整页错误/骨架）
+    await expect(page.getByTestId("summary-error")).toBeVisible();
+    await expect(page.getByRole("button", { name: "重试总结" })).toBeVisible();
+    await expect(page.getByTestId("fulltext-article")).toBeVisible(); // 错误卡出现后文字稿仍在
+
+    // 导出同源回归（summary 为 null 的新边界）：TXT/MD 与页面全文视图同源、零时间戳
+    await page.getByRole("button", { name: "导出" }).click();
+    const txtDownload = page.waitForEvent("download");
+    await page.getByRole("menuitem", { name: "纯文本（.txt）" }).click();
+    const txt = readFileSync(await (await txtDownload).path(), "utf-8");
+    expect(txt).not.toMatch(TIMESTAMP_PATTERN);
+    expect(txt).toContain("《");
+
+    await page.getByRole("button", { name: "导出" }).click();
+    const mdDownload = page.waitForEvent("download");
+    await page.getByRole("menuitem", { name: "Markdown（.md）" }).click();
+    const md = readFileSync(await (await mdDownload).path(), "utf-8");
+    expect(md).toContain("## 正文");
+    expect(md).not.toMatch(TIMESTAMP_PATTERN);
+
+    // 三者同源：页面全文视图的首段（前 20 字）必须出现在 TXT 导出中
+    const firstParagraph = articleText
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.length > 10);
+    expect(firstParagraph).toBeTruthy();
+    expect(txt).toContain(firstParagraph!.slice(0, 20));
+
+    // 进度页路径（pollTask 降级，用户主路径）：从 /processing 自然流转，同样降级不整页报错
+    const pollPayload = { v: "BV1GJ411x7h7", p: "bilibili", s: Date.now() - 9_000, sumFail: 1 };
+    const pollTaskId = Buffer.from(JSON.stringify(pollPayload)).toString("base64url");
+    await page.goto(`/processing/${pollTaskId}`);
+    await page.waitForURL(/\/result\//, { timeout: 20_000 });
+    await expect(page.getByTestId("fulltext-article")).toBeVisible();
+    await expect(page.getByTestId("summary-error")).toBeVisible();
+    await expect(page.getByRole("button", { name: "重试总结" })).toBeVisible();
   });
 });

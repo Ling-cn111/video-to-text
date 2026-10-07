@@ -76,6 +76,14 @@ export interface SummarizeRequest {
   duration: number
 }
 
+/** 能力探测（任务 M2-P2-A）：只含布尔配置状态，后端不返回 Key 的任何信息 */
+export interface Capabilities {
+  /** 云端 ASR Key（CLOUD_ASR_API_KEY）是否已配置 */
+  cloudAsrConfigured: boolean
+  /** LLM 总结 Key（按 LLM_PROVIDER 对应的 Key）是否已配置 */
+  summarizeConfigured: boolean
+}
+
 export type TaskStatus = 'processing' | 'completed' | 'failed' | 'interrupted'
 
 /**

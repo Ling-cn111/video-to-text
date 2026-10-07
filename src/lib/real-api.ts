@@ -1,5 +1,6 @@
 import { JSON_HEADERS, toJson, throwNetworkError, type ApiClient } from '@/lib/http'
 import type {
+  Capabilities,
   GetTaskResponse,
   StartTaskResponse,
   SummarizeRequest,
@@ -55,4 +56,7 @@ export const realApi: ApiClient = {
         }),
       }).catch(throwNetworkError),
     ),
+  /** GET /backend-api/capabilities：只读配置状态（布尔），用于前端禁用/提示 */
+  getCapabilities: (): Promise<Capabilities> =>
+    toJson(fetch('/backend-api/capabilities').catch(throwNetworkError)),
 } as const
