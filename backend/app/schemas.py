@@ -95,6 +95,13 @@ class SummaryResponse(BaseModel):
     chapters: list[ChapterNote] = Field(default_factory=list)
 
 
+class CapabilitiesResponse(BaseModel):
+    """能力探测（任务 M2-P2-A）：仅两个布尔，绝不含 Key 的任何信息。"""
+
+    cloudAsrConfigured: bool
+    summarizeConfigured: bool
+
+
 class TaskDetailResponse(BaseModel):
     """GET /api/transcribe/{taskId} 响应（前端 GetTaskResponse 的后端实现）"""
 

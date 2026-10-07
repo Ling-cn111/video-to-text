@@ -1,6 +1,13 @@
 import { ApiError, JSON_HEADERS, toJson, throwNetworkError, type ApiClient, type ClientErrorCode } from '@/lib/http'
 import { realApi } from '@/lib/real-api'
-import type { GetTaskResponse, StartTaskResponse, SummarizeRequest, Summary, VideoInfo } from '@/lib/types'
+import type {
+  Capabilities,
+  GetTaskResponse,
+  StartTaskResponse,
+  SummarizeRequest,
+  Summary,
+  VideoInfo,
+} from '@/lib/types'
 
 export { ApiError, type ClientErrorCode }
 
@@ -46,6 +53,9 @@ const mockApi: ApiClient = {
         body: JSON.stringify(request),
       }).catch(throwNetworkError),
     ),
+  /** GET /api/capabilities：Mock 模式恒为已配置（不阻塞演示） */
+  getCapabilities: (): Promise<Capabilities> =>
+    toJson(fetch('/api/capabilities').catch(throwNetworkError)),
 } as const
 
 const useMock = process.env.NEXT_PUBLIC_USE_MOCK !== 'false'

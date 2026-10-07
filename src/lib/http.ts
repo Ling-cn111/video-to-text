@@ -1,6 +1,7 @@
 import type {
   ApiErrorCode,
   ApiErrorBody,
+  Capabilities,
   GetTaskResponse,
   StartTaskResponse,
   SummarizeRequest,
@@ -27,6 +28,8 @@ export interface ApiClient {
   ) => Promise<StartTaskResponse>
   getTask: (taskId: string) => Promise<GetTaskResponse>
   summarize: (request: SummarizeRequest) => Promise<Summary>
+  /** 能力探测（只读布尔，不含 Key） */
+  getCapabilities: () => Promise<Capabilities>
 }
 
 /** 客户端可见的错误码 = 契约错误码 + 网络层补充码 */

@@ -71,15 +71,18 @@ export function SummaryCard({ summary }: { summary: Summary }) {
   )
 }
 
-/** 总结生成失败（P0 降级态）：错误卡 + 重试按钮；文字稿区域不受影响 */
+/** 总结生成失败（P0 降级态）：错误卡 + 重试按钮；文字稿区域不受影响。
+ *  retryable=false（如 LLM Key 未配置，M2-P2-A）时隐藏重试按钮，改为配置引导。 */
 export function SummaryErrorState({
   message,
   onRetry,
   retrying,
+  retryable = true,
 }: {
   message: string
   onRetry: () => void
   retrying: boolean
+  retryable?: boolean
 }) {
   return (
     <div
@@ -93,14 +96,20 @@ export function SummaryErrorState({
           <p className="text-xs leading-relaxed text-muted-foreground">{message}</p>
         </div>
       </div>
-      <Button size="sm" variant="outline" onClick={onRetry} disabled={retrying} className="gap-1.5">
-        {retrying ? (
-          <Loader2 className="size-3.5 animate-spin" aria-hidden />
-        ) : (
-          <RefreshCw className="size-3.5" aria-hidden />
-        )}
-        重试总结
-      </Button>
+      {retryable ? (
+        <Button size="sm" variant="outline" onClick={onRetry} disabled={retrying} className="gap-1.5">
+          {retrying ? (
+            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          ) : (
+            <RefreshCw className="size-3.5" aria-hidden />
+          )}
+          重试总结
+        </Button>
+      ) : (
+        <p data-testid="summary-config-hint" className="text-xs text-muted-foreground">
+          配置完成后刷新页面即可生成总结。
+        </p>
+      )}
     </div>
   )
 }

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { api, ApiError, type ClientErrorCode } from '@/lib/api'
 import type {
+  Capabilities,
   Summary,
   TaskStage,
   TranscribeEngine,
@@ -40,6 +41,8 @@ interface TaskState {
   engine: TranscribeEngine
   /** 文字稿来源（字幕来源任务在结果页显示来源 Badge） */
   transcriptSource: TranscriptSource | null
+  /** 能力探测（M2-P2-A）：null=检测中；会话内加载一次，跨任务保留；不随 reset 清空 */
+  capabilities: Capabilities | null
 
   /** 首页提交链接：解析 + 创建转写任务。成功返回 taskId（供路由跳转），失败返回 null。 */
   submitUrl: (url: string) => Promise<string | null>
@@ -51,6 +54,8 @@ interface TaskState {
   retry: () => Promise<string | null>
   /** 总结失败后重试（文字稿已在手，直接重调 summarize） */
   retrySummary: () => Promise<void>
+  /** 加载能力探测（幂等；失败时乐观放行） */
+  loadCapabilities: () => Promise<void>
   /** 首页切换转写模式 */
   setEngine: (engine: TranscribeEngine) => void
   reset: () => void
@@ -84,6 +89,18 @@ function toAppError(error: unknown): UiError {
 export const useTaskStore = create<TaskState>((set, get) => ({
   ...IDLE,
   engine: 'local',
+  capabilities: null,
+
+  loadCapabilities: async () => {
+    if (get().capabilities) return // 幂等：会话内只探测一次
+    try {
+      const capabilities = await api.getCapabilities()
+      set({ capabilities })
+    } catch {
+      // 探测失败不阻塞主流程：乐观放行（后端不可达时后续请求会给出明确错误）
+      set({ capabilities: { cloudAsrConfigured: true, summarizeConfigured: true } })
+    }
+  },
 
   submitUrl: async (url) => {
     set({ ...IDLE, phase: 'parsing' })
@@ -126,6 +143,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           transcriptSource: task.transcriptSource ?? null,
           summaryError: null,
         })
+        // 能力前置：未配置 LLM Key 时不发起无用请求，直接给出引导（M2-P2-A）
+        if (get().capabilities?.summarizeConfigured === false) {
+          set({ phase: 'done', summary: null, summaryError: '未配置 LLM Key，无法生成总结：请在 backend/.env.local 填写 DEEPSEEK_API_KEY 后重试' })
+          return
+        }
         try {
           const summary = await api.summarize({
             taskId,
@@ -173,6 +195,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         return
       }
       set({ phase: 'summarizing', transcript: task.transcript, plainText: task.plainText ?? null, transcriptSource: task.transcriptSource ?? null, summaryError: null })
+      // 能力前置（M2-P2-A）：未配置 LLM Key 时不发起无用请求
+      if (get().capabilities?.summarizeConfigured === false) {
+        set({ phase: 'done', summary: null, summaryError: '未配置 LLM Key，无法生成总结：请在 backend/.env.local 填写 DEEPSEEK_API_KEY 后重试' })
+        return
+      }
       try {
         const summary = await api.summarize({
           taskId,

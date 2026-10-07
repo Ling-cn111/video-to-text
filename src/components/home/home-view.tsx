@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Clock, FileDown, Link2, ListChecks, Sparkles } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -25,6 +25,12 @@ export function HomeView() {
   const inputRef = useRef<HTMLDivElement>(null)
   const engine = useTaskStore((s) => s.engine)
   const setEngine = useTaskStore((s) => s.setEngine)
+  const loadCapabilities = useTaskStore((s) => s.loadCapabilities)
+
+  // 能力探测（幂等）：云端选项据此决定「检测中/禁用/可用」
+  useEffect(() => {
+    void loadCapabilities()
+  }, [loadCapabilities])
 
   const pickExample = (exampleUrl: string) => {
     setUrl(exampleUrl)

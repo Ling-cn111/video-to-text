@@ -39,6 +39,8 @@ export function ResultView({ taskId }: ResultViewProps) {
   const recover = useTaskStore((state) => state.recover)
   const retry = useTaskStore((state) => state.retry)
   const retrySummary = useTaskStore((state) => state.retrySummary)
+  const loadCapabilities = useTaskStore((state) => state.loadCapabilities)
+  const capabilities = useTaskStore((state) => state.capabilities)
   const reset = useTaskStore((state) => state.reset)
   const [recovering, setRecovering] = useState(storeTaskId !== taskId)
   const [retrying, setRetrying] = useState(false)
@@ -50,6 +52,10 @@ export function ResultView({ taskId }: ResultViewProps) {
     () => (transcript ? formatTranscriptToArticle(transcript, summary?.chapters) : []),
     [transcript, summary],
   )
+
+  useEffect(() => {
+    void loadCapabilities() // 幂等；直访结果页时用于判断总结不可重试场景
+  }, [loadCapabilities])
 
   useEffect(() => {
     if (storeTaskId !== taskId) {
@@ -174,7 +180,12 @@ export function ResultView({ taskId }: ResultViewProps) {
             {summary ? (
               <SummaryCard summary={summary} />
             ) : summaryError ? (
-              <SummaryErrorState message={summaryError} onRetry={handleSummaryRetry} retrying={summaryRetrying} />
+              <SummaryErrorState
+                message={summaryError}
+                onRetry={handleSummaryRetry}
+                retrying={summaryRetrying}
+                retryable={capabilities?.summarizeConfigured !== false}
+              />
             ) : phase === 'summarizing' ? (
               <SummarySkeleton />
             ) : (
