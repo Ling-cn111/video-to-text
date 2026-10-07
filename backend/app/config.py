@@ -59,6 +59,35 @@ ENABLE_VOCAL_SEPARATION: bool = os.getenv("ENABLE_VOCAL_SEPARATION", "false").lo
 VOCAL_SEP_TRIGGER_RATIO: float = float(os.getenv("VOCAL_SEP_TRIGGER_RATIO", "0.4"))
 WHISPER_COMPUTE_TYPE: str = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 
+# ---- LLM 总结（阶段三，任务 E）----
+# 二选一配置：DEEPSEEK_API_KEY 或 DASHSCOPE_API_KEY（通义千问兼容模式），
+# LLM_PROVIDER=deepseek|qwen 切换；未配 Key 时总结接口报 SUMMARIZE_NOT_CONFIGURED。
+LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "deepseek")
+DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
+DASHSCOPE_API_KEY: str = os.getenv("DASHSCOPE_API_KEY", "")
+
+# 各 provider 的 OpenAI 兼容端点与默认模型（模型可被 LLM_MODEL 覆盖）
+LLM_PRESETS: dict[str, dict[str, str]] = {
+    "deepseek": {
+        "base_url": "https://api.deepseek.com/v1",
+        "default_model": "deepseek-flash",
+        "key_env": "DEEPSEEK_API_KEY",
+    },
+    "qwen": {
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "default_model": "qwen-plus",
+        "key_env": "DASHSCOPE_API_KEY",
+    },
+}
+LLM_MODEL: str = os.getenv("LLM_MODEL", "")
+
+# 单价表：每百万 token 人民币（LLM_PRICE_TABLE[模型] = {input, output}）。
+# ⚠️ 占位值待 Key 到手后按官方定价页核对修正，勿据此对外报价。
+LLM_PRICE_TABLE: dict[str, dict[str, float]] = {
+    "deepseek-flash": {"input": 1.0, "output": 2.0},
+    "qwen-plus": {"input": 0.8, "output": 2.0},
+}
+
 # ---- 云端 ASR（OpenAI 兼容协议，手动选择，无自动切换）----
 # 默认指向硅基流动；使用云端模式必须配置 CLOUD_ASR_API_KEY，
 # 未配置时前端选择云端会直接报「云端转写未配置」错误（不会静默降级）。

@@ -1,4 +1,4 @@
-import type { Chapter, TranscriptItem } from '@/lib/types'
+import type { ChapterNote, TranscriptItem } from '@/lib/types'
 
 /** 兜底分段阈值：至少 3 句且累计约 160 字，且停在句末标点 */
 const MIN_PARAGRAPH_CHARS = 160
@@ -17,12 +17,12 @@ const SENTENCE_END_CHARS = "。！？!?…"
  */
 export function formatTranscriptToArticle(
   transcript: TranscriptItem[],
-  chapters?: Chapter[],
+  chapters?: ChapterNote[],
 ): string[] {
   if (transcript.length === 0) return []
 
   const chapterStarts = (chapters ?? [])
-    .map((chapter) => chapter.time)
+    .map((chapter) => chapter.timeStart)
     .sort((a, b) => a - b)
 
   const paragraphs: string[] = []
