@@ -122,4 +122,23 @@ test.describe("前端功能锁定协议", () => {
     await expect(chapters).toBeVisible();
     await expect(chapters.getByText(/\d{1,2}:\d{2}–\d{1,2}:\d{2}/).first()).toBeVisible();
   });
+
+  test("锁定 7：首页模式标识随构建模式渲染（Mock 显示 / 真实隐藏）", async ({ page }) => {
+    // VTT_EXPECT_MODE=real 时在真实模式构建上运行（CI 第二阶段）；缺省按 Mock 构建断言
+    const expectReal = process.env.VTT_EXPECT_MODE === "real";
+    await page.goto("/");
+
+    const badge = page.getByTestId("mock-mode-badge");
+    const note = page.getByTestId("mock-mode-note");
+    if (expectReal) {
+      // 真实模式：严禁出现任何 Mock 标识
+      await expect(badge).toHaveCount(0);
+      await expect(note).toHaveCount(0);
+    } else {
+      await expect(badge).toContainText("演示模式 · Mock 数据");
+      await expect(note).toBeVisible();
+    }
+    // 历史硬编码文案不得回退（两种模式都不出现）
+    await expect(page.getByText("前端 Demo · Mock 数据演示")).toHaveCount(0);
+  });
 });

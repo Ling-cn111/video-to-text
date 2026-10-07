@@ -16,6 +16,10 @@ const FEATURES = [
   { icon: FileDown, title: '一键导出', description: '支持导出 TXT / Markdown，笔记软件直接用' },
 ]
 
+/** Mock 模式标识（构建期常量）：Mock 显示「演示模式 · Mock 数据」，真实模式不渲染。
+ *  锁定项：见 docs/frontend-features.md §8；E2E 锁定 7 强制。 */
+const USE_MOCK = process.env.NEXT_PUBLIC_USE_MOCK !== 'false'
+
 export function HomeView() {
   const [url, setUrl] = useState('')
   const inputRef = useRef<HTMLDivElement>(null)
@@ -31,10 +35,16 @@ export function HomeView() {
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-10 px-4 py-10 sm:py-16">
       {/* Hero */}
       <section className="flex flex-col items-center gap-4 text-center">
-        <Badge variant="secondary" className="gap-1.5 rounded-full px-3 py-1 text-xs">
-          <Sparkles className="size-3" aria-hidden />
-          前端 Demo · Mock 数据演示
-        </Badge>
+        {USE_MOCK ? (
+          <Badge
+            variant="secondary"
+            data-testid="mock-mode-badge"
+            className="gap-1.5 rounded-full px-3 py-1 text-xs"
+          >
+            <Sparkles className="size-3" aria-hidden />
+            演示模式 · Mock 数据
+          </Badge>
+        ) : null}
         <h1 className="text-3xl font-bold tracking-tight sm:text-5xl sm:leading-tight">
           视频链接，<span className="text-primary">一键转文字</span>
         </h1>
@@ -67,14 +77,19 @@ export function HomeView() {
         ))}
       </section>
 
-      {/* 底部说明 */}
-      <section className="flex items-start gap-2 rounded-xl border bg-muted/40 p-4 text-xs leading-relaxed text-muted-foreground">
-        <ListChecks className="mt-0.5 size-4 shrink-0" aria-hidden />
-        <p>
-          当前为纯前端演示：解析、转写与总结均为模拟数据（进度约 10 秒走完），
-          接口形状与真实后端契约一致，后续接入服务后无需改动界面。
-        </p>
-      </section>
+      {/* 底部说明：仅 Mock 模式显示演示文案；真实模式隐藏（锁定项，防止再被写死误导） */}
+      {USE_MOCK ? (
+        <section
+          data-testid="mock-mode-note"
+          className="flex items-start gap-2 rounded-xl border bg-muted/40 p-4 text-xs leading-relaxed text-muted-foreground"
+        >
+          <ListChecks className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <p>
+            当前为纯前端演示：解析、转写与总结均为模拟数据（进度约 10 秒走完），
+            接口形状与真实后端契约一致，后续接入服务后无需改动界面。
+          </p>
+        </section>
+      ) : null}
     </div>
   )
 }

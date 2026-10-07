@@ -90,7 +90,8 @@ LLM_MODEL: str = os.getenv("LLM_MODEL", "")
 # 单价表：LLM_PRICE_TABLE[模型] = {input, output, currency}（每百万 token）。
 # deepseek-flash：2026-10 官方定价页人民币口径（空闲时段 cache-miss 价，用户提供截图核对）；
 #   高峰（北京时间工作日 9-12/14-18 点）×2；缓存命中输入仅 ¥0.02。币种：CNY。
-# qwen-plus：待按阿里云百炼定价页核对。
+# qwen-plus：2026-10 阿里云百炼定价页核对（华北2北京，首档 0-128K token：输入 ¥0.8 / 输出 ¥2；
+#   思考模式输出 ¥8；超 128K 档位价格见 docs/llm-cost.md。本项目单块 <128K 走首档）。
 LLM_PRICE_TABLE: dict[str, dict[str, object]] = {
     "deepseek-flash": {"input": 1.0, "output": 4.0, "currency": "CNY"},
     "qwen-plus": {"input": 0.8, "output": 2.0, "currency": "CNY"},
