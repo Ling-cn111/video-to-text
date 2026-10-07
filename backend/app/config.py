@@ -1,6 +1,32 @@
 """应用配置：CORS 与运行参数（均可通过环境变量覆盖）。"""
 import os
 
+
+def _load_env_file(path: str) -> None:
+    """加载 .env.local（backend/ 目录）：逐行解析 KEY=VALUE，**已存在的环境变量优先**。
+
+    必要性（M2-P2-A 实测暴露）：run.bat / 控制台.ps1 / 手动 uvicorn 等启动方式
+    都不会注入 env 文件，此前「.env.local 配了 Key 但后端进程读不到」——
+    所有启动路径统一在此加载，且显式导出的环境变量仍可覆盖文件值。
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key, value = key.strip(), value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                    value = value[1:-1]  # 去掉成对引号
+                if key:
+                    os.environ.setdefault(key, value)
+    except FileNotFoundError:
+        pass
+
+
+_load_env_file(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env.local"))
+
 # HuggingFace 端点默认走国内镜像：本机直连 huggingface.co 会触发 SSL 证书校验失败，
 # 导致已缓存的模型在加载时仍联网校验而报错（转写任务失败）。
 # 必须在 huggingface_hub 被导入前设置，故置于 config 顶部；用户显式设置的值优先。

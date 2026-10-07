@@ -172,5 +172,7 @@ backend/app/
 
 ## 环境变量
 
-见 `.env.example`。`CORS_ORIGINS` 默认放行本地前端；`CORS_ORIGIN_REGEX`
-默认放行所有 `*.vercel.app`（预览与生产域）。
+见 `.env.example`。**启动时自动加载 `backend/.env.local`**（`config.py` 顶部逐行解析，KEY=VALUE；
+显式导出的环境变量优先于文件值）——run.bat / 控制台.ps1 / 手动 uvicorn 等所有启动方式统一生效，
+改完 Key 后重启后端即可（`run.bat restart` 或托盘「重启」）。
+`CORS_ORIGINS` 默认放行本地前端；`CORS_ORIGIN_REGEX` 默认放行所有 `*.vercel.app`（预览与生产域）。
