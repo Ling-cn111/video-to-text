@@ -33,6 +33,8 @@ interface TaskState {
   transcript: TranscriptItem[] | null
   plainText: string | null
   summary: Summary | null
+  /** 总结失败信息（P0 降级：不影响 phase，文字稿照常渲染，仅总结区显示错误与重试） */
+  summaryError: string | null
   error: UiError | null
   /** 转写引擎手动选择（首页设置；用户偏好，跨任务保留，不随 reset 清空） */
   engine: TranscribeEngine
@@ -47,6 +49,8 @@ interface TaskState {
   recover: (taskId: string) => Promise<void>
   /** 失败后重试：用已解析的视频重新创建任务 */
   retry: () => Promise<string | null>
+  /** 总结失败后重试（文字稿已在手，直接重调 summarize） */
+  retrySummary: () => Promise<void>
   /** 首页切换转写模式 */
   setEngine: (engine: TranscribeEngine) => void
   reset: () => void
@@ -65,6 +69,7 @@ const IDLE = {
   transcript: null,
   plainText: null,
   summary: null,
+  summaryError: null,
   error: null,
   transcriptSource: null,
 }
@@ -119,15 +124,22 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           transcript: task.transcript ?? null,
           plainText: task.plainText ?? null,
           transcriptSource: task.transcriptSource ?? null,
+          summaryError: null,
         })
-        const summary = await api.summarize({
-          taskId,
-          transcript: task.transcript ?? [],
-          title: (task.video ?? get().video)?.title ?? '',
-          duration: (task.video ?? get().video)?.duration ?? 0,
-        })
-        if (get().taskId !== taskId) return
-        set({ phase: 'done', summary })
+        try {
+          const summary = await api.summarize({
+            taskId,
+            transcript: task.transcript ?? [],
+            title: (task.video ?? get().video)?.title ?? '',
+            duration: (task.video ?? get().video)?.duration ?? 0,
+          })
+          if (get().taskId !== taskId) return
+          set({ phase: 'done', summary })
+        } catch (error) {
+          // P0 降级：总结失败不改变任务 phase，文字稿照常渲染，仅记录总结错误
+          if (get().taskId !== taskId) return
+          set({ phase: 'done', summary: null, summaryError: toAppError(error).message })
+        }
       }
     } catch (error) {
       set({ phase: 'error', error: toAppError(error) })
@@ -160,14 +172,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         set({ phase: 'error', error: { code: 'INVALID_TASK', message: '任务不存在或已过期，请重新解析视频链接' } })
         return
       }
-      set({ phase: 'summarizing', transcript: task.transcript, plainText: task.plainText ?? null, transcriptSource: task.transcriptSource ?? null })
-      const summary = await api.summarize({
-        taskId,
-        transcript: task.transcript,
-        title: (task.video ?? get().video)?.title ?? '',
-        duration: (task.video ?? get().video)?.duration ?? 0,
-      })
-      set({ phase: 'done', summary })
+      set({ phase: 'summarizing', transcript: task.transcript, plainText: task.plainText ?? null, transcriptSource: task.transcriptSource ?? null, summaryError: null })
+      try {
+        const summary = await api.summarize({
+          taskId,
+          transcript: task.transcript,
+          title: (task.video ?? get().video)?.title ?? '',
+          duration: (task.video ?? get().video)?.duration ?? 0,
+        })
+        set({ phase: 'done', summary })
+      } catch (error) {
+        // P0 降级：同 pollTask —— 文字稿可渲染，仅总结区降级
+        set({ phase: 'done', summary: null, summaryError: toAppError(error).message })
+      }
     } catch (error) {
       set({ phase: 'error', error: toAppError(error) })
     }
@@ -185,6 +202,23 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     } catch (error) {
       set({ phase: 'error', error: toAppError(error) })
       return null
+    }
+  },
+
+  retrySummary: async () => {
+    const { taskId, transcript, video } = get()
+    if (!taskId || !transcript) return
+    set({ summaryError: null })
+    try {
+      const summary = await api.summarize({
+        taskId,
+        transcript,
+        title: video?.title ?? '',
+        duration: video?.duration ?? 0,
+      })
+      set({ summary })
+    } catch (error) {
+      set({ summaryError: toAppError(error).message })
     }
   },
 

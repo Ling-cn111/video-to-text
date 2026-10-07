@@ -141,4 +141,55 @@ test.describe("前端功能锁定协议", () => {
     // 历史硬编码文案不得回退（两种模式都不出现）
     await expect(page.getByText("前端 Demo · Mock 数据演示")).toHaveCount(0);
   });
+
+  test("锁定 8：总结失败降级——文字稿可见 + 错误卡与重试 + 导出同源", async ({ page }) => {
+    // 注入总结失败的 Mock 任务（sumFail 标记 → /api/summarize 返回错误）
+    const failPayload = { v: "BV1GJ411x7h7", p: "bilibili", s: Date.now() - 11_000, sumFail: 1 };
+    const failTaskId = Buffer.from(JSON.stringify(failPayload)).toString("base64url");
+    await page.goto(`/result/${failTaskId}`);
+
+    // 文字稿照常渲染（默认全文阅读 Tab、零时间戳）——总结失败不得拖垮主体
+    const article = page.getByTestId("fulltext-article");
+    await expect(article).toBeVisible();
+    const articleText = await article.innerText();
+    expect(articleText.length).toBeGreaterThan(50);
+    expect(articleText).not.toMatch(TIMESTAMP_PATTERN);
+
+    // 总结区：错误卡 + 重试按钮（不再整页错误/骨架）
+    await expect(page.getByTestId("summary-error")).toBeVisible();
+    await expect(page.getByRole("button", { name: "重试总结" })).toBeVisible();
+    await expect(page.getByTestId("fulltext-article")).toBeVisible(); // 错误卡出现后文字稿仍在
+
+    // 导出同源回归（summary 为 null 的新边界）：TXT/MD 与页面全文视图同源、零时间戳
+    await page.getByRole("button", { name: "导出" }).click();
+    const txtDownload = page.waitForEvent("download");
+    await page.getByRole("menuitem", { name: "纯文本（.txt）" }).click();
+    const txt = readFileSync(await (await txtDownload).path(), "utf-8");
+    expect(txt).not.toMatch(TIMESTAMP_PATTERN);
+    expect(txt).toContain("《");
+
+    await page.getByRole("button", { name: "导出" }).click();
+    const mdDownload = page.waitForEvent("download");
+    await page.getByRole("menuitem", { name: "Markdown（.md）" }).click();
+    const md = readFileSync(await (await mdDownload).path(), "utf-8");
+    expect(md).toContain("## 正文");
+    expect(md).not.toMatch(TIMESTAMP_PATTERN);
+
+    // 三者同源：页面全文视图的首段（前 20 字）必须出现在 TXT 导出中
+    const firstParagraph = articleText
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.length > 10);
+    expect(firstParagraph).toBeTruthy();
+    expect(txt).toContain(firstParagraph!.slice(0, 20));
+
+    // 进度页路径（pollTask 降级，用户主路径）：从 /processing 自然流转，同样降级不整页报错
+    const pollPayload = { v: "BV1GJ411x7h7", p: "bilibili", s: Date.now() - 9_000, sumFail: 1 };
+    const pollTaskId = Buffer.from(JSON.stringify(pollPayload)).toString("base64url");
+    await page.goto(`/processing/${pollTaskId}`);
+    await page.waitForURL(/\/result\//, { timeout: 20_000 });
+    await expect(page.getByTestId("fulltext-article")).toBeVisible();
+    await expect(page.getByTestId("summary-error")).toBeVisible();
+    await expect(page.getByRole("button", { name: "重试总结" })).toBeVisible();
+  });
 });
