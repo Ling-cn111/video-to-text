@@ -51,14 +51,42 @@
 - 后端：FastAPI + yt-dlp + faster-whisper + DeepSeek/Qwen（见 [backend/README.md](backend/README.md)）
 - PWA：Web App Manifest + Service Worker（仅生产环境注册）
 
-## 快速开始
+## 快速开始（Windows）
+
+### 首次配置
+
+双击 `setup.bat`，自动创建虚拟环境、安装前后端依赖、复制配置模板（已存在的配置文件不会覆盖）。
+按提示填写 `backend/.env.local` 中的 `DEEPSEEK_API_KEY`（AI 总结）与 `CLOUD_ASR_API_KEY`（云端转写，均可选）。
+
+### 日常使用
+
+- 启动：双击 `run.bat` 或命令行 `run.bat start`（前后端各开一个窗口，浏览器自动打开 http://localhost:3000）
+- 关闭：`run.bat stop`（按 PID → 窗口标题 → 端口三层兜底）
+- 重启：`run.bat restart`
+- 查看状态：`run.bat status`（显示运行状态、PID 与最新日志文件）
+
+后端 / 前端日志写入 `logs/backend-*.log` 与 `logs/frontend-*.log`（自动轮转，各保留 20 份）；
+进程 PID 记录在 `.vtt-pids/`。以上目录与数据库 `backend/data/` 均不入库。
+
+## 手动启动（Mac/Linux 或调试用）
 
 ```bash
+# 前端
 pnpm install
 pnpm dev      # 开发模式（不注册 Service Worker）
 ```
 
+```bash
+# 后端（另开终端）
+cd backend
+python -m venv .venv
+.venv\Scripts\activate          # Windows（macOS/Linux: source .venv/bin/activate）
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
 打开 <http://localhost:3000>，使用首页提供的示例链接体验完整流程（含失败 / 不支持平台演示）。
+后端自检：<http://localhost:8000/api/health>；接口文档：<http://localhost:8000/docs>。
 
 ```bash
 pnpm lint     # 代码检查
