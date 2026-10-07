@@ -21,22 +21,48 @@ $StartReadyTimeoutSec = 30
 
 # ============ 基础工具 ============
 
+function Get-ListeningMap {
+    # 一次 netstat 解析全部 LISTENING 端口 → @{ 端口字符串 = PID }（实测约 30ms）
+    # 不用 Get-NetTCPConnection：无匹配时实测约 1.2s，会阻塞 UI 线程导致菜单卡顿
+    $map = @{}
+    foreach ($line in (netstat -ano 2>$null)) {
+        $parts = @($line -split '\s+' | Where-Object { $_ })
+        if ($parts.Count -ge 5 -and $parts[3] -eq 'LISTENING') {
+            $local = $parts[1]
+            $port = $local.Substring($local.LastIndexOf(':') + 1)
+            if ($port -match '^\d+$') { $map[$port] = $parts[4] }
+        }
+    }
+    return $map
+}
+
 function Test-Port([int]$Port) {
-    $conn = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
-    if ($null -ne $conn) { return [bool]($conn | Select-Object -First 1) }
-    return [bool](netstat -ano | Select-String ":$Port\s.*LISTENING")
+    return (Get-ListeningMap).ContainsKey("$Port")
 }
 
 function Get-PortPids([int]$Port) {
-    $pids = @()
-    $conn = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
-    if ($null -ne $conn) { $pids += $conn | Select-Object -ExpandProperty OwningProcess }
-    if (-not $pids) {
-        $pids += (netstat -ano | Select-String ":$Port\s.*LISTENING" | ForEach-Object {
-            ($_ -split '\s+')[-1]
-        })
-    }
-    return @($pids | Where-Object { $_ } | Sort-Object -Unique)
+    $map = Get-ListeningMap
+    $key = "$Port"
+    if ($map.ContainsKey($key)) { return @([int]$map[$key]) }
+    return @()
+}
+
+function Test-ServiceProcAlive([string]$Name) {
+    # 轻量存活检查：PID 文件 + Get-Process（实测 <10ms）
+    $pidFile = Join-Path $PidsDir "$Name.pid"
+    if (-not (Test-Path $pidFile)) { return $false }
+    $pidValue = Get-Content $pidFile -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $pidValue) { return $false }
+    return [bool](Get-Process -Id ([int]$pidValue) -ErrorAction SilentlyContinue)
+}
+
+function Get-ServicesStateLight {
+    # 高频轮询用轻量状态：两个 PID 进程都活=running；都无=stopped；其余不确定交给全量检查
+    $b = Test-ServiceProcAlive "backend"
+    $f = Test-ServiceProcAlive "frontend"
+    if ($b -and $f) { return "running" }
+    if (-not $b -and -not $f) { return "stopped" }
+    return "unknown"
 }
 
 function Rotate-Logs([string]$Prefix) {
@@ -246,6 +272,7 @@ $script:StartingSince = $null
 $script:OpenBrowserOnReady = $false
 $script:BackendProc = $null
 $script:FrontendProc = $null
+$script:TickCount = 0
 
 $notify = New-Object System.Windows.Forms.NotifyIcon
 $notify.Icon = $script:Icons.stopped
@@ -358,6 +385,9 @@ $itemExit.Add_Click({
 })
 
 $notify.ContextMenuStrip = $menu
+# 菜单打开期间暂停轮询：状态检查与菜单高亮同跑在 UI 线程，暂停可彻底消除悬停卡顿
+$menu.Add_Opened({ $timer.Stop() })
+$menu.Add_Closed({ $timer.Start() })
 $notify.Add_MouseDoubleClick({
     if ($script:Phase -eq "running") { Stop-FromTray } else { Start-FromTray }
 })
@@ -378,7 +408,15 @@ $timer.Add_Tick({
         }
     }
 
-    $state = Get-ServicesState
+    # 状态检查分层（性能）：轻量（PID 文件+进程，<10ms）为常态；
+    # 「启动中」每拍全量（等端口就绪）；其余每 8 拍（约 16 秒）全量一次，兜底外部启停（如 run.bat 手动起）
+    $script:TickCount++
+    if ($script:Phase -eq "starting" -or ($script:TickCount % 8 -eq 0)) {
+        $state = Get-ServicesState
+    } else {
+        $state = Get-ServicesStateLight
+        if ($state -eq "unknown") { $state = Get-ServicesState }
+    }
     if ($script:Phase -eq "starting") {
         if (-not $backendAlive) {
             Update-Tray "error" "启动失败（进程已退出，可能端口被占用或依赖异常），请查看日志" "Error"
