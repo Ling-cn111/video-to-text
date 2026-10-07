@@ -427,6 +427,8 @@ $askTimer.Start()
 
 # 初始状态（服务已在跑则直接绿色）
 if ((Get-ServicesState) -eq "running") { Update-Tray "running" } else { Update-Tray "stopped" }
+# 启动气泡：Windows 11 默认把新图标收进折叠区，用气泡告知用户去哪里找
+Show-Balloon "控制台已启动（图标在系统托盘区；Windows 11 若未看到，请点击任务栏 ^ 展开）"
 
 $context = New-Object System.Windows.Forms.ApplicationContext
 [System.Windows.Forms.Application]::Run($context)
