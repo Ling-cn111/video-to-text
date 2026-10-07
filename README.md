@@ -1,35 +1,46 @@
 # video-to-text
 
-视频链接转文字 PWA：粘贴 B站视频链接，自动完成解析、语音转写（本地 faster-whisper）与 AI 总结，输出带时间戳的文字稿和结构化摘要。可安装到 Windows 桌面与手机主屏幕。
+视频链接转文字 PWA：粘贴 B站视频链接，自动完成解析、转写（B站字幕快路径优先，否则本地/云端 ASR）与真实 AI 总结（DeepSeek），输出带时间戳的文字稿和结构化摘要。可安装到 Windows 桌面与手机主屏幕。
 
-> **当前进度**：M1 前端 Demo ✅ → **M2 阶段一（真实解析）✅ + 阶段二（真实转写）✅** → 阶段三（真实 AI 总结）、多平台、本地视频、打包 App 规划见 [docs/ROADMAP.md](docs/ROADMAP.md)。阶段二验收报告见 [docs/acceptance-stage-2.md](docs/acceptance-stage-2.md)。
+> **当前进度**：阶段一（真实解析）✅ → 阶段二（真实转写 + 绝对 CER 基准）✅ → **阶段三（真实 AI 总结）✅（2026-10-07）**。多平台 / 本地视频 / 打包 App 规划见 [docs/ROADMAP.md](docs/ROADMAP.md)；验收报告 [阶段二](docs/acceptance-stage-2.md) / [阶段三](docs/acceptance-stage-3.md)。
+
+## 转写与总结的四条路径（及成本）
+
+| 路径 | 触发条件 | 耗时（27 分钟视频） | 成本 | 质量 |
+| --- | --- | --- | --- | --- |
+| ① 字幕快路径（**主路径**） | B站视频有 CC / AI 字幕（弹幕元数据接口未登录可取） | **5-7 秒** | ¥0 | B站官方字幕，接近人工 |
+| ② 本地 ASR（默认兜底） | 无字幕 + 首页「转写模式=本地」 | 36-155 秒（150s 音频） | ¥0 | 清晰口播 6-22%（CER），喊叫类 44% |
+| ③ 云端 ASR（手动选择） | 无字幕 + 强 BGM / 追求准确 | 19-43 秒（150s 音频） | ¥0（硅基流动 ASR 免费） | 4-17%（CER，绝对基准） |
+| ④ LLM 总结（阶段三） | 转写完成后自动触发 | 33-69 秒 | **¥0.07 / 27 分钟视频**（唯一成本项） | 结构化概要/要点/章节，时间戳指向原文 |
+
+数据来源：[绝对 CER 基准](docs/asr-benchmark.md) / [LLM 成本记录](docs/llm-cost.md)。
 
 ## 功能
 
-- 粘贴 B站视频链接 → 真实解析（yt-dlp）→ 真实转写（字幕快路径优先，否则 faster-whisper 本地 ASR）→ 结果页
+- 粘贴 B站视频链接 → 真实解析（yt-dlp）→ 转写（四层降级：CC 字幕 → AI 字幕 → 本地/云端 ASR）→ 结果页
 - 全文阅读：无时间戳的文章式排版（按章节自动分段，段间空行、行高舒适）
-- 带时间戳文字稿（点击时间戳可复制，支持折叠/展开）
-- 右侧 AI 总结（一句话概要 / 要点 / 章节笔记，**当前仍为 Mock**）
+- 带时间戳文字稿（点击时间戳可复制，支持折叠/展开）；字幕来源任务显示「来源：B站字幕」Badge
+- 右侧 AI 总结（真实 LLM 生成：一句话概要 / 带时间戳要点 / 章节笔记）
 - 导出 TXT / Markdown（纯文本全文，不含时间戳）
 - PWA：可安装、离线可用（应用外壳）
 - 响应式：桌面左右分栏，移动端上下卡片流
-- 错误态：无效链接、不支持平台、转写失败（可重试）
+- 错误态：无效链接、不支持平台、转写/总结失败（可重试）
 
 ## 支持的平台
 
 | 平台 | 解析 | 转写 |
 | --- | --- | --- |
-| 哔哩哔哩（www.bilibili.com / b23.tv） | ✅ yt-dlp | ✅ CC 字幕快路径 / faster-whisper ASR |
+| 哔哩哔哩（www.bilibili.com / b23.tv） | ✅ yt-dlp | ✅ 字幕快路径（CC + AI 字幕，未登录可取）/ 本地 faster-whisper / 云端 ASR |
 
-> 未登录状态下 yt-dlp 极少能取到 B站字幕（AI 字幕需登录 Cookie），实际以 ASR 路径为主；配置 `BILI_COOKIE` 可启用 AI 字幕快路径（见 backend/README.md）。更多平台在 `src/lib/platforms/registry.ts` 与 `backend/app/platforms.py` 的注册表中追加即可。
+> 更多平台在 `src/lib/platforms/registry.ts` 与 `backend/app/platforms.py` 的注册表中追加即可。
 
 ## 已知限制
 
-- AI 总结仍为 Mock 数据（阶段三接入真实 LLM）
 - 转写任务注册表为进程内存实现：单进程 uvicorn 够用，多 worker / 云端部署需替换为 Redis（接口已封装，见 backend/README.md）
-- B站 AI 字幕需登录 Cookie（`BILI_COOKIE`），未配置时自动降级 ASR 路径
-- 本地推理依赖 CPU：base 模型转写 2 分钟音频约 30-60 秒；可切换 small 模型提升准确率（更慢）
-- FFmpeg 可选：未安装时自动降级 PyAV 解码；建议安装以走标准 16kHz WAV 路径
+- 当前仅支持 B站；抖音解析在前端 Mock 中预置，真实后端待接入
+- B站 AI 字幕非全覆盖（实测 6 视频中 5 个有轨道），无字幕时走 ASR 兜底
+- LLM 总结需配置 `DEEPSEEK_API_KEY`（或通义 `DASHSCOPE_API_KEY`），未配置时总结步骤明确报错
+- 本地 ASR 依赖 CPU：small 模型 150 秒音频约 40-155 秒；FFmpeg 可选（未装自动降级 PyAV 解码）
 
 ## 技术栈
 
@@ -37,6 +48,7 @@
 - Tailwind CSS + [shadcn/ui](https://ui.shadcn.com)
 - Zustand 状态管理
 - Next Route Handlers 提供 Mock API（`src/app/api`），客户端统一出口 `src/lib/api.ts`
+- 后端：FastAPI + yt-dlp + faster-whisper + DeepSeek/Qwen（见 [backend/README.md](backend/README.md)）
 - PWA：Web App Manifest + Service Worker（仅生产环境注册）
 
 ## 快速开始
