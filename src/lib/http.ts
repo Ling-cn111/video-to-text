@@ -3,6 +3,7 @@ import type {
   ApiErrorBody,
   GetTaskResponse,
   StartTaskResponse,
+  SummarizeRequest,
   Summary,
   TranscribeEngine,
   VideoInfo,
@@ -25,7 +26,7 @@ export interface ApiClient {
     engine?: TranscribeEngine,
   ) => Promise<StartTaskResponse>
   getTask: (taskId: string) => Promise<GetTaskResponse>
-  summarize: (taskId: string) => Promise<Summary>
+  summarize: (request: SummarizeRequest) => Promise<Summary>
 }
 
 /** 客户端可见的错误码 = 契约错误码 + 网络层补充码 */

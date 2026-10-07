@@ -3,7 +3,8 @@
 已实现：
 - `POST /api/parse`：yt-dlp 解析 B站视频链接 → `{ title, cover, duration, platform, videoId }`
 - `POST /api/transcribe`：创建转写任务（BackgroundTasks 异步执行）→ `{ taskId, status, progress, stage }`；可选 `engine` 字段手动选择转写引擎（`local` 默认 / `cloud`，见下文云端 ASR 章节）
-- `GET /api/transcribe/{taskId}`：轮询任务 → `{ status, stage, progress, transcript, plainText, video?, error? }`
+- `GET /api/transcribe/{taskId}`：轮询任务 → `{ status, stage, progress, transcript, plainText, video?, error?, transcriptSource? }`
+- `POST /api/summarize`：AI 总结（无状态）→ 请求 `{ transcript, title, duration }`，响应 `{ summary, keyPoints: [{time,text}], chapters: [{title,timeStart,timeEnd,note}] }`；keyPoints 时间戳强制取自原 transcript（后端就近吸附校验）
 
 转写流水线：**分层字幕快路径**（yt-dlp CC 字幕 → B站弹幕元数据接口 AI 字幕，命中即秒级返回）→ 否则 yt-dlp 下载音轨 → FFmpeg 转 16kHz 单声道 WAV →（可选）Demucs 人声分离 → faster-whisper 本地推理（或云端 API）。转写时把**热词 + 视频标题组合为 `initial_prompt`** 传入以引导专有名词识别；输出经轻量后处理（**zhconv 繁→简**、折叠 3 次以上的明显重复词、按语言补齐句末标点）。transcript 格式与前端契约一致：`[{ time, text }]`，并带 `transcriptSource` 来源标记（subtitle_cc / subtitle_ai / asr，前端据此显示「来源：B站字幕」Badge）。
 
@@ -77,6 +78,22 @@ pnpm dev                        # 等价于 npm run dev
 | `BILI_COOKIE` | 空 | **预留兜底层，未实现**（AI 字幕已由 dm/view 接口未登录覆盖，见上「字幕快路径」）。启用后语义：yt-dlp 携带 Cookie 拿 AI 字幕。获取方式：浏览器登录 bilibili.com → F12 → Application → Cookies 复制整段（含 SESSDATA）。注意有效期与隐私，勿提交到 git |
 
 > 旧变量名 `ASR_API_BASE` / `ASR_API_KEY` / `ASR_CLOUD_MODEL` 仍被兼容读取，新配置请用 `CLOUD_ASR_*`。
+
+## AI 总结（LLM，阶段三 / 任务 E）
+
+`POST /api/summarize` 无状态接收 `{transcript, title, duration}`，经 LLM 生成结构化总结。配置（`backend/.env.local`）：
+
+```bash
+LLM_PROVIDER=deepseek            # deepseek | qwen（通义千问兼容模式）
+DEEPSEEK_API_KEY=sk-xxxx         # 二选一；qwen 用 DASHSCOPE_API_KEY
+# LLM_MODEL=deepseek-flash       # 可选覆盖默认模型（qwen 默认 qwen-plus）
+```
+
+- 未配置 Key 时请求即报 400 `SUMMARIZE_NOT_CONFIGURED`（不静默降级）；文字稿超 10 万字报 413 `TRANSCRIPT_TOO_LONG`
+- 结构化输出 `response_format=json_object` + 解析失败自动重试（最多 2 次）
+- **keyPoints 时间戳三重保障**：输入文字稿格式化为 `[mm:ss] text` → prompt 明确禁止编造 → 后端对输出 time 就近吸附到真实时间戳
+- 长文 chunking：超 6000 字按条目边界切块（条目不拆），逐块提取要点 → 合并终稿；时间戳全程指向原 transcript
+- 成本：每次调用记录 usage tokens 与估算成本（`LLM_PRICE_TABLE`，占位单价待官网核对）→ 日志；实测数据见 [docs/llm-cost.md](../docs/llm-cost.md)
 
 ## 云端 ASR（手动选择，任务 D）
 

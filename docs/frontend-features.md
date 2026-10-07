@@ -15,7 +15,7 @@
 | **双视图 Tab 切换** | 文字稿区提供两个 Tab：**`全文阅读`（默认激活）** 与 **`时间戳定位`**。不得移除 Tab 结构、不得改默认 Tab |
 | 全文阅读视图 | 无时间戳、无 `[00:00]` 标记的文章式排版：按语义分段（章节对齐 + 句长兜底 + 超长段落切分）、段落空行、行高 1.9、两端对齐、内容限宽；带字数与预计阅读时长徽章 |
 | 时间戳定位视图 | 逐句列表，句首时间戳可点击复制（`[mm:ss] 文本`），带复制成功反馈；Badge「点击时间可复制」保留 |
-| AI 总结面板 | 右侧独立卡片：一句话概要、3-5 条要点、章节时间轴笔记。**修改总结 UI 时严禁波及左侧 Tab 结构** |
+| AI 总结面板 | 右侧独立卡片：一句话概要、**3-5 条要点（每条带原文字稿时间戳徽章，`data-testid="key-points"`）**、章节笔记（**时间区间 `mm:ss–mm:ss`，`data-testid="chapter-timeline"`**，字段 `{title, timeStart, timeEnd, note}`）。**修改总结 UI 时严禁波及左侧 Tab 结构**。阶段三起由真实 LLM 生成（E2E 锁定 6） |
 | 刷新恢复 | 直接刷新 / 直链访问按 taskId 从接口恢复，不白屏 |
 
 ## 2. 导出（无时间戳铁律）
@@ -42,7 +42,7 @@
 | --- | --- |
 | 开关 | `NEXT_PUBLIC_USE_MOCK=false` 时解析与转写走真实后端（`/backend-api/*` 同源代理 → FastAPI）；其余情况走内置 Mock Route Handlers |
 | 代理 | 真实请求一律走同源 `/backend-api/*`（next.config.mjs rewrites → `BACKEND_ORIGIN`），浏览器不直连后端 |
-| 客户端实现 | `lib/real-api.ts` 的 parse / transcribe(POST) / getTask(GET) 必须指向 `/backend-api/*`；`/api/summarize` 当前为 Mock（阶段三切换，切换时必须同步本文件） |
+| 客户端实现 | `lib/real-api.ts` 的 parse / transcribe(POST) / getTask(GET) / **summarize(POST /backend-api/summarize，阶段三已切换：请求 `{transcript,title,duration}` 无状态)** 均指向 `/backend-api/*`；切换已完成并同步本文件（任务 E） |
 | Mock 降级 | Mock 总结对真实 taskId（uuid）降级返回演示总结；Mock 模式的示例链接（含失败 / 不支持平台演示）保留 |
 
 ## 5. 其他已确认功能
@@ -82,6 +82,7 @@
 - [ ] 失败任务 → 错误卡 + 重试可用
 - [ ] 首页转写模式默认「本地」；切「云端」出现隐私提示；Mock 模式下有无实际效果小字，真实模式无
 - [ ] 字幕来源任务结果页显示「来源：B站字幕」Badge；ASR 来源任务不显示
+- [ ] AI 总结面板：keyPoints 至少一条带时间戳徽章，chapters 带时间区间（E2E 锁定 6）
 - [ ] `pnpm lint && pnpm build` 通过
 
 > 修改本文件（新增/放宽锁定项）需要用户明确确认。

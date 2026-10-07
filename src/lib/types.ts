@@ -41,13 +41,39 @@ export interface Chapter {
   note: string
 }
 
+/**
+ * AI 总结契约（阶段三，任务 E）：LLM 生成，keyPoints 时间戳指向原 transcript。
+ * Chapter → ChapterNote：{title, timeStart, timeEnd, note}（字段名 note 避免与顶层 summary 混淆）。
+ */
+export interface KeyPoint {
+  /** 秒，取自原 transcript 时间戳（后端就近吸附校验） */
+  time: number
+  text: string
+}
+
+export interface ChapterNote {
+  title: string
+  /** 秒 */
+  timeStart: number
+  timeEnd: number
+  note: string
+}
+
 export interface Summary {
   /** 一句话概要 */
   summary: string
-  /** 要点（3-5 条） */
-  keyPoints: string[]
+  /** 要点（3-5 条，带原文字稿时间戳） */
+  keyPoints: KeyPoint[]
   /** 章节笔记 */
-  chapters: Chapter[]
+  chapters: ChapterNote[]
+}
+
+/** AI 总结请求（无状态）：Mock 只用 taskId，真实后端只用 transcript/title/duration */
+export interface SummarizeRequest {
+  taskId: string
+  transcript: TranscriptItem[]
+  title: string
+  duration: number
 }
 
 export type TaskStatus = 'processing' | 'completed' | 'failed'
@@ -127,6 +153,9 @@ export type ApiErrorCode =
   | 'INVALID_TASK'
   | 'TRANSCRIBE_FAILED'
   | 'CLOUD_NOT_CONFIGURED'
+  | 'SUMMARIZE_NOT_CONFIGURED'
+  | 'TRANSCRIPT_TOO_LONG'
+  | 'SUMMARIZE_FAILED'
   | 'FILE_TOO_LARGE'
   | 'FILE_FORMAT_UNSUPPORTED'
   | 'INTERNAL_ERROR'

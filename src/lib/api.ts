@@ -1,6 +1,6 @@
 import { ApiError, JSON_HEADERS, toJson, throwNetworkError, type ApiClient, type ClientErrorCode } from '@/lib/http'
 import { realApi } from '@/lib/real-api'
-import type { GetTaskResponse, StartTaskResponse, Summary, VideoInfo } from '@/lib/types'
+import type { GetTaskResponse, StartTaskResponse, SummarizeRequest, Summary, VideoInfo } from '@/lib/types'
 
 export { ApiError, type ClientErrorCode }
 
@@ -37,12 +37,14 @@ const mockApi: ApiClient = {
   getTask: (taskId: string): Promise<GetTaskResponse> =>
     toJson(fetch(`/api/transcribe/${encodeURIComponent(taskId)}`).catch(throwNetworkError)),
 
-  /** POST /api/summarize：生成 AI 总结 */
-  summarize: (taskId: string): Promise<Summary> =>
+  /** POST /api/summarize：生成 AI 总结（Mock 只用 taskId，其余字段透传给真实后端用） */
+  summarize: (request: SummarizeRequest): Promise<Summary> =>
     toJson(
-      fetch('/api/summarize', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ taskId }) }).catch(
-        throwNetworkError,
-      ),
+      fetch('/api/summarize', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify(request),
+      }).catch(throwNetworkError),
     ),
 } as const
 

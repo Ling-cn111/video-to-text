@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from app.config import CORS_ORIGINS, CORS_ORIGIN_REGEX
 from app.errors import AppException
 from app.routers.parse import router as parse_router
+from app.routers.summarize import router as summarize_router
 from app.routers.transcribe import router as transcribe_router
 
 app = FastAPI(
@@ -24,6 +25,7 @@ app.add_middleware(
 
 app.include_router(parse_router)
 app.include_router(transcribe_router)
+app.include_router(summarize_router)
 
 
 @app.exception_handler(AppException)

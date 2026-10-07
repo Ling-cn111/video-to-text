@@ -106,4 +106,20 @@ test.describe("前端功能锁定协议", () => {
     await expect(page.getByTestId("fulltext-article")).toBeVisible();
     await expect(page.getByTestId("source-badge")).toHaveCount(0);
   });
+
+  test("锁定 6：AI 总结面板渲染带时间戳的 keyPoints 与带时间区间的章节", async ({ page }) => {
+    await page.goto(`/result/${mockTaskId()}`);
+    await expect(page.getByTestId("fulltext-article")).toBeVisible();
+
+    // 核心要点：至少一条带时间戳徽章（keyPoints.time 指向原 transcript）
+    const keyPoints = page.getByTestId("key-points");
+    await expect(keyPoints).toBeVisible();
+    expect(await keyPoints.locator("li").count()).toBeGreaterThanOrEqual(3);
+    await expect(keyPoints.getByText(TIMESTAMP_PATTERN).first()).toBeVisible();
+
+    // 章节笔记：时间区间（mm:ss–mm:ss）渲染
+    const chapters = page.getByTestId("chapter-timeline");
+    await expect(chapters).toBeVisible();
+    await expect(chapters.getByText(/\d{1,2}:\d{2}–\d{1,2}:\d{2}/).first()).toBeVisible();
+  });
 });

@@ -115,7 +115,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           plainText: task.plainText ?? null,
           transcriptSource: task.transcriptSource ?? null,
         })
-        const summary = await api.summarize(taskId)
+        const summary = await api.summarize({
+          taskId,
+          transcript: task.transcript ?? [],
+          title: (task.video ?? get().video)?.title ?? '',
+          duration: (task.video ?? get().video)?.duration ?? 0,
+        })
         if (get().taskId !== taskId) return
         set({ phase: 'done', summary })
       }
@@ -147,7 +152,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         return
       }
       set({ phase: 'summarizing', transcript: task.transcript, plainText: task.plainText ?? null, transcriptSource: task.transcriptSource ?? null })
-      const summary = await api.summarize(taskId)
+      const summary = await api.summarize({
+        taskId,
+        transcript: task.transcript,
+        title: (task.video ?? get().video)?.title ?? '',
+        duration: (task.video ?? get().video)?.duration ?? 0,
+      })
       set({ phase: 'done', summary })
     } catch (error) {
       set({ phase: 'error', error: toAppError(error) })

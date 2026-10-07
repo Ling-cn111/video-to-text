@@ -60,6 +60,41 @@ class ErrorResponse(BaseModel):
     error: AppErrorBody
 
 
+# ---- AI 总结（阶段三，任务 E）----
+
+class SummarizeRequest(BaseModel):
+    """POST /api/summarize 请求体（无状态，不关联任务）。
+
+    transcript 为已完成的文字稿；title/duration 作 prompt 上下文。
+    """
+
+    transcript: list[TranscriptItem]
+    title: str = ""
+    duration: int = 0
+
+
+class KeyPoint(BaseModel):
+    """核心要点：time 为秒，必须来自原 transcript 的时间戳。"""
+
+    time: float
+    text: str
+
+
+class ChapterNote(BaseModel):
+    """章节笔记：字段名用 note，避免与顶层 summary 混淆。"""
+
+    title: str
+    timeStart: float
+    timeEnd: float
+    note: str
+
+
+class SummaryResponse(BaseModel):
+    summary: str
+    keyPoints: list[KeyPoint] = Field(default_factory=list)
+    chapters: list[ChapterNote] = Field(default_factory=list)
+
+
 class TaskDetailResponse(BaseModel):
     """GET /api/transcribe/{taskId} 响应（前端 GetTaskResponse 的后端实现）"""
 
