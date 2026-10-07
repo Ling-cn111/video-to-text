@@ -64,6 +64,7 @@
 - 关闭：`run.bat stop`（按 PID → 窗口标题 → 端口三层兜底）
 - 重启：`run.bat restart`
 - 查看状态：`run.bat status`（显示运行状态、PID 与最新日志文件）
+- 查看用法：`run.bat help`（双击运行时如遇错误会停留等待按键，便于查看提示）
 
 后端 / 前端日志写入 `logs/backend-*.log` 与 `logs/frontend-*.log`（自动轮转，各保留 20 份）；
 进程 PID 记录在 `.vtt-pids/`。以上目录与数据库 `backend/data/` 均不入库。
