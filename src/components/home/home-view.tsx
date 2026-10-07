@@ -5,6 +5,7 @@ import { Clock, FileDown, Link2, ListChecks, Sparkles } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { UrlForm } from '@/components/home/url-form'
+import { AutoSummaryToggle } from '@/components/home/auto-summary-toggle'
 import { ExampleLinks } from '@/components/home/example-links'
 import { TranscribeMode } from '@/components/home/transcribe-mode'
 import { useTaskStore } from '@/stores/task-store'
@@ -64,6 +65,7 @@ export function HomeView() {
         <div ref={inputRef}>
           <UrlForm url={url} onUrlChange={setUrl} />
         </div>
+        <AutoSummaryToggle />
         <TranscribeMode value={engine} onChange={setEngine} />
         <ExampleLinks onPick={pickExample} />
       </section>

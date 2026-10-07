@@ -10,7 +10,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { TranscriptList } from '@/components/result/transcript-list'
 import { ArticleView } from '@/components/result/full-text-view'
 import { ExportMenu } from '@/components/result/export-menu'
-import { SummaryCard, SummaryErrorState, SummaryEmptyState, SummarySkeleton } from '@/components/result/summary-card'
+import { SummaryCard, SummaryErrorState, SummaryManualPrompt, SummarySkeleton } from '@/components/result/summary-card'
 import { ErrorAlert } from '@/components/shared/error-alert'
 import { PlatformBadge } from '@/components/shared/platform-badge'
 import { formatDuration } from '@/lib/format'
@@ -186,10 +186,14 @@ export function ResultView({ taskId }: ResultViewProps) {
                 retrying={summaryRetrying}
                 retryable={capabilities?.summarizeConfigured !== false}
               />
-            ) : phase === 'summarizing' ? (
+            ) : summaryRetrying || phase === 'summarizing' ? (
               <SummarySkeleton />
             ) : (
-              <SummaryEmptyState />
+              /* 未总结态（关闭自动总结）：引导 + 手动生成，与 P0 错误重试共用 retrySummary 逻辑 */
+              <SummaryManualPrompt
+                onGenerate={handleSummaryRetry}
+                disabled={capabilities?.summarizeConfigured === false}
+              />
             )}
           </CardContent>
         </Card>

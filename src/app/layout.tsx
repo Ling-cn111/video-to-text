@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import { Toaster } from "@/components/ui/sonner";
+import { BackendHealthBanner } from "@/components/layout/backend-health-banner";
+import { PreferenceHydrator } from "@/components/layout/preference-hydrator";
 import { SiteHeader } from "@/components/layout/site-header";
 import { RegisterSw } from "@/components/pwa/register-sw";
 import "./globals.css";
@@ -47,6 +49,9 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} flex min-h-screen flex-col antialiased`}
       >
+        {/* 全局层：后端可达性横幅（fixed + 等高占位）与本地偏好水合 */}
+        <BackendHealthBanner />
+        <PreferenceHydrator />
         <SiteHeader />
         <main className="flex-1">{children}</main>
         <RegisterSw />

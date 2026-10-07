@@ -76,6 +76,11 @@ export interface SummarizeRequest {
   duration: number
 }
 
+/** 健康检查响应（GET /api/health）：仅可达性探测，不含任何配置信息 */
+export interface HealthResponse {
+  status: string
+}
+
 /** 能力探测（任务 M2-P2-A）：只含布尔配置状态，后端不返回 Key 的任何信息 */
 export interface Capabilities {
   /** 云端 ASR Key（CLOUD_ASR_API_KEY）是否已配置 */

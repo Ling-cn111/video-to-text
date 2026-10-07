@@ -114,12 +114,36 @@ export function SummaryErrorState({
   )
 }
 
-/** 总结空态：无总结且非加载中（正常流程不应出现，兜底防回归） */
-export function SummaryEmptyState() {
+/** 未总结引导态（关闭「解析后自动 AI 总结」后）：引导文案 + 手动生成按钮。
+ *  summarizeConfigured=false（M2-P2-A）时按钮禁用并给出配置引导。 */
+export function SummaryManualPrompt({
+  onGenerate,
+  disabled = false,
+}: {
+  onGenerate: () => void
+  disabled?: boolean
+}) {
   return (
-    <p data-testid="summary-empty" className="text-sm text-muted-foreground">
-      暂无总结内容。
-    </p>
+    <div data-testid="summary-manual-prompt" className="flex flex-col items-start gap-3">
+      <p className="text-sm leading-relaxed text-muted-foreground">
+        本次未生成 AI 总结。需要时可随时手动生成。
+      </p>
+      <Button
+        data-testid="manual-summarize-button"
+        size="sm"
+        onClick={onGenerate}
+        disabled={disabled}
+        className="gap-1.5"
+      >
+        <Sparkles className="size-3.5" aria-hidden />
+        生成 AI 总结
+      </Button>
+      {disabled ? (
+        <p data-testid="manual-summarize-config-hint" className="text-xs leading-relaxed text-muted-foreground">
+          未配置 LLM Key，无法生成总结：请在 backend/.env.local 填写对应的 Key 后刷新页面。
+        </p>
+      ) : null}
+    </div>
   )
 }
 

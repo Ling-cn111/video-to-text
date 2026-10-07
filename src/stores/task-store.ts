@@ -39,6 +39,8 @@ interface TaskState {
   error: UiError | null
   /** 转写引擎手动选择（首页设置；用户偏好，跨任务保留，不随 reset 清空） */
   engine: TranscribeEngine
+  /** 解析后自动 AI 总结（首页开关；用户偏好，localStorage 持久化，跨任务保留，不随 reset 清空） */
+  autoSummary: boolean
   /** 文字稿来源（字幕来源任务在结果页显示来源 Badge） */
   transcriptSource: TranscriptSource | null
   /** 能力探测（M2-P2-A）：null=检测中；会话内加载一次，跨任务保留；不随 reset 清空 */
@@ -58,7 +60,32 @@ interface TaskState {
   loadCapabilities: () => Promise<void>
   /** 首页切换转写模式 */
   setEngine: (engine: TranscribeEngine) => void
+  /** 首页切换「解析后自动 AI 总结」（写入 localStorage） */
+  setAutoSummary: (enabled: boolean) => void
+  /** 从 localStorage 水合用户偏好：挂载后调用（SSR 阶段不读 localStorage，避免水合不一致） */
+  hydratePreferences: () => void
   reset: () => void
+}
+
+/** 本地偏好存储键：仅布尔值（'false' = 关闭），不含任何 Key 或隐私信息 */
+const AUTO_SUMMARY_KEY = 'autoSummary'
+
+/** 读偏好：读不到 / 存储不可用一律视为开启（默认开启） */
+function readAutoSummary(): boolean {
+  if (typeof window === 'undefined') return true
+  try {
+    return window.localStorage.getItem(AUTO_SUMMARY_KEY) !== 'false'
+  } catch {
+    return true
+  }
+}
+
+function persistAutoSummary(enabled: boolean): void {
+  try {
+    window.localStorage.setItem(AUTO_SUMMARY_KEY, String(enabled))
+  } catch {
+    // 隐私模式 / 配额受限：仅本次会话生效，不阻塞主流程
+  }
 }
 
 /** 防止轮询重入 */
@@ -89,6 +116,7 @@ function toAppError(error: unknown): UiError {
 export const useTaskStore = create<TaskState>((set, get) => ({
   ...IDLE,
   engine: 'local',
+  autoSummary: true,
   capabilities: null,
 
   loadCapabilities: async () => {
@@ -136,13 +164,17 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         return
       }
       if (task.status === 'completed') {
-        set({
-          phase: 'summarizing',
+        const transcriptReady = {
           transcript: task.transcript ?? null,
           plainText: task.plainText ?? null,
           transcriptSource: task.transcriptSource ?? null,
-          summaryError: null,
-        })
+        }
+        // 用户偏好（autoSummary=false）：转写照常完成，不自动调用 summarize，结果页提供手动生成入口
+        if (!get().autoSummary) {
+          set({ phase: 'done', summary: null, summaryError: null, ...transcriptReady })
+          return
+        }
+        set({ phase: 'summarizing', summaryError: null, ...transcriptReady })
         // 能力前置：未配置 LLM Key 时不发起无用请求，直接给出引导（M2-P2-A）
         if (get().capabilities?.summarizeConfigured === false) {
           set({ phase: 'done', summary: null, summaryError: '未配置 LLM Key，无法生成总结：请在 backend/.env.local 填写 DEEPSEEK_API_KEY 后重试' })
@@ -192,6 +224,18 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       }
       if (!task.transcript) {
         set({ phase: 'error', error: { code: 'INVALID_TASK', message: '任务不存在或已过期，请重新解析视频链接' } })
+        return
+      }
+      // 用户偏好（autoSummary=false）：刷新 / 直链恢复同样尊重开关，不自动调用 summarize
+      if (!get().autoSummary) {
+        set({
+          phase: 'done',
+          summary: null,
+          summaryError: null,
+          transcript: task.transcript,
+          plainText: task.plainText ?? null,
+          transcriptSource: task.transcriptSource ?? null,
+        })
         return
       }
       set({ phase: 'summarizing', transcript: task.transcript, plainText: task.plainText ?? null, transcriptSource: task.transcriptSource ?? null, summaryError: null })
@@ -251,7 +295,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   setEngine: (engine) => set({ engine }),
 
-  reset: () => set({ ...IDLE }),  // 不清 engine：模式选择是用户偏好，跨任务保留
+  setAutoSummary: (enabled) => {
+    set({ autoSummary: enabled })
+    persistAutoSummary(enabled)
+  },
+
+  hydratePreferences: () => set({ autoSummary: readAutoSummary() }),
+
+  // 不清 engine / autoSummary：均为用户偏好，跨任务保留
+  reset: () => set({ ...IDLE }),
 }))
 
 /** 非组件场景读取状态（如导出前校验） */

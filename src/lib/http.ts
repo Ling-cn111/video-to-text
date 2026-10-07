@@ -3,6 +3,7 @@ import type {
   ApiErrorBody,
   Capabilities,
   GetTaskResponse,
+  HealthResponse,
   StartTaskResponse,
   SummarizeRequest,
   Summary,
@@ -30,6 +31,8 @@ export interface ApiClient {
   summarize: (request: SummarizeRequest) => Promise<Summary>
   /** 能力探测（只读布尔，不含 Key） */
   getCapabilities: () => Promise<Capabilities>
+  /** 健康检查（只读轻量探测）：失败 / 超时 / 非 2xx 均视为后端不可达 */
+  healthCheck: (signal?: AbortSignal) => Promise<HealthResponse>
 }
 
 /** 客户端可见的错误码 = 契约错误码 + 网络层补充码 */

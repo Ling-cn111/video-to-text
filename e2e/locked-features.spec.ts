@@ -203,4 +203,90 @@ test.describe("前端功能锁定协议", () => {
     await expect(page.getByTestId("summary-error")).toBeVisible();
     await expect(page.getByRole("button", { name: "重试总结" })).toBeVisible();
   });
+
+  test("锁定 9：后端不可达横幅（出现 / 恢复自动隐藏 / 手动关闭 / 不遮挡页面）", async ({ page }) => {
+    // Mock 模式下健康检查为同源 /api/health（恒 200）；拦截返回 500 模拟「后端未启动」
+    let failing = true;
+    await page.route("**/api/health", (route) =>
+      failing
+        ? route.fulfill({
+            status: 500,
+            contentType: "application/json",
+            body: JSON.stringify({ error: { code: "INTERNAL_ERROR", message: "backend down" } }),
+          })
+        : route.continue(),
+    );
+
+    await page.goto("/");
+    const banner = page.getByTestId("backend-unreachable-banner");
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("后端服务不可达");
+    await expect(banner).toContainText("run.bat start"); // 明确的启动指引
+
+    // 不遮挡页面：横幅底部不越过顶栏顶部（占位 + 顶栏 sticky 偏移生效）
+    const bannerBox = await banner.boundingBox();
+    const headerBox = await page.locator("header").boundingBox();
+    expect(bannerBox).toBeTruthy();
+    expect(headerBox).toBeTruthy();
+    expect(bannerBox!.y + bannerBox!.height).toBeLessThanOrEqual(headerBox!.y + 1);
+
+    // 后端恢复 → 下一次探测成功后自动隐藏（间隔 15s，留足余量）
+    failing = false;
+    await expect(banner).toHaveCount(0, { timeout: 25_000 });
+
+    // 再次故障 → 横幅重新出现；手动关闭后保持隐藏
+    failing = true;
+    await expect(banner).toBeVisible({ timeout: 25_000 });
+    await page.getByRole("button", { name: "关闭提示" }).click();
+    await expect(banner).toHaveCount(0);
+  });
+
+  test("锁定 10：AI 总结开关与手动生成（关闭后不自动总结，手动按钮可生成）", async ({ page }) => {
+    const summarizeRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("/api/summarize")) summarizeRequests.push(request.url());
+    });
+
+    await page.goto("/");
+    const toggle = page.getByTestId("auto-summary-toggle");
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute("aria-checked", "true"); // 默认开启（自动总结由锁定 6 覆盖）
+
+    // 关闭开关 → 立即持久化到 localStorage（仅布尔值）
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(await page.evaluate(() => localStorage.getItem("autoSummary"))).toBe("false");
+
+    // 刷新后仍保持关闭（跨会话持久化 + 挂载后水合）
+    await page.reload();
+    await expect(page.getByTestId("auto-summary-toggle")).toHaveAttribute("aria-checked", "false");
+
+    // 关闭状态下解析一个 Mock 任务：转写完成即进结果页，但不自动总结
+    await page.getByLabel("视频链接").fill("https://www.bilibili.com/video/BV1GJ411x7h7");
+    await page.getByRole("button", { name: "解析", exact: true }).click();
+    await page.waitForURL(/\/result\//, { timeout: 30_000 });
+    await expect(page.getByTestId("fulltext-article")).toBeVisible();
+    await expect(page.getByTestId("key-points")).toHaveCount(0); // 没有自动总结
+    expect(summarizeRequests).toHaveLength(0); // 也没有发过 summarize 请求
+
+    // 未总结引导 + 手动生成按钮
+    await expect(page.getByTestId("summary-manual-prompt")).toBeVisible();
+    const manualButton = page.getByTestId("manual-summarize-button");
+    await expect(manualButton).toBeVisible();
+    await expect(manualButton).toHaveText(/生成 AI 总结/);
+
+    // 手动生成 → 总结渲染（与 P0 错误重试共用 retrySummary 逻辑）
+    await manualButton.click();
+    await expect(page.getByTestId("key-points")).toBeVisible();
+    await expect(page.getByTestId("chapter-timeline")).toBeVisible();
+    expect(summarizeRequests).toHaveLength(1);
+
+    // 刷新恢复（recover 路径）同样尊重开关：直接重载结果页不自动总结，回到手动引导
+    const requestsBeforeReload = summarizeRequests.length;
+    await page.reload();
+    await expect(page.getByTestId("fulltext-article")).toBeVisible();
+    await expect(page.getByTestId("summary-manual-prompt")).toBeVisible();
+    await expect(page.getByTestId("key-points")).toHaveCount(0);
+    expect(summarizeRequests).toHaveLength(requestsBeforeReload); // 恢复路径没有偷偷发起总结
+  });
 });
