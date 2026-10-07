@@ -59,3 +59,7 @@ backend/.audio-bench/
 
 # 任务持久化数据库（任务 H）
 backend/data/
+
+# 任务 J：启动脚本运行产物
+logs/
+.vtt-pids/
