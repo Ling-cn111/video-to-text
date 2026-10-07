@@ -38,6 +38,7 @@
 ## 已知限制
 
 - **停止服务后刷新页面仍显示界面？** 若你的浏览器曾访问过生产构建（或点过首页「安装」），PWA 的 Service Worker 会缓存**离线外壳**——服务停止后刷新会显示缓存的界面（这是「离线可用外壳」的设计行为），此时页面顶部会出现「后端服务不可达」横幅（含启动指引，后端恢复后 15 秒内自动消失），页面内任何数据操作也会明确报「网络异常」。彻底清除：F12 → Application → Service Workers → Unregister，或在浏览器设置中清除该站点数据
+- **重建 / 重启服务后旧标签页报 webpack 错？** 例如 `Unhandled Runtime Error: Cannot read properties of undefined (reading 'call')`（栈顶在 `webpack.js` 的 `options.factory`）——这是**浏览器里保留的旧页面与刚重建的 `.next` 不匹配**（旧页面引用的 chunk 在当前构建里已不存在），不是代码故障：在报错页按 **Ctrl+Shift+R 硬刷新**即可。若从已安装的 PWA 窗口打开，先关闭该窗口并清除站点数据。开发环境（`pnpm dev`）现在会自动**注销残留 Service Worker + 清理 `vtt-shell-*` 外壳缓存**，避免再次混用（生产环境行为不变）
 - 转写任务已持久化到 SQLite（`backend/data/tasks.db`）：服务重启后历史任务可查，重启时未完成任务标记「已中断」并引导重试；多 worker / 云端部署仍需替换为 Redis（接口已封装，见 backend/README.md）
 - 当前仅支持 B站；抖音解析在前端 Mock 中预置，真实后端待接入
 - B站 AI 字幕非全覆盖（实测 6 视频中 5 个有轨道），无字幕时走 ASR 兜底
