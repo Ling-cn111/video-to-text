@@ -71,7 +71,7 @@
 | 功能 | 锁定要求 |
 | --- | --- |
 | 字幕快路径优先 | 有字幕的视频优先走字幕快路径（降级链：yt-dlp CC → dm/view AI → 预留 Cookie 层 → ASR），后端标记 `transcriptSource`（subtitle_cc / subtitle_ai / asr），降级链不得移除 |
-| 来源 Badge | 结果页 `data-testid="source-badge"` 显示「来源：B站字幕」，**仅字幕来源（subtitle_cc / subtitle_ai）渲染**；ASR 来源（asr 或缺省）严禁出现该 Badge |
+| 来源 Badge | 结果页 `data-testid="source-badge"` 按 `transcriptSource` 渲染：**字幕来源（subtitle_cc / subtitle_ai）显示「来源：B站字幕」；ASR 来源显示「来源：语音识别」；缺省不显示**。三个分支均不得移除（用户需据此区分字幕快路径与 ASR，任务 M2-P1 变更） |
 | 增量原则 | Badge 为头部元信息行增量，不得借机改动 Tab 结构 / 导出 / 进度页等已锁定功能 |
 
 ## 8. 首页模式标识（任务 K 新增）

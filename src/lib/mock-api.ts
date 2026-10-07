@@ -48,8 +48,8 @@ interface TaskPayload {
   f?: 1
   /** 注入总结失败标记（E2E 锁定 8：验证总结失败降级不拖垮文字稿） */
   sumFail?: 1
-  /** 文字稿来源标记（E2E 锁定 5 用：字幕来源任务显示来源 Badge） */
-  src?: 'subtitle_cc' | 'subtitle_ai'
+  /** 文字稿来源标记（E2E 锁定 5 用：字幕来源显示「来源：B站字幕」，asr 显示「来源：语音识别」） */
+  src?: 'subtitle_cc' | 'subtitle_ai' | 'asr'
   /** 真实解析透传的元数据（M1.5 混合模式：解析真实、转写 Mock） */
   m?: { t: string; c: string; d: number }
 }

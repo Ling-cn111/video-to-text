@@ -110,6 +110,10 @@ export function ResultView({ taskId }: ResultViewProps) {
               <Badge variant="secondary" data-testid="source-badge" className="font-normal">
                 来源：B站字幕
               </Badge>
+            ) : transcriptSource === 'asr' ? (
+              <Badge variant="outline" data-testid="source-badge" className="font-normal">
+                来源：语音识别
+              </Badge>
             ) : null}
             {video ? <span>{formatDuration(video.duration)}</span> : null}
             <span>共 {transcript.length} 段</span>
