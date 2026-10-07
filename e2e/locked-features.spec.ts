@@ -76,21 +76,27 @@ test.describe("前端功能锁定协议", () => {
     expect(content).not.toMatch(TIMESTAMP_PATTERN); // 零时间戳
   });
 
-  test("锁定 4：首页转写模式默认本地，选云端出现隐私提示，Mock 模式附无实际效果小字", async ({ page }) => {
+  test("锁定 4：首页转写模式默认本地，说明随选择变化，Mock 模式附无实际效果小字", async ({ page }) => {
     await page.goto("/");
 
     const mode = page.getByTestId("transcribe-mode");
     await expect(mode).toBeVisible();
     // 默认选中「本地」（锁定默认值）
     await expect(page.getByRole("button", { name: "本地" })).toHaveAttribute("aria-pressed", "true");
-    // 未选云端时不出现隐私提示；Mock 模式的小字提示始终存在
-    await expect(page.getByTestId("cloud-privacy-notice")).toHaveCount(0);
+    // Mock 模式的小字提示始终存在
     await expect(page.getByTestId("mock-no-effect-hint")).toContainText("无实际效果");
 
-    // 切换云端：选中态生效且隐私提示必须出现（锁定项）
+    // 说明行常显且随选择变化——断言严格限定在 mode-description 区域内（与锁定 1 的 fulltext-article 做法一致）
+    const description = page.getByTestId("mode-description");
+    await expect(description).toContainText("本地模式");
+    await expect(description).not.toContainText("上传至第三方");
+
+    // 切换云端：选中态生效；说明行切换为云端文案并含隐私提示（原隐私提示已并入，锁定项）
     await page.getByRole("button", { name: "云端" }).click();
     await expect(page.getByRole("button", { name: "云端" })).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByTestId("cloud-privacy-notice")).toContainText("上传至第三方");
+    await expect(description).toContainText("云端模式");
+    await expect(description).toContainText("准确率更高");
+    await expect(description).toContainText("上传至第三方");
   });
 
   test("锁定 5：来源 Badge 按 transcriptSource 显示（字幕 / 语音识别 / 缺省不显示）", async ({ page }) => {

@@ -68,13 +68,18 @@ export function TranscribeMode({ value, onChange }: TranscribeModeProps) {
         </p>
       ) : null}
 
-      {value === 'cloud' && (
+      {/* 说明行：常显、随选择变化；云端态合并隐私提示（amber + 盾牌图标）——M2-P2-B 锁定项 */}
+      {value === 'local' ? (
+        <p data-testid="mode-description" className="text-xs leading-relaxed text-muted-foreground">
+          本地模式：免费 · 离线 · 较慢，准确率中等
+        </p>
+      ) : (
         <p
-          data-testid="cloud-privacy-notice"
+          data-testid="mode-description"
           className="flex items-start gap-1.5 text-xs leading-relaxed text-amber-600 dark:text-amber-500"
         >
           <ShieldAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-          云端模式：音频将上传至第三方云端服务进行识别，请注意隐私。
+          云端模式：更快 · 准确率更高 · 音频将上传至第三方服务
         </p>
       )}
 
