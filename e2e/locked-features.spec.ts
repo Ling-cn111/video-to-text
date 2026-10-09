@@ -314,7 +314,8 @@ test.describe("前端功能锁定协议", () => {
     await expect(copyButton).toHaveText(/已复制/);
 
     // 剪贴板内容 = 全文阅读正文：逐段一致、纯文本、零时间戳
-    // （Chromium 在 Windows 上会把换行归一化为 CRLF，读回后先归一化再逐段比对）
+    // 注意：Chromium / Windows 会把剪贴板文本的换行归一化为 CRLF（读回含 \r\n），
+    // 所以这里先归一化再逐段比对。若日后比对失败，先查换行差异，别误判成复制内容不一致。
     const clipboard = (await page.evaluate(() => navigator.clipboard.readText())).replace(/\r\n/g, "\n");
     expect(clipboard).toBe(pageParagraphs.join("\n\n"));
     expect(clipboard).not.toMatch(TIMESTAMP_PATTERN);

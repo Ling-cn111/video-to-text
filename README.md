@@ -110,6 +110,29 @@ pnpm build    # 生产构建
 pnpm start    # 生产模式（注册 Service Worker，可验证 PWA）
 ```
 
+### 本地验证 E2E 锁定用例（Mock / 真实模式构建的区别）
+
+`NEXT_PUBLIC_USE_MOCK` 是**构建期常量**（Next.js 只在 `pnpm build` 时内联，不是运行时开关），切换模式必须重新构建；显式设置的同名环境变量优先于 `.env.local`。
+
+- 直接 `pnpm build` 会读取根目录 `.env.local`。本地 `cp .env.example .env.local` 后默认 `NEXT_PUBLIC_USE_MOCK=false`，构建出来的是**真实模式**。
+- `e2e/locked-features.spec.ts` 的锁定用例全部按 **Mock 模式**编写。对真实模式构建跑全套会**因环境原因全红**（Mock taskId 在真实接口取不到数据；真实模式的健康检查走 `/backend-api/health`，测试里对 `/api/health` 的拦截不生效）——这不是代码回归，别被吓到。
+- 本地跑锁定用例：
+
+  ```powershell
+  # PowerShell
+  $env:NEXT_PUBLIC_USE_MOCK="true"; pnpm build
+  pnpm exec playwright test      # webServer 自动执行 pnpm start，端口 3000
+  ```
+
+  ```bash
+  # bash / zsh
+  NEXT_PUBLIC_USE_MOCK=true pnpm build
+  pnpm exec playwright test
+  ```
+
+- 真实模式只需验证首页模式标识（对应 CI 第二阶段）：不加环境变量 `pnpm build`，然后 `$env:VTT_EXPECT_MODE="real"; pnpm exec playwright test -g "锁定 7"`。
+- CI 不受影响：CI 环境没有 `.env.local`、也不设该变量，默认构建即 Mock。
+
 ### 图标生成（PWA 资源）
 
 ```bash
