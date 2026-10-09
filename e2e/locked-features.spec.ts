@@ -289,4 +289,57 @@ test.describe("前端功能锁定协议", () => {
     await expect(page.getByTestId("key-points")).toHaveCount(0);
     expect(summarizeRequests).toHaveLength(requestsBeforeReload); // 恢复路径没有偷偷发起总结
   });
+
+  test("锁定 11：复制全文按钮——内容与全文阅读逐段一致、零时间戳、有成功/失败反馈", async ({ page, context }) => {
+    // 读回剪贴板内容需要授权（localhost 属安全上下文，Mock 构建下可用）
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.goto(`/result/${mockTaskId()}`);
+
+    // 按钮存在于结果页头部，与「导出」并列
+    const copyButton = page.getByTestId("copy-fulltext-button");
+    await expect(copyButton).toBeVisible();
+    await expect(copyButton).toHaveText(/复制全文/);
+    await expect(page.getByRole("button", { name: "导出" })).toBeVisible();
+
+    // 页面「全文阅读」的段落（复制内容的对照基准）
+    const article = page.getByTestId("fulltext-article");
+    await expect(article).toBeVisible();
+    const pageParagraphs = await article.locator("p").allTextContents();
+    expect(pageParagraphs.length).toBeGreaterThan(1); // 确实渲染了多段正文
+
+    await copyButton.click();
+
+    // 成功反馈：成功 toast + 按钮短时变为「已复制」
+    await expect(page.locator('[data-sonner-toast][data-type="success"]')).toContainText("已复制");
+    await expect(copyButton).toHaveText(/已复制/);
+
+    // 剪贴板内容 = 全文阅读正文：逐段一致、纯文本、零时间戳
+    // （Chromium 在 Windows 上会把换行归一化为 CRLF，读回后先归一化再逐段比对）
+    const clipboard = (await page.evaluate(() => navigator.clipboard.readText())).replace(/\r\n/g, "\n");
+    expect(clipboard).toBe(pageParagraphs.join("\n\n"));
+    expect(clipboard).not.toMatch(TIMESTAMP_PATTERN);
+    expect(clipboard.length).toBeGreaterThan(50);
+
+    // 三者同源铁律：复制内容与 TXT 导出同源（页面全文 / 复制 / 导出一致）
+    await page.getByRole("button", { name: "导出" }).click();
+    const download = page.waitForEvent("download");
+    await page.getByRole("menuitem", { name: "纯文本（.txt）" }).click();
+    const txt = readFileSync(await (await download).path(), "utf-8");
+    expect(txt).toContain(pageParagraphs[0].slice(0, 20));
+    expect(txt).not.toMatch(TIMESTAMP_PATTERN);
+
+    // 失败降级：Clipboard API 与 execCommand 均不可用时必须给出错误提示（严禁静默失败）
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: () => Promise.reject(new Error("clipboard denied")) },
+      });
+      Document.prototype.execCommand = () => false;
+    });
+    await page.reload();
+    await expect(page.getByTestId("copy-fulltext-button")).toBeVisible();
+    await page.getByTestId("copy-fulltext-button").click();
+    await expect(page.locator('[data-sonner-toast][data-type="error"]')).toContainText("复制失败");
+    await expect(page.getByTestId("copy-fulltext-button")).toHaveText(/复制全文/); // 失败不进入「已复制」态
+  });
 });
