@@ -33,7 +33,7 @@
 > 说明：B站 AI 字幕通过**弹幕元数据接口 `/x/v2/dm/view`** 未登录即可获取（任务 G，无需 Cookie）；
 > yt-dlp 层未登录仅能拿到 UP 主手传 CC 字幕（AI 字幕轨道为空，实测）。`BILI_COOKIE` 保留为
 > 层 3 预留兜底（未实现）：浏览器登录 bilibili.com → F12 → Application/存储 → Cookies →
-> 复制整段（含 SESSDATA）。任务状态为 **SQLite 持久化**（任务 H，`services/tasks.py`）：存储于 `backend/data/tasks.db`（`TASK_DB_PATH` 可配），表 `tasks(task_id, status, progress, stage, created_at, updated_at, payload_json)`，全部查询参数绑定。内存作一级缓存（进程内轮询零 SQL），写操作同步落盘；**服务重启后历史任务可查，重启时未完成任务自动标记 `interrupted`**，前端显示「任务已中断，请重试」+ 重试按钮。任务状态只能通过 `create_task / get_task / update_task` 接口访问，路由与流水线不直接触碰存储——**多 worker / 云端部署时把该模块替换为 Redis 等实现即可，无需改业务代码**（SQLite 为单机文件库，`backend/data/` 已入 .gitignore）。
+> 复制整段（含 SESSDATA）。任务状态为 **TaskStore 抽象存储**（任务 H + S1-A，`services/tasks.py`）：默认 `MemoryTaskStore`——SQLite 持久化（`backend/data/tasks.db`，`TASK_DB_PATH` 可配）+ 内存一级缓存（进程内轮询零 SQL），写操作同步落盘；**服务重启后历史任务可查，重启时未完成任务自动标记 `interrupted`**，前端显示「任务已中断，请重试」+ 重试按钮。任务状态只能通过 `create_task / get_task / update_task` 接口访问，路由与流水线不直接触碰存储。`TASK_STORE=redis` + `REDIS_URL`（可选依赖 `requirements-redis.txt`）切换到 `RedisTaskStore`（redis.asyncio），行为与 memory 对齐（`tests/test_tasks_store.py` 双实现同用例验证）；**REDIS_URL 未配置时自动降级 memory 并打警告**。多 worker / 云端部署用 redis 即可，无需改业务代码（SQLite 为单机文件库，`backend/data/` 已入 .gitignore）。
 
 ## 本地运行
 

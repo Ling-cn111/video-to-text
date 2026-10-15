@@ -1,0 +1,5 @@
+# 可选依赖：Redis 任务存储后端（TASK_STORE=redis，S1-A）
+# 安装：pip install -r requirements-redis.txt
+# 说明：redis.asyncio 客户端；REDIS_URL 未配置或包缺失时自动降级 memory 并打警告，
+#       不安装也不影响默认 memory 模式运行
+redis>=5.0

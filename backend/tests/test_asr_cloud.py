@@ -213,14 +213,14 @@ def _noop_pipeline(monkeypatch):
 
 def test_submit_cloud_without_key_rejected_before_task_creation(monkeypatch):
     monkeypatch.setattr("app.routers.transcribe.CLOUD_ASR_API_KEY", "")
-    tasks_before = len(tasks_module._TASKS)
+    tasks_before = len(tasks_module._STORE._tasks)
 
     response = client.post("/api/transcribe", json={**VIDEO_BODY, "engine": "cloud"})
     assert response.status_code == 400
     body = response.json()
     assert body["error"]["code"] == "CLOUD_NOT_CONFIGURED"
     assert "CLOUD_ASR_API_KEY" in body["error"]["message"]
-    assert len(tasks_module._TASKS) == tasks_before  # 未静默创建任务
+    assert len(tasks_module._STORE._tasks) == tasks_before  # 未静默创建任务
 
 
 def test_submit_local_creates_task_with_engine(monkeypatch):
