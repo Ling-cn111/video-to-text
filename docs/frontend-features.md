@@ -15,6 +15,8 @@
 | **双视图 Tab 切换** | 文字稿区提供两个 Tab：**`全文阅读`（默认激活）** 与 **`时间戳定位`**。不得移除 Tab 结构、不得改默认 Tab |
 | 全文阅读视图 | 无时间戳、无 `[00:00]` 标记的文章式排版：按语义分段（章节对齐 + 句长兜底 + 超长段落切分）、段落空行、行高 1.9、两端对齐、内容限宽；带字数与预计阅读时长徽章 |
 | 时间戳定位视图 | 逐句列表，句首时间戳可点击复制（`[mm:ss] 文本`），带复制成功反馈；Badge「点击时间可复制」保留 |
+| 复制全文按钮 | 结果页头部动作区与「导出」并列新增 `data-testid="copy-fulltext-button"`：点击复制「全文阅读」正文纯文本（`formatTranscriptToArticle` 派生段落，`paragraphs.join('\n\n')`，无时间戳），与页面全文视图逐段一致；桌面 / 移动端均不遮挡标题与元信息行 |
+| 复制反馈与降级 | 优先 `navigator.clipboard.writeText`，失败降级临时 `textarea` + `document.execCommand('copy')`；成功 toast「已复制全文」+ 按钮 1.5 秒内图标切 Check、文案变「已复制」，失败 toast「复制失败，请手动选择正文复制」，**严禁静默失败**；无可复制内容时按钮禁用 |
 | AI 总结面板 | 右侧独立卡片：一句话概要、**3-5 条要点（每条带原文字稿时间戳徽章，`data-testid="key-points"`）**、章节笔记（**时间区间 `mm:ss–mm:ss`，`data-testid="chapter-timeline"`**，字段 `{title, timeStart, timeEnd, note}`）。**修改总结 UI 时严禁波及左侧 Tab 结构**。阶段三起由真实 LLM 生成（E2E 锁定 6；失败降级见下条） |
 | 总结失败降级（任务 M2-P0） | 总结失败**不得拖垮整页**：文字稿/全文阅读/导出照常可用，仅总结区显示错误卡（`data-testid="summary-error"`）+「重试总结」按钮；加载中为骨架（`summary-skeleton`）；未总结态为引导文案 +「生成 AI 总结」按钮（`summary-manual-prompt` / `manual-summarize-button`，任务 M2-P3 由原空态 `summary-empty` 升级而来，手动生成与错误重试共用 `retrySummary` 逻辑） |
 | 刷新恢复 | 直接刷新 / 直链访问按 taskId 从接口恢复，不白屏 |
@@ -27,6 +29,7 @@
 | Markdown 导出 | `# 标题` + `> 元信息` + **`## 正文`** + 段落（空行分隔）。**全文件零时间戳**，可直接贴入 Notion / Obsidian |
 | 导出入口 | 结果页头部「导出」下拉菜单（TXT / MD），菜单带「纯文本 · 不含时间戳」说明 |
 | 分段来源 | 导出段落 = 页面全文视图段落（`formatTranscriptToArticle`），两者必须保持一致 |
+| 复制全文同源 | 复制全文按钮的剪贴板内容 = `formatTranscriptToArticle` 派生段落（`paragraphs.join('\n\n')`），与页面全文视图逐段一致、全文件零时间戳（E2E 锁定 11） |
 
 ## 3. 转写进度页（/processing/[taskId]）
 
@@ -120,6 +123,7 @@
 - [ ] 首页模式标识：Mock 构建显示「演示模式 · Mock 数据」徽章与说明段；真实构建两者均不出现（E2E 锁定 7，CI 双模式各跑一次）
 - [ ] 后端可达性横幅：不可达时出现且含 run.bat 指引，恢复后自动隐藏，可手动关闭，且不遮挡页面内容（E2E 锁定 9）
 - [ ] 关闭「解析后自动 AI 总结」后解析任务：结果页无 keyPoints，显示引导 +「生成 AI 总结」按钮，点击后总结渲染（E2E 锁定 10）
+- [ ] 结果页头部「复制全文」按钮可见：点击后剪贴板内容与全文阅读逐段一致且零时间戳，toast「已复制」反馈；剪贴板不可用时给出错误提示（E2E 锁定 11）
 - [ ] `pnpm lint && pnpm build` 通过
 
 > 修改本文件（新增/放宽锁定项）需要用户明确确认。

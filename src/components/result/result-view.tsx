@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { TranscriptList } from '@/components/result/transcript-list'
 import { ArticleView } from '@/components/result/full-text-view'
+import { CopyFullTextButton } from '@/components/result/copy-fulltext-button'
 import { ExportMenu } from '@/components/result/export-menu'
 import { SummaryCard, SummaryErrorState, SummaryManualPrompt, SummarySkeleton } from '@/components/result/summary-card'
 import { ErrorAlert } from '@/components/shared/error-alert'
@@ -126,6 +127,7 @@ export function ResultView({ taskId }: ResultViewProps) {
           </div>
         </div>
         <div className="flex shrink-0 gap-2 self-start sm:self-auto">
+          <CopyFullTextButton paragraphs={paragraphs} />
           {video ? <ExportMenu video={video} paragraphs={paragraphs} /> : null}
           <Button variant="outline" size="sm" onClick={handleBack} className="gap-1.5">
             <Home className="size-3.5" aria-hidden />
