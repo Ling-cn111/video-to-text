@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.main import app as main_app
-from app.services.rate_limit import RateLimitMiddleware, TokenBucketLimiter
+from app.services.rate_limit import MemoryRateLimiter, RateLimitMiddleware, TokenBucketLimiter
 
 
 def test_normal_requests_pass():
@@ -41,7 +41,7 @@ def test_disabled_when_per_minute_zero():
 def _mini_app(per_minute: int) -> FastAPI:
     """独立小应用（不复用 main 的全局限流），带一个恒 200 的 POST 探针。"""
     app = FastAPI()
-    app.add_middleware(RateLimitMiddleware, limiter=TokenBucketLimiter(per_minute))
+    app.add_middleware(RateLimitMiddleware, limiter=MemoryRateLimiter(per_minute))
 
     @app.post("/probe")
     def probe():
@@ -64,7 +64,7 @@ def test_http_429_with_contract_shape():
 def test_http_get_not_limited():
     """GET 轮询不限流：只有 POST 计数。"""
     app = FastAPI()
-    app.add_middleware(RateLimitMiddleware, limiter=TokenBucketLimiter(per_minute=1))
+    app.add_middleware(RateLimitMiddleware, limiter=MemoryRateLimiter(per_minute=1))
 
     @app.post("/probe")
     def probe():
@@ -83,7 +83,7 @@ def test_http_get_not_limited():
 
 def test_forwarded_for_header_isolation():
     app = FastAPI()
-    app.add_middleware(RateLimitMiddleware, limiter=TokenBucketLimiter(per_minute=1))
+    app.add_middleware(RateLimitMiddleware, limiter=MemoryRateLimiter(per_minute=1))
 
     @app.post("/probe")
     def probe():

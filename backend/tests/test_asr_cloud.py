@@ -237,8 +237,22 @@ def test_submit_cloud_with_key_creates_task(monkeypatch):
 
 
 def test_submit_without_engine_defaults_to_env_engine(monkeypatch):
-    # 缺省不传 engine：跟随后端 ASR_ENGINE（测试进程默认 faster-whisper，非 cloud，不触发预检）
+    # 缺省不传 engine：跟随后端 ASR_ENGINE（S1-C 起默认 cloud）。
+    # 注入假 Key 仅用于通过 _resolve_engine 预检，不访问真实网络（后台流水线已被拦截）。
+    monkeypatch.setattr("app.routers.transcribe.ASR_ENGINE", "cloud")
+    monkeypatch.setattr("app.routers.transcribe.CLOUD_ASR_API_KEY", "test-key")
+
     response = client.post("/api/transcribe", json=VIDEO_BODY)
     assert response.status_code == 200
     task_id = response.json()["taskId"]
-    assert tasks_module.get_task(task_id).engine == asr_module.ASR_ENGINE
+    assert tasks_module.get_task(task_id).engine == "cloud"
+
+
+def test_submit_without_engine_and_no_cloud_key_rejected(monkeypatch):
+    # S1-C 默认 cloud 后：未传 engine 且未配 Key → 预检拒绝（不静默降级、不创建任务）
+    monkeypatch.setattr("app.routers.transcribe.ASR_ENGINE", "cloud")
+    monkeypatch.setattr("app.routers.transcribe.CLOUD_ASR_API_KEY", "")
+
+    response = client.post("/api/transcribe", json=VIDEO_BODY)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "CLOUD_NOT_CONFIGURED"

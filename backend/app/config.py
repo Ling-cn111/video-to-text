@@ -71,18 +71,19 @@ REDIS_URL: str = os.getenv("REDIS_URL", "")
 # 请求限流（令牌桶，任务 H）：每 IP 每分钟 POST 请求数上限；0 = 禁用
 RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "10"))
 
-# ASR 引擎：faster-whisper（本地，默认）| qwen3（Qwen3-ASR-1.7B 本地）| funasr（Fun-ASR-Nano 本地）
-# | cloud（OpenAI 兼容接口）。兼容旧值：local = faster-whisper、旧变量名 ASR_PROVIDER
+# ASR 引擎：cloud（云端，默认，S1-C）| faster-whisper（本地）| qwen3（Qwen3-ASR-1.7B 本地）
+# | funasr（Fun-ASR-Nano 本地）。兼容旧值：local = faster-whisper、旧变量名 ASR_PROVIDER
 # 场景推荐：
+#   默认云端     → cloud（需配置 CLOUD_ASR_API_KEY；未配置时提交会报 CLOUD_NOT_CONFIGURED）
+#   本地开发/离线 → ASR_ENGINE=local（faster-whisper，配合 WHISPER_MODEL）
 #   追求速度     → faster-whisper + WHISPER_MODEL=base
 #   平衡         → faster-whisper + WHISPER_MODEL=small
 #   强 BGM/唱歌  → qwen3（Qwen3-ASR 官方支持 Songs with BGM，实测幻觉显著更低）
 #   追求准确     → qwen3 或 large-v3（GPU）
-#   高精度云端   → ASR_ENGINE=cloud
-ASR_ENGINE: str = os.getenv("ASR_ENGINE", os.getenv("ASR_PROVIDER", "faster-whisper"))
+ASR_ENGINE: str = os.getenv("ASR_ENGINE", os.getenv("ASR_PROVIDER", "cloud"))
 
-# 主引擎失败时的自动降级引擎（qwen3/funasr 等新引擎失败时回退 faster-whisper；留空禁用）
-ASR_ENGINE_FALLBACK: str = os.getenv("ASR_ENGINE_FALLBACK", "faster-whisper")
+# 主引擎失败时的自动降级引擎（云端运行期故障回退本地；local = faster-whisper；留空禁用）
+ASR_ENGINE_FALLBACK: str = os.getenv("ASR_ENGINE_FALLBACK", "local")
 
 # 本地模型：base（默认，下载约 140MB）/ small / tiny …
 # 本地模型：默认 small（CER 评测后的本地最优平衡点，见 docs/asr-benchmark.md）；

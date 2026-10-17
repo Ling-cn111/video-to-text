@@ -70,8 +70,8 @@ pnpm dev                        # 等价于 npm run dev
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `ASR_ENGINE` | `local` | 默认引擎：`local` = faster-whisper 本地推理；`cloud` = OpenAI 兼容接口。另有本地引擎 `qwen3` / `funasr`（需 requirements-asr.txt，评测数据见 docs/asr-benchmark.md）。兼容旧变量名 `ASR_PROVIDER` |
-| `ASR_ENGINE_FALLBACK` | `faster-whisper` | 主引擎**运行期**失败时的自动降级引擎（含云端网络/HTTP 故障）；留空禁用 |
+| `ASR_ENGINE` | `cloud` | 默认引擎（S1-C）：`cloud` = OpenAI 兼容接口（**需配 `CLOUD_ASR_API_KEY`**，未配时提交报 `CLOUD_NOT_CONFIGURED`）；`local` = faster-whisper 本地推理。**本地开发 / 离线请在 `.env.local` 设 `ASR_ENGINE=local`**。另有本地引擎 `qwen3` / `funasr`（需 requirements-asr.txt，评测数据见 docs/asr-benchmark.md）。兼容旧变量名 `ASR_PROVIDER` |
+| `ASR_ENGINE_FALLBACK` | `local` | 主引擎**运行期**失败时的自动降级引擎（含云端网络/HTTP 故障，默认回退本地 faster-whisper）；留空禁用 |
 | `WHISPER_MODEL` | `base` | 本地模型：`tiny` / `base` / `small` / `medium` / `large-v3`（越大越准越慢，首次自动下载）。**准确率建议：本地 CPU 用 `small` 或 `medium`；GPU 环境建议 `large-v3`**。CER 实测数据见 docs/asr-benchmark.md |
 | `WHISPER_COMPUTE_TYPE` | `int8` | CPU 推荐 int8 |
 | `MAX_AUDIO_SIZE_MB` | `100` | 音频大小上限（MB，S1-B 内存化）。下载时按 content-length 预检 + 边拉边累计，超限抛 `AUDIO_TOO_LARGE`（「音频过大，暂不支持」），避免整块载入 OOM |
@@ -98,15 +98,17 @@ DEEPSEEK_API_KEY=sk-xxxx         # 二选一；qwen 用 DASHSCOPE_API_KEY
 - 长文 chunking：超 6000 字按条目边界切块（条目不拆），逐块提取要点 → 合并终稿；时间戳全程指向原 transcript
 - 成本：每次调用记录 usage tokens 与估算成本（`LLM_PRICE_TABLE`，占位单价待官网核对）→ 日志；实测数据见 [docs/llm-cost.md](../docs/llm-cost.md)
 
-## 请求限流（任务 H）
+## 请求限流（任务 H + S1-C）
 
-内存令牌桶，**仅拦截 POST**（GET 轮询不限）：每 IP 每分钟 `RATE_LIMIT_PER_MINUTE` 次（默认 10，**0 = 禁用**）。IP 取 `X-Forwarded-For` 首段（同源代理场景），缺省用直连地址。超限返回 429：
+令牌桶，**仅拦截 POST**（GET 轮询不限）：每 IP 每分钟 `RATE_LIMIT_PER_MINUTE` 次（默认 10，**0 = 禁用**）。IP 取 `X-Forwarded-For` 首段（同源代理场景），缺省用直连地址。超限返回 429：
 
 ```json
 { "error": { "code": "RATE_LIMITED", "message": "请求太频繁，请稍后再试" } }
 ```
 
-实现：`app/services/rate_limit.py`（`TokenBucketLimiter` + 纯 ASR 中间件，跨线程安全）。
+存储（S1-C）：**配置 `REDIS_URL` 后使用 Redis 共享计数**（多后端实例总配额一致；`WATCH/MULTI/EXEC` 乐观事务保证读改写原子，key `ratelimit:<ip>`，TTL 120s）。未配置 `REDIS_URL`、redis 包缺失或**运行期 Redis 故障**时自动降级进程内令牌桶，服务不中断；降级警告 60 秒内同类错误只记一次，避免 Redis 宕机时日志被刷爆。多实例部署需 `pip install -r requirements-redis.txt`。
+
+实现：`app/services/rate_limit.py`（`MemoryRateLimiter` / `RedisRateLimiter` + 纯 ASR 中间件）。
 
 ## 云端 ASR（手动选择，任务 D）
 
