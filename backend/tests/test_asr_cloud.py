@@ -6,6 +6,8 @@
 - 云端失败按 ASR_ENGINE_FALLBACK 降级本地（降级禁用时抛原始错误）
 - 提交接口 engine=cloud 且未配 Key → 400 CLOUD_NOT_CONFIGURED（不静默降级）
 """
+import io
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -92,8 +94,7 @@ def test_cloud_request_shape_and_verbose_json_parsing(monkeypatch, tmp_path):
 
     monkeypatch.setattr(asr_module.httpx, "post", fake_post)
 
-    audio = tmp_path / "audio.wav"
-    audio.write_bytes(b"fake")
+    audio = io.BytesIO(b"fake")
 
     items = CloudASREngine().transcribe(audio, language="zh", initial_prompt="标题")
 
@@ -124,8 +125,7 @@ def test_cloud_falls_back_to_json_when_verbose_json_unsupported(monkeypatch, tmp
 
     monkeypatch.setattr(asr_module.httpx, "post", fake_post)
 
-    audio = tmp_path / "audio.wav"
-    audio.write_bytes(b"fake")
+    audio = io.BytesIO(b"fake")
     items = CloudASREngine().transcribe(audio)
 
     assert formats_seen == ["verbose_json", "json"]  # 先试分段，400 后降级
@@ -138,16 +138,14 @@ def test_cloud_persists_400_after_fallback_raises(monkeypatch, tmp_path):
     monkeypatch.setattr(asr_module, "CLOUD_ASR_BASE_URL", "https://api.siliconflow.cn/v1")
     monkeypatch.setattr(asr_module.httpx, "post", lambda url, **kwargs: _FakeCloudResponse(status_code=400))
 
-    audio = tmp_path / "audio.wav"
-    audio.write_bytes(b"fake")
+    audio = io.BytesIO(b"fake")
     with pytest.raises(Exception, match="HTTP 400"):
         CloudASREngine().transcribe(audio)
 
 
 def test_cloud_missing_key_friendly_chinese_error(monkeypatch, tmp_path):
     monkeypatch.setattr(asr_module, "CLOUD_ASR_API_KEY", "")
-    audio = tmp_path / "audio.wav"
-    audio.write_bytes(b"fake")
+    audio = io.BytesIO(b"fake")
 
     with pytest.raises(Exception) as exc_info:
         CloudASREngine().transcribe(audio)
@@ -159,8 +157,7 @@ def test_cloud_missing_key_friendly_chinese_error(monkeypatch, tmp_path):
 def test_cloud_rejects_private_or_non_http_base_url(monkeypatch, tmp_path, blocked_base):
     monkeypatch.setattr(asr_module, "CLOUD_ASR_API_KEY", "test-key")
     monkeypatch.setattr(asr_module, "CLOUD_ASR_BASE_URL", blocked_base)
-    audio = tmp_path / "audio.wav"
-    audio.write_bytes(b"fake")
+    audio = io.BytesIO(b"fake")
 
     with pytest.raises(Exception, match="CLOUD_ASR_BASE_URL"):
         CloudASREngine().transcribe(audio)
@@ -182,8 +179,7 @@ def test_cloud_failure_falls_back_to_local(monkeypatch, tmp_path):
         ],
     )
 
-    audio = tmp_path / "audio.wav"
-    audio.write_bytes(b"fake")
+    audio = io.BytesIO(b"fake")
     items = transcribe_audio(audio, engine="cloud")
     assert items and "本地降级结果" in items[0]["text"]
 
@@ -197,8 +193,7 @@ def test_cloud_failure_without_fallback_raises_original(monkeypatch, tmp_path):
 
     monkeypatch.setattr(asr_module.httpx, "post", fail_post)
 
-    audio = tmp_path / "audio.wav"
-    audio.write_bytes(b"fake")
+    audio = io.BytesIO(b"fake")
     with pytest.raises(Exception, match="连接失败"):
         transcribe_audio(audio, engine="cloud")
 

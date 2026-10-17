@@ -1,7 +1,8 @@
 """ASR 引擎抽象：本地 faster-whisper（默认）与云端 OpenAI 兼容接口。
 
-- BaseASREngine：统一接口 transcribe(audio_path, language, progress_callback,
-  initial_prompt, hotwords)——业务代码只依赖该接口，换引擎不改业务代码
+- BaseASREngine：统一接口 transcribe(audio, language, progress_callback,
+  initial_prompt, hotwords)——audio 为内存音频 BytesIO（S1-B 去磁盘化），
+  业务代码只依赖该接口，换引擎不改业务代码
 - LocalWhisperEngine：faster-whisper（WHISPER_MODEL，默认 base / int8），懒加载线程安全；
   自定义 PyAV 解码（绕开新版 PyAV 的 av.open(metadata_errors=...) 不兼容）；
   Silero VAD 过滤纯音乐时自动去 VAD 重试
@@ -16,9 +17,16 @@
   ASR_ENGINE_FALLBACK：主引擎失败自动降级（默认 faster-whisper，留空禁用）
 - 输出统一过 postprocess_items：zhconv 繁→简、折叠明显重复词、按语言补句末标点
 - initial_prompt：热词（hotwords）+ 视频标题组合，引导专有名词识别
+- 去磁盘化（S1-B）：音频以 BytesIO 贯穿；PyAV 解码与云端上传均直接吃内存，
+  仅「只接受文件路径」的引擎（qwen3/funasr）落盘到系统临时目录，用完即删
 """
+import contextlib
+import io
+import os
 import re
+import tempfile
 import threading
+from pathlib import Path
 
 import httpx
 import zhconv
@@ -82,13 +90,33 @@ class BaseASREngine:
 
     def transcribe(
         self,
-        audio_path,
+        audio,
         language: str = "zh",
         progress_callback: ProgressCallback = None,
         initial_prompt: str | None = None,
         hotwords: list[str] | None = None,
     ) -> list[dict]:
         raise NotImplementedError
+
+
+@contextlib.contextmanager
+def _materialized_audio(audio):
+    """把内存音频落盘到系统临时目录（仅接受文件路径的引擎需要），退出即删。
+
+    qwen-asr / funasr 的 API 只收文件路径，无法吃 BytesIO；这里做一次性桥接，
+    yield 临时文件路径，finally 删除（无论成功失败都不残留）。
+    """
+    audio.seek(0)
+    fd, name = tempfile.mkstemp(prefix="vtt-asr-", suffix=".wav")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(audio.getvalue())
+        yield Path(name)
+    finally:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
 
 
 class LocalWhisperEngine(BaseASREngine):
@@ -121,21 +149,21 @@ class LocalWhisperEngine(BaseASREngine):
 
     def transcribe(
         self,
-        audio_path,
+        audio,
         language: str = "zh",
         progress_callback: ProgressCallback = None,
         initial_prompt: str | None = None,
         hotwords: list[str] | None = None,
     ) -> list[dict]:
         model = self._get_model()
-        audio = decode_audio_16k_mono(audio_path)
+        decoded = decode_audio_16k_mono(audio)
         prompt = build_initial_prompt(initial_prompt, hotwords)
 
         def run(vad_filter: bool):
             kwargs = {"language": language, "vad_filter": vad_filter}
             if prompt:
                 kwargs["initial_prompt"] = prompt
-            segments, info = model.transcribe(audio, **kwargs)
+            segments, info = model.transcribe(decoded, **kwargs)
             items: list[dict] = []
             total = float(info.duration or 0)
             for segment in segments:
@@ -166,7 +194,7 @@ class CloudASREngine(BaseASREngine):
 
     def transcribe(
         self,
-        audio_path,
+        audio,
         language: str = "zh",
         progress_callback: ProgressCallback = None,
         initial_prompt: str | None = None,
@@ -185,7 +213,9 @@ class CloudASREngine(BaseASREngine):
             ) from exc
 
         prompt = build_initial_prompt(initial_prompt, hotwords)
-        audio_bytes = audio_path.read_bytes()
+        # S1-B：直接以内存 bytes 上传（无磁盘中转）
+        audio.seek(0)
+        audio_bytes = audio.getvalue()
         base_data: dict = {
             "model": CLOUD_ASR_MODEL,
             "language": language,
@@ -195,7 +225,7 @@ class CloudASREngine(BaseASREngine):
 
         url = f"{CLOUD_ASR_BASE_URL.rstrip('/')}/audio/transcriptions"
         headers = {"Authorization": f"Bearer {CLOUD_ASR_API_KEY}"}
-        files = {"file": (audio_path.name, audio_bytes)}
+        files = {"file": ("audio.wav", audio_bytes)}
         try:
             response = None
             # 400 时降级重试：verbose_json → json（部分服务商不支持分段时间戳）
@@ -284,7 +314,7 @@ class Qwen3ASREngine(BaseASREngine):
 
     def transcribe(
         self,
-        audio_path,
+        audio,
         language: str = "zh",
         progress_callback: ProgressCallback = None,
         initial_prompt: str | None = None,
@@ -294,13 +324,14 @@ class Qwen3ASREngine(BaseASREngine):
         context = build_initial_prompt(initial_prompt, hotwords)
         language_name = self._LANGUAGE_NAMES.get(language)  # 未知语言走自动检测
 
-        kwargs: dict = {"audio": str(audio_path), "return_time_stamps": True}
-        if language_name:
-            kwargs["language"] = language_name
-        if context:
-            kwargs["context"] = context
+        with _materialized_audio(audio) as audio_file:
+            kwargs: dict = {"audio": str(audio_file), "return_time_stamps": True}
+            if language_name:
+                kwargs["language"] = language_name
+            if context:
+                kwargs["context"] = context
 
-        results = model.transcribe(**kwargs)
+            results = model.transcribe(**kwargs)
         record = results[0]
         items = self._stamps_to_items(getattr(record, "time_stamps", None))
         if not items and getattr(record, "text", "").strip():
@@ -337,23 +368,24 @@ class FunASRNanoEngine(BaseASREngine):
 
     def transcribe(
         self,
-        audio_path,
+        audio,
         language: str = "zh",
         progress_callback: ProgressCallback = None,
         initial_prompt: str | None = None,
         hotwords: list[str] | None = None,
     ) -> list[dict]:
         model = self._get_model()
-        generate_kwargs: dict = {"input": str(audio_path)}
         hotword_text = " ".join(w.strip() for w in (hotwords or []) if w and w.strip())
-        if hotword_text:
-            generate_kwargs["hotword"] = hotword_text
-        try:
-            results = model.generate(**generate_kwargs)
-        except TypeError:
-            # 旧版 funasr 不支持 hotword 参数
-            generate_kwargs.pop("hotword", None)
-            results = model.generate(**generate_kwargs)
+        with _materialized_audio(audio) as audio_file:
+            generate_kwargs: dict = {"input": str(audio_file)}
+            if hotword_text:
+                generate_kwargs["hotword"] = hotword_text
+            try:
+                results = model.generate(**generate_kwargs)
+            except TypeError:
+                # 旧版 funasr 不支持 hotword 参数
+                generate_kwargs.pop("hotword", None)
+                results = model.generate(**generate_kwargs)
 
         record = (results or [{}])[0]
         text = str(record.get("text", "")).strip()
@@ -394,39 +426,45 @@ def get_engine(name: str | None = None) -> BaseASREngine:
 
 
 def transcribe_audio(
-    audio_path,
+    audio,
     language: str = "zh",
     progress_callback: ProgressCallback = None,
     initial_prompt: str | None = None,
     hotwords: list[str] | None = None,
     engine: str | None = None,
 ) -> list[dict]:
-    """业务入口。engine 为请求级手动选择（前端 local|cloud），缺省跟随 ASR_ENGINE；
-    主引擎失败时按 ASR_ENGINE_FALLBACK 自动降级（配置留空禁用）。"""
+    """业务入口。audio 为内存音频 BytesIO。engine 为请求级手动选择（前端 local|cloud），
+    缺省跟随 ASR_ENGINE；主引擎失败时按 ASR_ENGINE_FALLBACK 自动降级（配置留空禁用）。"""
     primary = get_engine(engine)
     try:
-        return primary.transcribe(audio_path, language, progress_callback, initial_prompt, hotwords)
+        return primary.transcribe(audio, language, progress_callback, initial_prompt, hotwords)
     except Exception as exc:
         fallback_name = ASR_ENGINE_FALLBACK.strip()
         if not fallback_name or fallback_name == primary.name:
             raise
         fallback = build_engine(fallback_name)
         try:
-            return fallback.transcribe(audio_path, language, progress_callback, initial_prompt, hotwords)
+            return fallback.transcribe(audio, language, progress_callback, initial_prompt, hotwords)
         except Exception:
             raise exc  # 降级也失败：抛主引擎的原始错误
 
 
-def decode_audio_16k_mono(audio_path) -> "ndarray":
-    """用 PyAV 解码任意音频为 16kHz 单声道 float32（-1~1）。
+def decode_audio_16k_mono(audio) -> "ndarray":
+    """用 PyAV 解码内存音频为 16kHz 单声道 float32（-1~1）。
 
+    audio 为 BytesIO（S1-B 去磁盘化，PyAV 原生支持 file-like）；亦兼容文件路径。
     不走 faster-whisper 内置的 av.open(metadata_errors=...) 解码：
     新版 PyAV（>=15）已移除该参数，直接传路径会在解码层崩掉。
     """
     import av
     import numpy as np
 
-    container = av.open(str(audio_path))
+    if hasattr(audio, "seek"):
+        audio.seek(0)
+        source = audio
+    else:
+        source = str(audio)
+    container = av.open(source)
     try:
         stream = next(s for s in container.streams if s.type == "audio")
         resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)

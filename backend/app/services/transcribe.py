@@ -1,11 +1,9 @@
 """转写流水线编排：字幕快路径 → 音频下载 → ASR，全程更新任务进度。
 
 入口 run_transcription_pipeline 交由 FastAPI BackgroundTasks 在响应返回后执行。
+音频全程内存化（S1-B）：下载/转换/分离均以 BytesIO 流转，不落持久磁盘；
+仅 demucs / qwen3 / funasr 等「只认文件路径」的组件内部用系统临时目录并即用即删。
 """
-import shutil
-from pathlib import Path
-
-from app.config import AUDIO_DIR
 from app.errors import AppException
 from app.schemas import TranscriptItem, VideoInfo
 from app.services import asr
@@ -56,7 +54,6 @@ def run_transcription_pipeline(
     engine 为请求级手动选择（local | cloud，缺省跟随 ASR_ENGINE）；
     云端运行期故障由 asr.transcribe_audio 内的 ASR_ENGINE_FALLBACK 降级本地。
     """
-    work_dir = Path(AUDIO_DIR) / task_id
     try:
         # 阶段一：字幕快路径（分层降级：yt-dlp CC → dm/view AI；秒级返回）
         update_task(task_id, stage="parse_link", progress=PROGRESS_PARSE)
@@ -71,25 +68,25 @@ def run_transcription_pipeline(
                 _finish(task_id, subtitle_items, subtitle_source)
                 return
 
-        # 阶段二：下载音轨 + FFmpeg 转 16kHz 单声道 WAV
+        # 阶段二：下载音轨 + FFmpeg 管道转 16kHz 单声道 WAV（全程内存，S1-B）
         update_task(task_id, stage="extract_audio", progress=PROGRESS_EXTRACT_START)
-        source = download_audio(url, work_dir)
+        audio = download_audio(url)
         update_task(task_id, stage="extract_audio", progress=PROGRESS_EXTRACT_DONE)
-        wav_path = convert_to_wav_16k_mono(source, work_dir)
+        wav = convert_to_wav_16k_mono(audio)
 
         # 可选：人声分离（Demucs）。智能触发：非语音占比超阈值或显式开启；
         # 分离失败/未安装组件时降级回原音频，不使任务失败。分离后仍走 ASR 的 VAD 兜底链。
         from app.services import separation
 
         if separation.is_demucs_available():
-            separate, non_speech_ratio = separation.should_separate(wav_path)
+            separate, non_speech_ratio = separation.should_separate(wav)
             if separate:
                 try:
-                    wav_path = separation.separate_vocals(wav_path, work_dir)
+                    wav = separation.separate_vocals(wav)
                 except Exception:
                     pass  # 降级：人声分离失败不影响转写主流程
 
-        # 阶段三：ASR（本地 faster-whisper 或云端）
+        # 阶段三：ASR（本地 faster-whisper 或云端；音频以 BytesIO 传入）
         update_task(task_id, stage="asr", progress=PROGRESS_ASR_START)
 
         def on_asr_progress(ratio: float) -> None:
@@ -98,7 +95,7 @@ def run_transcription_pipeline(
         # 上下文提示：热词（专有名词）+ 视频标题，引导 ASR 识别
         initial_prompt = video.title if video else None
         transcript = asr.transcribe_audio(
-            wav_path,
+            wav,
             language="zh",
             progress_callback=on_asr_progress,
             initial_prompt=initial_prompt,
@@ -110,5 +107,3 @@ def run_transcription_pipeline(
         _finish(task_id, transcript, "asr")
     except Exception as exc:
         _fail(task_id, exc)
-    finally:
-        shutil.rmtree(work_dir, ignore_errors=True)

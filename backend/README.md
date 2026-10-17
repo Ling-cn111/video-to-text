@@ -8,6 +8,8 @@
 
 转写流水线：**分层字幕快路径**（yt-dlp CC 字幕 → B站弹幕元数据接口 AI 字幕，命中即秒级返回）→ 否则 yt-dlp 下载音轨 → FFmpeg 转 16kHz 单声道 WAV →（可选）Demucs 人声分离 → faster-whisper 本地推理（或云端 API）。转写时把**热词 + 视频标题组合为 `initial_prompt`** 传入以引导专有名词识别；输出经轻量后处理（**zhconv 繁→简**、折叠 3 次以上的明显重复词、按语言补齐句末标点）。transcript 格式与前端契约一致：`[{ time, text }]`，并带 `transcriptSource` 来源标记（subtitle_cc / subtitle_ai / asr，前端据此显示「来源：B站字幕」Badge）。
 
+> **音频去磁盘化（S1-B）**：下载 / FFmpeg 转换 / ASR 全程以内存 `BytesIO` 流转，不写工作目录（`AUDIO_DIR` 已移除）。yt-dlp 取直链后经 httpx 流式拉入内存（拿不到直链时回退系统临时目录，读完即删）；FFmpeg 走管道（`pipe:0` → `pipe:1`）；云端 ASR 直接以内存 bytes 上传。仅 demucs / qwen3 / funasr 等「只认文件路径」的组件落盘到系统临时目录并**即用即删**。音频大小上限 `MAX_AUDIO_SIZE_MB`（默认 100），超限抛 `AUDIO_TOO_LARGE`（「音频过大，暂不支持」），避免整块载入 OOM。
+
 ### 字幕快路径（分层降级，任务 G）
 
 有字幕的视频完全不需要 ASR：直接读字幕，秒级返回、零成本、质量优于任何 ASR。
@@ -25,7 +27,7 @@
 
 - 安装：`pip install -r requirements-separation.txt`（连带 torch，体积较大）；未安装时该步骤自动跳过
 - 触发：`ENABLE_VOCAL_SEPARATION=true` 无条件启用；或 VAD 统计**非语音时长占比 > `VOCAL_SEP_TRIGGER_RATIO`（默认 0.4）** 时自动启用（BGM/音乐占比高的音频）
-- 分离输出显式重采样为 16kHz 单声道 WAV，经 PyAV 解码为 float32 后喂给 ASR（与解码链格式契约一致，测试断言覆盖）
+- 分离输出显式重采样为 16kHz 单声道 WAV（内存 `BytesIO` 进/出，S1-B），经 PyAV 解码为 float32 后喂给 ASR（与解码链格式契约一致，测试断言覆盖）；demucs 运行所需文件在系统临时目录即用即删
 - **实测边界**：对「小模型幻觉型」强 BGM 场景（如快节奏带货解说）无效——幻觉与噪声无关；分离耗时约 0.6× 音频时长（150 秒音频约 91 秒 CPU）。数据见 [docs/asr-benchmark.md](../docs/asr-benchmark.md)
 
 **中文准确率**：模型规格对 CER 的影响见 [docs/asr-benchmark.md](../docs/asr-benchmark.md)（base / small / medium / large-v3 实测对比表）。重建参考稿或新增评测视频：`python scripts/benchmark_asr.py --models base small --seconds 150`。
@@ -48,7 +50,7 @@ uvicorn app.main:app --reload --port 8000
 
 自检：<http://localhost:8000/api/health>；接口文档：<http://localhost:8000/docs>
 
-> 转写可选依赖 **FFmpeg**（音轨转 16kHz 单声道 WAV）：未安装时自动降级为 PyAV 解码（faster-whisper 仍可运行）。安装：`winget install Gyan.FFmpeg`
+> 转写可选依赖 **FFmpeg**（音轨经管道转 16kHz 单声道 WAV）：未安装时自动降级为 PyAV 解码（faster-whisper 仍可运行）。安装：`winget install Gyan.FFmpeg`
 
 ## 前端联调
 
@@ -72,6 +74,7 @@ pnpm dev                        # 等价于 npm run dev
 | `ASR_ENGINE_FALLBACK` | `faster-whisper` | 主引擎**运行期**失败时的自动降级引擎（含云端网络/HTTP 故障）；留空禁用 |
 | `WHISPER_MODEL` | `base` | 本地模型：`tiny` / `base` / `small` / `medium` / `large-v3`（越大越准越慢，首次自动下载）。**准确率建议：本地 CPU 用 `small` 或 `medium`；GPU 环境建议 `large-v3`**。CER 实测数据见 docs/asr-benchmark.md |
 | `WHISPER_COMPUTE_TYPE` | `int8` | CPU 推荐 int8 |
+| `MAX_AUDIO_SIZE_MB` | `100` | 音频大小上限（MB，S1-B 内存化）。下载时按 content-length 预检 + 边拉边累计，超限抛 `AUDIO_TOO_LARGE`（「音频过大，暂不支持」），避免整块载入 OOM |
 | `CLOUD_ASR_BASE_URL` | `https://api.siliconflow.cn/v1` | 云端 ASR 服务地址（OpenAI 兼容），见下节 |
 | `CLOUD_ASR_API_KEY` | 空 | 云端模式必填，见下节 |
 | `CLOUD_ASR_MODEL` | `XingChenAGI/XingChenASR-V3.2-Ultra` | 云端模型名 |
@@ -164,7 +167,7 @@ backend/app/
 └── services/
     ├── parser.py        # yt-dlp 元数据解析
     ├── subtitles.py     # CC/AI 字幕轨道选择与解析（bilibili json / json3 / vtt）
-    ├── audio.py         # yt-dlp 下载音轨 + FFmpeg 转 16kHz 单声道 WAV
+    ├── audio.py         # yt-dlp 下载音轨到内存（BytesIO）+ FFmpeg 管道转 16kHz 单声道 WAV
     ├── asr.py           # faster-whisper 本地推理 / 云端 OpenAI 兼容客户端
     ├── transcribe.py    # 流水线编排（BackgroundTasks 入口，进度更新）
     └── tasks.py         # 任务注册表（SQLite 持久化 backend/data/tasks.db + 内存写穿缓存）

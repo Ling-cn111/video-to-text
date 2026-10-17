@@ -4,6 +4,7 @@
 - @pytest.mark.separation：需要可选依赖 Demucs/torch（requirements-separation.txt），
   首次运行会下载 htdemucs 模型（约 80MB）；CI 默认跳过（pytest -m "not network and not separation"）
 """
+import io
 import math
 import wave
 from pathlib import Path
@@ -64,7 +65,7 @@ def test_should_separate_pure_music_triggers(monkeypatch):
 def test_separated_vocals_format_contract(tmp_path: Path):
     """分离输出显式重采样为 16kHz 单声道 WAV；解码后为 float32 单声道——与 PyAV 解码链一致。"""
     source = write_sine_wav(tmp_path / "input.wav")
-    vocals = separation.separate_vocals(source, tmp_path)
+    vocals = separation.separate_vocals(io.BytesIO(source.read_bytes()))
 
     fmt = separation.probe_wav_format(vocals)
     assert fmt["sample_rate"] == 16000
@@ -80,4 +81,4 @@ def test_separated_vocals_format_contract(tmp_path: Path):
 def test_demucs_unavailable_raises_friendly_error(monkeypatch):
     monkeypatch.setattr(separation, "is_demucs_available", lambda: False)
     with pytest.raises(Exception, match="人声分离组件未安装"):
-        separation.separate_vocals(Path("x.wav"), Path("out"))
+        separation.separate_vocals(io.BytesIO(b"x"))
