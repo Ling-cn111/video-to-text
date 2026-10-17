@@ -52,6 +52,13 @@ class TranscriptTooLongError(AppException):
         super().__init__(code="TRANSCRIPT_TOO_LONG", message=message, status_code=413)
 
 
+class AudioTooLargeError(AppException):
+    """音频超过大小上限（MAX_AUDIO_SIZE_MB）：拒绝整块载入内存，避免 OOM。"""
+
+    def __init__(self, message: str = "音频过大，暂不支持"):
+        super().__init__(code="AUDIO_TOO_LARGE", message=message, status_code=413)
+
+
 class SummarizeFailedError(AppException):
     """LLM 调用失败（网络/HTTP/重试耗尽）。"""
 

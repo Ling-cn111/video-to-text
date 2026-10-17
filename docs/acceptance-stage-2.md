@@ -110,7 +110,7 @@
 
 ## 四、「两个已知边界」确认 ✅
 
-1. **任务注册表**：单进程 uvicorn 下任务创建/轮询/进度更新全部正常（2.2 全流程即证）。`services/tasks.py` 封装了全部存储访问（`grep` 确认 `_TASKS` 无外部直接引用），业务代码只依赖 `create_task / get_task / update_task` 三个函数——替换 Redis 不需要改路由与流水线。backend/README.md 已明确写出该边界与替换方式。
+1. **任务注册表**：单进程 uvicorn 下任务创建/轮询/进度更新全部正常（2.2 全流程即证）。`services/tasks.py` 封装了全部存储访问（`_TASKS` 仅模块内部与测试可见），业务代码只依赖 `create_task / get_task / update_task` 三个函数。backend/README.md 已明确写出该边界；S1-A 起由 `TaskStore` 接口（memory / redis 双实现，`TASK_STORE` 环境变量切换，`REDIS_URL` 缺失自动降级）承载，替换 Redis 不需要改路由与流水线。
 2. **B站 AI 字幕 Cookie**：未配置 `BILI_COOKIE` 时实测优雅降级（2.2 全流程即「无字幕 → ASR」路径）。`BILI_COOKIE` 的作用与获取方式已补充至 `backend/.env.example` 与 `backend/README.md`，供后续启用字幕快路径。
 
 ## 五、测试与 CI ✅

@@ -1,0 +1,4 @@
+# 测试专用依赖（不进生产）
+# 安装：pip install -r requirements-dev.txt
+# 说明：fakeredis 提供 FakeAsyncRedis，供 TaskStore 抽象（S1-A）单测注入，不经真实网络
+fakeredis>=2.20

@@ -6,7 +6,6 @@ from app.services import tasks as tasks_module
 from app.services.tasks import (
     create_task,
     get_task,
-    init_task_store,
     reset_task_store_for_tests,
     set_stage,
     update_task,
@@ -57,7 +56,7 @@ def test_get_task_falls_back_to_db_after_cache_loss(task_db):
     task_id = create_task(VIDEO, engine="local")
     update_task(task_id, status="completed", progress=100)
     # 模拟重启：清空内存（保留同一 DB）
-    tasks_module._TASKS.clear()
+    tasks_module._STORE._tasks.clear()
     task = get_task(task_id)
     assert task is not None and task.status == "completed"
     assert task.engine == "local"
@@ -71,11 +70,8 @@ def test_startup_marks_processing_tasks_interrupted(task_db):
     done_id = create_task(VIDEO)
     update_task(done_id, status="completed")
 
-    # 模拟进程重启：内存清空 → 重新 init（同一 DB）
-    tasks_module._TASKS.clear()
-    tasks_module._INITIALIZED = False
-    tasks_module._CONN = None
-    init_task_store(task_db)
+    # 模拟进程重启：同一 DB 重新 init
+    reset_task_store_for_tests(task_db)
 
     assert get_task(task_id).status == "interrupted"
     assert get_task(done_id).status == "completed"  # 已完成不受影响

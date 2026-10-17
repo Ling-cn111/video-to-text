@@ -55,11 +55,18 @@ EXTRACT_TIMEOUT_SECONDS: int = int(os.getenv("EXTRACT_TIMEOUT_SECONDS", "30"))
 
 # ---- 转写（M2 阶段一）----
 
-# 音频工作目录（下载 + 转换的临时文件，任务结束自动清理）
-AUDIO_DIR = os.getenv("AUDIO_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), ".audio"))
+# 音频大小上限（MB，S1-B）：音频全程内存化处理，超过即拒绝（AUDIO_TOO_LARGE），
+# 避免整块载入内存导致 OOM；下载阶段按 content-length 预检 + 边拉边累计。
+MAX_AUDIO_SIZE_MB: int = int(os.getenv("MAX_AUDIO_SIZE_MB", "100"))
 
 # 任务持久化（SQLite，任务 H）：重启后历史任务可查，未完成任务标记 interrupted
 TASK_DB_PATH: str = os.getenv("TASK_DB_PATH", os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "tasks.db"))
+
+# 任务存储后端（S1-A）：memory（默认，SQLite + 内存缓存）| redis（需 REDIS_URL）
+TASK_STORE: str = os.getenv("TASK_STORE", "memory").lower()
+
+# Redis 连接串（仅 TASK_STORE=redis 时生效；未配置或包缺失自动降级 memory 并打警告）
+REDIS_URL: str = os.getenv("REDIS_URL", "")
 
 # 请求限流（令牌桶，任务 H）：每 IP 每分钟 POST 请求数上限；0 = 禁用
 RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "10"))

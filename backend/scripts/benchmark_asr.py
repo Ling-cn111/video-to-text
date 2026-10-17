@@ -15,6 +15,7 @@
 """
 import argparse
 import csv
+import io
 import json
 import statistics
 import sys
@@ -100,19 +101,34 @@ class MemorySampler:
 
 
 def prepare_audio(url: str, seconds: int, cache_dir: Path) -> Path:
-    """下载音轨并用 FFmpeg 截取前 seconds 秒 → 16kHz 单声道 WAV（带缓存）。"""
+    """下载音轨并用 FFmpeg 截取前 seconds 秒 → 16kHz 单声道 WAV（带缓存）。
+
+    S1-B：download_audio 返回内存音频；FFmpeg 走管道（pipe:0 → pipe:1）截取，
+    结果写入 cache_dir 缓存（评测脚本需要稳定路径，故保留磁盘缓存）。
+    """
     import subprocess
 
     cache_dir.mkdir(parents=True, exist_ok=True)
-    source = download_audio(url, cache_dir)
-    trimmed = cache_dir / f"{source.stem}-first{seconds}s-16k.wav"
+    trimmed = cache_dir / f"first{seconds}s-16k.wav"
     if not trimmed.exists():
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", str(source), "-t", str(seconds), "-ac", "1", "-ar", "16000", str(trimmed)],
+        audio = download_audio(url)
+        proc = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", "pipe:0",
+                "-t", str(seconds),
+                "-ac", "1",
+                "-ar", "16000",
+                "-f", "wav",
+                "pipe:1",
+            ],
+            input=audio.getvalue(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             check=True,
-            capture_output=True,
             timeout=600,
         )
+        trimmed.write_bytes(proc.stdout)
     return trimmed
 
 
@@ -139,6 +155,7 @@ def main() -> None:
     cases = json.loads(Path(args.cases).read_text(encoding="utf-8"))["cases"]
     results: list[dict] = []
     separate_seconds_by_video: dict[str, float] = {}
+    separated_cache: dict[str, bytes] = {}
 
     # faster-whisper 按 --models 逐规格跑；其余引擎（qwen3/funasr/cloud）单次跑，--models 忽略
     if args.engine == "faster-whisper":
@@ -154,20 +171,21 @@ def main() -> None:
             cache_dir = BENCHMARK_DIR.parent.parent / ".audio-bench" / case["videoId"]
 
             print(f"[{engine_label} / {case['category']}] 下载与截取音频…", flush=True)
-            wav = prepare_audio(case["url"], args.seconds, cache_dir)
+            wav_path = prepare_audio(case["url"], args.seconds, cache_dir)
+            wav = io.BytesIO(wav_path.read_bytes())
 
             if args.separate:
-                if case["videoId"] not in separate_seconds_by_video:
+                if case["videoId"] not in separated_cache:
                     sep_start = time.perf_counter()
-                    wav = separation.separate_vocals(wav, cache_dir / "vocal-sep")
+                    separated = separation.separate_vocals(wav)
+                    separated_cache[case["videoId"]] = separated.getvalue()
                     separate_seconds_by_video[case["videoId"]] = round(time.perf_counter() - sep_start, 1)
                     print(
                         f"[separation] {case['videoId']} Demucs 耗时 "
                         f"{separate_seconds_by_video[case['videoId']]}s",
                         flush=True,
                     )
-                else:
-                    wav = separation.separate_vocals(wav, cache_dir / "vocal-sep")  # 命中缓存
+                wav = io.BytesIO(separated_cache[case["videoId"]])  # 命中缓存
 
             with MemorySampler() as mem:
                 start = time.perf_counter()
