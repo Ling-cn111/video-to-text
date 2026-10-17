@@ -52,6 +52,41 @@ uvicorn app.main:app --reload --port 8000
 
 > 转写可选依赖 **FFmpeg**（音轨经管道转 16kHz 单声道 WAV）：未安装时自动降级为 PyAV 解码（faster-whisper 仍可运行）。安装：`winget install Gyan.FFmpeg`
 
+## 容器化部署（S1-D）
+
+`backend/Dockerfile` 构建**云端 ASR 专用**镜像（Serverless / 阿里云 FC 等）：只装
+`requirements-cloud.txt`（含 `redis`），**不含** faster-whisper / torch / demucs / qwen-asr / funasr
+等本地重型依赖；FFmpeg 用静态单文件（约 78MB）替代 apt 完整包。构建上下文为 `backend/`
+（`backend/.dockerignore` 已排除 `.env.local` / `tests/` / `data/` 等）。
+
+```bash
+cd backend
+docker build -t video-to-text-backend:local .    # 实测镜像约 406MB（目标 < 1GB）
+
+docker run --rm -p 8000:8000 \
+  -e ASR_ENGINE=cloud \
+  -e CLOUD_ASR_API_KEY=sk-xxxx \
+  -e ASR_ENGINE_FALLBACK= \
+  -e TASK_STORE=redis \
+  -e REDIS_URL=redis://host:6379/0 \
+  -e CORS_ORIGINS=https://your-frontend.example \
+  video-to-text-backend:local
+
+curl -s localhost:8000/api/health    # {"status":"ok"}
+```
+
+部署要点：
+
+- **端口**：阿里云 FC 的「监听端口」需设为 `8000`（与 `EXPOSE` / `CMD` 一致）。
+- **配置全部经环境变量注入**，Dockerfile 不硬编码任何业务配置：`ASR_ENGINE` / `ASR_ENGINE_FALLBACK` /
+  `CLOUD_ASR_*` / `LLM_*` / `TASK_STORE` / `REDIS_URL` / `RATE_LIMIT_PER_MINUTE` / `CORS_ORIGINS`。
+- **多实例必须** `TASK_STORE=redis` + `REDIS_URL`（否则任务存储与限流会降级为进程内，跨实例不一致）。
+- 容器内无 faster-whisper → 建议 `ASR_ENGINE_FALLBACK=`（空，禁用降级）；否则云端失败后的降级会报
+  「本地语音识别组件未安装」（优雅失败，但无意义）。
+- 容器只需 `/tmp` 可写（S1-B 的 yt-dlp 临时目录与 `_materialized_audio` 桥接用）。
+- 自检：`docker exec <container> which ffmpeg` → `/usr/local/bin/ffmpeg`；`which yt-dlp` → `/opt/venv/bin/yt-dlp`。
+- **受限网络**：若无法直连 Docker Hub（大陆常见），先在 Docker Desktop → Settings → Docker Engine 配置 `registry-mirrors` 再构建。
+
 ## 前端联调
 
 ```bash
