@@ -45,10 +45,18 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-cloud.txt
+            backend/requirements-dev.txt
 
+      # runtime 依赖（requirements.txt，内含 requirements-cloud.txt）
+      # + 测试依赖（requirements-dev.txt：fakeredis）。
+      # 缺少 fakeredis 会让 TaskStore / 限流的 Redis 用例被 importorskip 整体跳过 = 假绿（S1-F）。
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
       # CI 跳过依赖外网真实视频的集成测试（-m network）、需要可选依赖 Demucs 的测试
       # （-m separation，见 backend/requirements-separation.txt）与需要大模型权重的
