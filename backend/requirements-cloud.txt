@@ -1,0 +1,20 @@
+# 云端 ASR 后端依赖（S1-D）：Serverless / 阿里云函数计算（FC）容器镜像专用
+# 安装：pip install -r requirements-cloud.txt
+#
+# 仅含**云端运行必需**依赖，不含本地重型 ASR（faster-whisper / torch / demucs / qwen-asr / funasr）：
+#   fastapi / uvicorn[standard] —— Web 框架与 ASGI 服务器
+#   httpx                      —— 云端 ASR（OpenAI 兼容）与 LLM 调用、音频下载
+#   yt-dlp                     —— 链接解析 / 字幕快路径 / 音频下载（云端仍需）
+#   zhconv                     —— 转写文本繁→简后处理（app/services/asr.py）
+#   redis                      —— S1-A 任务存储 + S1-C 限流的多实例共享后端
+#                                 （TASK_STORE=redis / REDIS_URL；FC 多实例必需）
+#
+# 本文件即「云端必需」的单一事实来源；requirements.txt 通过 `-r` 引用它再追加本地/评测/测试依赖。
+# 不在此列的本地依赖：faster-whisper、cn2an、psutil（评测脚本）、pytest（测试）。
+# FFmpeg 不是 pip 依赖，由 Dockerfile 以静态二进制提供（音频转码必需）。
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30
+yt-dlp>=2024.12.13
+httpx>=0.27
+zhconv>=1.4
+redis>=5.0
