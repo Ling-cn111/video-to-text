@@ -197,6 +197,8 @@ pnpm dev
 2. 无需额外环境变量；后端地址用服务端变量 `BACKEND_ORIGIN`（配合 NEXT_PUBLIC_USE_MOCK=false 与 next.config.mjs 代理）
 3. 部署完成后用 Chrome / Edge 打开站点，地址栏出现安装入口（或顶栏「安装应用」按钮），可安装到 Windows 桌面与 Android 主屏幕；iOS 从 Safari「添加到主屏幕」安装
 
+后端上云（容器镜像 + 阿里云 FC）见 [docs/serverless-deploy.md](docs/serverless-deploy.md)：`linux/amd64` 构建、ACR 推送、`s.yaml` 示例与环境变量清单，并明确标注 Serverless 下 `BackgroundTasks` 的已知限制（异步 ASR 需 S2 的独立函数触发改造）。
+
 ## 协作规范
 
 - 分支：`main`（受保护）← `feat/frontend-demo`（阶段集成分支）← 功能分支；一个功能一个 PR（squash）
