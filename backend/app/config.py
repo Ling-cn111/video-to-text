@@ -85,6 +85,11 @@ TASK_STALE_SECONDS: int = int(os.getenv("TASK_STALE_SECONDS", "600"))
 # 供 TASK_STALE_SECONDS 判定与后续 reaper（S2-P4）识别僵尸任务；0 = 关闭。
 TASK_HEARTBEAT_SECONDS: float = float(os.getenv("TASK_HEARTBEAT_SECONDS", "30"))
 
+# 任务分发模式（S2-P1）：inline（默认，BackgroundTasks 同进程执行）| fc | mns | redis
+# fc/mns/redis 为后续阶段的实现位，当前会显式报错（不会静默丢任务）。
+# inline 保证本地开发、单机部署与既有测试的行为与改造前完全一致。
+ENQUEUE_MODE: str = os.getenv("ENQUEUE_MODE", "inline").strip().lower()
+
 # 请求限流（令牌桶，任务 H）：每 IP 每分钟 POST 请求数上限；0 = 禁用
 RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "10"))
 

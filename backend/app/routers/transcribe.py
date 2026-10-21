@@ -1,13 +1,21 @@
-"""转写路由：POST 创建任务（BackgroundTasks 异步执行）+ GET 轮询详情。"""
+"""转写路由：POST 创建任务（分发执行）+ GET 轮询详情。
+
+分发由 `services/dispatcher` 决定（ENQUEUE_MODE）：默认 inline 仍走
+BackgroundTasks，与 S2-P1 之前逐字节一致；后续阶段可切到 FC 异步调用。
+"""
+import logging
+
 from fastapi import APIRouter, BackgroundTasks
 
 from app.config import ASR_ENGINE, CLOUD_ASR_API_KEY
 from app.errors import CloudNotConfiguredError, InvalidUrlError, TaskNotFoundError, UnsupportedPlatformError
 from app.platforms import detect_platform
 from app.schemas import StartTaskResponse, StartTranscribeRequest, TaskDetailResponse
-from app.services.tasks import create_task, get_task
-from app.services.transcribe import run_transcription_pipeline
+from app.services.dispatcher import TranscribeJob, enqueue
+from app.services.tasks import create_task, get_task, update_task
 from app.url_guard import validate_public_http_url
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -55,9 +63,26 @@ def create_transcription(payload: StartTranscribeRequest, background_tasks: Back
     url = _resolve_target_url(payload)
     engine = _resolve_engine(payload)
     task_id = create_task(payload.video, engine)
-    background_tasks.add_task(
-        run_transcription_pipeline, task_id, url, payload.video, True, payload.hotwords, engine
+    job = TranscribeJob(
+        task_id=task_id,
+        url=url,
+        video=payload.video,
+        prefer_subtitles=True,
+        hotwords=payload.hotwords,
+        engine=engine,
     )
+    try:
+        enqueue(job, background_tasks=background_tasks)
+    except Exception:
+        # 分发失败（如 ENQUEUE_MODE=fc 尚未实现）：把任务落到 failed，
+        # 避免留下永远停在 processing 的孤儿任务被前端无限轮询。
+        logger.error("任务分发失败（task_id=%s, job=%s）", task_id, job, exc_info=True)
+        update_task(
+            task_id,
+            status="failed",
+            error={"code": "TRANSCRIBE_FAILED", "message": "任务分发失败，请重试"},
+        )
+        raise
     return StartTaskResponse(taskId=task_id, status="processing", stage="parse_link", progress=0)
 
 
