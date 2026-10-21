@@ -211,6 +211,8 @@ backend/app/
     ├── transcribe.py    # 流水线编排（进度更新 + 心跳）
     ├── dispatcher.py    # 任务分发（ENQUEUE_MODE：inline | fc | mns | redis）
     └── tasks.py         # 任务注册表（SQLite 持久化 backend/data/tasks.db + 内存写穿缓存）
+
+worker_app.py            # 独立 Worker ASGI 应用（S2-P2，Serverless 异步执行入口）
 ```
 
 ## 环境变量
@@ -225,3 +227,22 @@ backend/app/
 交给 `services/dispatcher.enqueue()`。`ENQUEUE_MODE=inline`（默认）时行为与改造前**完全一致**；
 `fc` / `mns` / `redis` 是 P3/P4 的实现位，当前显式抛 `DispatcherNotImplementedError`（绝不静默丢任务），
 路由会把该任务标记为 `failed` 再返回 500，避免留下永远 `processing` 的孤儿任务。配错模式值会告警并降级 `inline`。
+
+**独立 Worker（S2-P2）**：`app/worker_app.py` 是第二个 ASGI 应用（`uvicorn app.worker_app:app`），
+供 Serverless 平台异步调用，与 API 应用**完全隔离**——不挂 `RateLimitMiddleware` / CORS，也不 import
+`app.main`（因此不会跑 API 侧的重启恢复）。启动初始化显式 `recover_interrupted=False`，再叠加部署侧
+`TASK_INIT_MODE=none` 双保险。
+
+- **入口**：`POST /internal/worker/transcribe`，请求体即作业体（`TranscribeJob.to_dict()`）；同时宽容兼容
+  `{"body": "<json>"}` / `{"payload": ...}` / `{"body": "<base64>", "isBase64Encoded": true}` 等平台包装体，
+  不依赖任何特定 Header 定位 `task_id`
+- **幂等领取**：执行前 `SET task:lock:{taskId} {token} NX EX TASK_LOCK_SECONDS` 抢锁，抢不到返回
+  `{"status": "skipped", "reason": "locked"}`；释放/续期用 WATCH/MULTI 比对令牌（避免误删他人已续期的锁），
+  续期挂在 `ProgressReporter` 的 30s 心跳上，长任务不会因锁过期被重复领取
+- **状态前置检查**：任务不存在 / 非 `processing`（已 `completed` / `failed`）直接返回 `skipped`，
+  平台重试不会重跑已完成任务（云端 ASR 会重复计费）
+- **返回码语义**：pipeline 内部已把业务异常收敛为 `failed` → 返回 **200**（重试无意义）；只有胶水层/
+  未捕获的基础设施异常才标 `failed` 并返回 **5xx**，交给平台重试
+- **鉴权**：`WORKER_TOKEN` 非空时要求请求头 `X-Worker-Token` 一致（401），为空则不校验
+- **兜底分工**：进程被平台强杀（超时/OOM/缩容）时 Worker 无法自救——锁靠 TTL 过期释放，
+  任务状态靠 P0 心跳停止 + P4 reaper 判定 `interrupted`

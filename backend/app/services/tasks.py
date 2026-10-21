@@ -17,6 +17,13 @@ S2-P0 地基（异步架构前置）：
 - 同步桥接复用**单个常驻事件循环**（后台线程），不再每次 asyncio.run 新建 loop：
   Redis client 按 loop 缓存，旧实现每次调用都会新建 client 且永不回收（连接泄漏）
 
+S2-P2 执行锁（Worker 幂等领取）：
+- acquire / release / renew 三个 async 方法，两个实现均支持
+- Redis：`SET task:lock:{id} {token} NX EX ttl` 原子领取；释放/续期用 WATCH/MULTI
+  比对令牌（不用 EVAL，fakeredis 无 Lua 运行时）；令牌不匹配说明锁已过期被他人接手
+- Memory：进程内字典 + 过期时刻（单进程，语义与 Redis 对齐便于测试复用）
+- init() 的恢复扫描已跳过含 `:` 的派生 key，`task:lock:*` 不会被当成任务
+
 环境变量（app/config.py）：
 - TASK_STORE=memory（默认）| redis
 - REDIS_URL：仅 redis 模式生效；未配置或 redis 包缺失自动降级 memory 并打警告
@@ -160,13 +167,38 @@ class TaskStore(Protocol):
 
     async def update(self, task_id: str, **fields: object) -> None: ...
 
+    # ---- 执行锁（S2-P2）：Worker 幂等领取用 ----
+
+    async def acquire(self, task_id: str, ttl_seconds: int) -> str | None:
+        """尝试领取任务锁，返回持有令牌；已被他人持有返回 None。"""
+        ...
+
+    async def release(self, task_id: str, token: str) -> None:
+        """释放锁：仅当令牌匹配时删除（避免误删他人已续期的锁）。"""
+        ...
+
+    async def renew(self, task_id: str, token: str, ttl_seconds: int) -> bool:
+        """续期锁：令牌匹配返回 True。"""
+        ...
+
 
 # 可选依赖：redis 包仅 redis 模式需要（requirements-redis.txt）；
 # 缺失时 _build_store 降级 memory，模块导入不炸
 try:
     import redis.asyncio as _redis_asyncio
+    from redis.exceptions import WatchError as _WatchError
 except ImportError:
     _redis_asyncio = None  # type: ignore[assignment]
+    _WatchError = None  # type: ignore[assignment]
+
+
+def _as_str(value: object) -> str | None:
+    """Redis 返回值归一：decode_responses 未开启时是 bytes（fakeredis 测试默认）。"""
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value.decode()
+    return str(value)
 
 
 class MemoryTaskStore:
@@ -180,6 +212,8 @@ class MemoryTaskStore:
     def __init__(self, db_path: str | None = None) -> None:
         self._tasks: dict[str, TranscribeTask] = {}
         self._lock = threading.Lock()
+        # task_id -> (持有令牌, 过期时刻)；单进程锁，TTL 仅用于语义对齐 Redis
+        self._locks: dict[str, tuple[str, float]] = {}
         self._conn: sqlite3.Connection | None = None
         self._initialized = False
         self._db_path: str = db_path or TASK_DB_PATH
@@ -262,6 +296,39 @@ class MemoryTaskStore:
                 setattr(task, key, value)
             task.updated_at = time.time()
             self._upsert_row(task)
+
+    # ---- 执行锁（单进程：内存字典 + TTL 过期语义）----
+
+    def _lock_alive(self, task_id: str) -> str | None:
+        """调用方需持有 self._lock；返回仍有效的令牌（过期条目顺手清理）。"""
+        entry = self._locks.get(task_id)
+        if entry is None:
+            return None
+        token, expires_at = entry
+        if expires_at <= time.time():
+            del self._locks[task_id]
+            return None
+        return token
+
+    async def acquire(self, task_id: str, ttl_seconds: int) -> str | None:
+        token = uuid.uuid4().hex
+        with self._lock:
+            if self._lock_alive(task_id) is not None:
+                return None
+            self._locks[task_id] = (token, time.time() + max(0, ttl_seconds))
+        return token
+
+    async def release(self, task_id: str, token: str) -> None:
+        with self._lock:
+            if self._lock_alive(task_id) == token:
+                self._locks.pop(task_id, None)
+
+    async def renew(self, task_id: str, token: str, ttl_seconds: int) -> bool:
+        with self._lock:
+            if self._lock_alive(task_id) != token:
+                return False
+            self._locks[task_id] = (token, time.time() + max(0, ttl_seconds))
+            return True
 
 
 class RedisTaskStore:
@@ -366,6 +433,54 @@ class RedisTaskStore:
             setattr(task, key, value)
         task.updated_at = time.time()
         await self._set(self._key(task_id), task)
+
+    # ---- 执行锁（SET NX EX 原子领取 + WATCH 比对释放）----
+
+    @staticmethod
+    def _lock_key(task_id: str) -> str:
+        return f"{RedisTaskStore._KEY_PREFIX}lock:{task_id}"
+
+    async def acquire(self, task_id: str, ttl_seconds: int) -> str | None:
+        """SET key token NX EX ttl：单条命令原子，无需额外事务。"""
+        token = uuid.uuid4().hex
+        ok = await self._client().set(self._lock_key(task_id), token, nx=True, ex=max(1, ttl_seconds))
+        return token if ok else None
+
+    async def release(self, task_id: str, token: str) -> None:
+        """比对令牌后删除。
+
+        不用 Lua/EVAL：fakeredis 默认无 Lua 运行时，WATCH/MULTI 与 rate_limit 实现一致。
+        比对是必要的——锁可能已因 TTL 过期被他人重新领取，直接 DEL 会删掉别人的锁。
+        """
+        key = self._lock_key(task_id)
+        client = self._client()
+        async with client.pipeline(transaction=True) as pipe:
+            try:
+                await pipe.watch(key)
+                if _as_str(await pipe.get(key)) != token:
+                    await pipe.unwatch()
+                    return
+                pipe.multi()
+                pipe.delete(key)
+                await pipe.execute()
+            except _WatchError:  # type: ignore[misc]
+                return  # 期间被改动：对方持有，放手即可
+
+    async def renew(self, task_id: str, token: str, ttl_seconds: int) -> bool:
+        key = self._lock_key(task_id)
+        client = self._client()
+        async with client.pipeline(transaction=True) as pipe:
+            try:
+                await pipe.watch(key)
+                if _as_str(await pipe.get(key)) != token:
+                    await pipe.unwatch()
+                    return False
+                pipe.multi()
+                pipe.expire(key, max(1, ttl_seconds))
+                result = await pipe.execute()
+                return bool(result and result[0])
+            except _WatchError:  # type: ignore[misc]
+                return False
 
 
 def _build_store(mode: str, redis_url: str | None) -> TaskStore:

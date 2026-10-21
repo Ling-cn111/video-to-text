@@ -82,4 +82,7 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD python -c "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2).status == 200 else 1)"
 
+# 默认启动 API 应用；Worker 函数（S2-P2）在同一镜像上覆盖启动命令即可：
+#   uvicorn app.worker_app:app --host 0.0.0.0 --port 8000
+# 两者都提供 GET /api/health，HEALTHCHECK 通用。
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

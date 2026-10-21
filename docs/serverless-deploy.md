@@ -300,6 +300,8 @@ s info -t s.yaml
 | `TASK_STALE_SECONDS` | `600` | 超过该时长无心跳写入才判为遗留任务；须明显大于心跳间隔 |
 | `TASK_HEARTBEAT_SECONDS` | `30` | 长阻塞步骤（下载 / FFmpeg / ASR）靠心跳保活；0 = 关闭 |
 | `ENQUEUE_MODE` | `inline` | 任务分发模式。`inline` = 同进程 BackgroundTasks；`fc`/`mns`/`redis` 为 P3/P4 实现位，当前显式报错 |
+| `TASK_LOCK_SECONDS` | `3600` | Worker 执行锁 TTL（`SET NX EX`），执行期间按心跳续期；崩溃后到期自动释放 |
+| `WORKER_TOKEN` | 空 | Worker 端点鉴权；非空时要求请求头 `X-Worker-Token` 一致（为空则不校验） |
 | `CLOUD_ASR_BASE_URL` / `CLOUD_ASR_MODEL` | 见 `.env.example` | 换服务商/模型时覆盖 |
 
 `TASK_DB_PATH`、`WHISPER_*`、`ENABLE_VOCAL_SEPARATION`、`BILI_COOKIE` 在 FC 上都不需要（`BILI_COOKIE` 为预留能力，当前未实现）。
@@ -399,9 +401,22 @@ NEXT_PUBLIC_USE_MOCK=false        # 构建期常量，改完必须重新构建
 3. **状态与幂等**：任务状态继续放 Redis（`TASK_STORE=redis` 已具备），worker 按 `taskId` 幂等更新；补 TTL 与失败重试上限。
    > **S2-P0 已完成**：`TASK_TTL_SECONDS`（默认 7 天滑动续期）、`TASK_INIT_MODE=none`（Worker 启动不改写状态）、`attempts` 字段、进度心跳（`TASK_HEARTBEAT_SECONDS`）与写入节流、同步桥接连接泄漏修复。
    > **S2-P1 已完成**：`services/dispatcher.py` + `TranscribeJob`（完整作业体，可 `to_dict()` 作 FC 事件 payload）+ `ENQUEUE_MODE=inline|fc|mns|redis`（默认 inline，行为不变；未实现模式显式报错）。
-   > 仍待 P2/P4：Worker 幂等领取（`SET NX EX`）、超时收割（reaper）、`TASK_TIMEOUT` 错误码。
+   > **S2-P2 已完成**：`app/worker_app.py` 独立 ASGI 应用（`POST /internal/worker/transcribe`）——不挂限流/CORS、不 import `app.main`，启动 `init(recover_interrupted=False)`；`SET task:lock:{id} NX EX` 幂等领取 + 心跳续期 + WATCH 比对释放；pipeline 经 `asyncio.to_thread` 执行（同步实现不能直接 await）；业务失败回 200、基础设施异常回 5xx。**尚未接 FC 分发**（P3 才实现 `ENQUEUE_MODE=fc`）。
+   > 仍待 P4：超时收割（reaper）、`TASK_TIMEOUT` 错误码。
 4. **前端零改动**：仍是 `POST /api/transcribe` + `GET /api/transcribe/{taskId}` 轮询，契约不变。
 5. **超时/规格**：worker 函数单独配置更长超时、更大内存；`api` 函数保持小规格低成本。
+
+Worker 函数在 FC 侧只需覆盖启动命令，**同一镜像无需改动**：
+
+```bash
+# api 函数（默认 CMD）
+uvicorn app.main:app --host 0.0.0.0 --port 9000
+# worker 函数：只换 ASGI 应用
+uvicorn app.worker_app:app --host 0.0.0.0 --port 9000
+```
+
+环境变量差异：worker 函数设 `TASK_INIT_MODE=none`（双保险，代码已显式传 `False`）、
+`TASK_LOCK_SECONDS`（默认 3600）、按需 `WORKER_TOKEN`；`api` 函数保持 `TASK_INIT_MODE=recover`。
 
 在此之前，请不要把 FC 版本用于「无字幕视频」的生产流量。
 

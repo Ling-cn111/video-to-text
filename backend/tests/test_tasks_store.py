@@ -201,6 +201,57 @@ def test_redis_init_keeps_fresh_processing_tasks():
     assert asyncio.run(store.get(task_id)).status == "processing"
 
 
+# ---- 执行锁（S2-P2）----
+
+def test_acquire_returns_token_and_blocks_second_owner(store):
+    task_id = asyncio.run(store.create(VIDEO))
+    token = asyncio.run(store.acquire(task_id, 60))
+    assert token
+    assert asyncio.run(store.acquire(task_id, 60)) is None
+
+
+def test_release_with_wrong_token_keeps_lock(store):
+    task_id = asyncio.run(store.create(VIDEO))
+    token = asyncio.run(store.acquire(task_id, 60))
+    asyncio.run(store.release(task_id, "not-the-token"))
+    assert asyncio.run(store.acquire(task_id, 60)) is None  # 仍被持有
+    asyncio.run(store.release(task_id, token))
+    assert asyncio.run(store.acquire(task_id, 60)) is not None
+
+
+def test_lock_is_per_task(store):
+    first = asyncio.run(store.create(VIDEO))
+    second = asyncio.run(store.create(VIDEO))
+    assert asyncio.run(store.acquire(first, 60)) is not None
+    assert asyncio.run(store.acquire(second, 60)) is not None
+
+
+def test_renew_only_for_owner(store):
+    task_id = asyncio.run(store.create(VIDEO))
+    token = asyncio.run(store.acquire(task_id, 60))
+    assert asyncio.run(store.renew(task_id, token, 60)) is True
+    assert asyncio.run(store.renew(task_id, "other", 60)) is False
+
+
+def test_expired_lock_can_be_reacquired(store):
+    """锁 TTL 到期后应能被重新领取（Worker 崩溃依赖此语义）。"""
+    task_id = asyncio.run(store.create(VIDEO))
+    assert asyncio.run(store.acquire(task_id, 1)) is not None
+    time.sleep(1.1)
+    assert asyncio.run(store.acquire(task_id, 60)) is not None
+
+
+def test_lock_key_is_skipped_by_recovery_scan():
+    """init() 的恢复扫描不能把 task:lock:* 当成任务（否则会 KeyError/误判）。"""
+    store = _make_redis_store()
+    task_id = asyncio.run(store.create(VIDEO))
+    token = asyncio.run(store.acquire(task_id, 60))
+    asyncio.run(_backdate(store, task_id, 9999))
+    asyncio.run(store.init())
+    assert asyncio.run(store.get(task_id)).status == "interrupted"
+    asyncio.run(store.release(task_id, token))  # 锁仍在，未被恢复逻辑破坏
+
+
 # ---- 工厂与降级 ----
 
 def test_build_store_memory_default():

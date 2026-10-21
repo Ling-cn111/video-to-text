@@ -464,12 +464,16 @@ Timer（每 1 分钟）──► Worker 函数
 | **P5 文档** | 更新 `serverless-deploy.md` §8、`backend/README.md` | — |
 
 > P0/P1 是**纯后端、可本地全量验证**的，风险最低；建议先做这两步再谈接云。
+> **进度**：P0 ✅ / P1 ✅ / P2 ✅（`worker_app.py` + `task:lock:*` 幂等领取 + 心跳续期，事件体宽容解包，
+> 业务失败回 200、基础设施异常回 5xx；见 `tests/test_worker_app.py`）。
 
 ---
 
 ## 9. 待确认问题（需要你或平台侧确认）
 
 1. **FC 自定义容器 + 异步调用的事件投递格式**：事件是否以 HTTP POST 到容器、打到哪个路径、body 结构、是否有 `x-fc-*` 头？（决定 `worker_app.py` 的入口签名，**方案 A 的前置**）
+   > **P2 已按宽容策略落地**：入口 `POST /internal/worker/transcribe`，只要求 body 能解出 `task_id`，
+   > 同时兼容裸作业体 / `{"body": ...}` / `{"payload": ...}` / base64 包装；P3 真机联调时无需改代码。
 2. **FC 3.0 函数超时上限**与「HTTP 触发器同步调用」的实际上限（15 分钟这个数字待核对）。
 3. **是否接受新增依赖**：方案 A 需 FC SDK，方案 B 需 MNS SDK。镜像体积与冷启动会略受影响（当前 406MB）。
 4. **任务保留期**：`TASK_TTL_SECONDS` 取 7 天是否合适？（关系到用户「历史任务」的可回访窗口）
@@ -503,3 +507,7 @@ Timer（每 1 分钟）──► Worker 函数
 | 前端 interrupted / 重试 | `src/stores/task-store.ts:157-161, 264-277` |
 | 存储双实现同用例 | `backend/tests/test_tasks_store.py`（135 行） |
 | HTTP 层字幕流程用例 | `backend/tests/test_transcribe.py:378-401` |
+| Worker 应用（P2） | `backend/app/worker_app.py` |
+| 执行锁 acquire/release/renew | `backend/app/services/tasks.py`（Protocol + 两个实现） |
+| Worker 端到端用例 | `backend/tests/test_worker_app.py` |
+| 心跳钩子（锁续期） | `backend/app/services/transcribe.py` `ProgressReporter._fire_hook` |
