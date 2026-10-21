@@ -37,6 +37,8 @@
 > 层 3 预留兜底（未实现）：浏览器登录 bilibili.com → F12 → Application/存储 → Cookies →
 > 复制整段（含 SESSDATA）。任务状态为 **TaskStore 抽象存储**（任务 H + S1-A，`services/tasks.py`）：默认 `MemoryTaskStore`——SQLite 持久化（`backend/data/tasks.db`，`TASK_DB_PATH` 可配）+ 内存一级缓存（进程内轮询零 SQL），写操作同步落盘；**服务重启后历史任务可查，重启时未完成任务自动标记 `interrupted`**，前端显示「任务已中断，请重试」+ 重试按钮。任务状态只能通过 `create_task / get_task / update_task` 接口访问，路由与流水线不直接触碰存储。`TASK_STORE=redis` + `REDIS_URL`（可选依赖 `requirements-redis.txt`）切换到 `RedisTaskStore`（redis.asyncio），行为与 memory 对齐（`tests/test_tasks_store.py` 双实现同用例验证）；**REDIS_URL 未配置时自动降级 memory 并打警告**。多 worker / 云端部署用 redis 即可，无需改业务代码（SQLite 为单机文件库，`backend/data/` 已入 .gitignore）。
 
+> **任务生命周期（S2-P0）**：① `TASK_TTL_SECONDS`（默认 7 天，0 = 永久）——Redis 写入统一带 `EX` 并滑动续期，任务 JSON 含完整文字稿，无 TTL 会无限增长；② `TASK_INIT_MODE=recover|none`——启动恢复只在**陈旧**（`updated_at` 超过 `TASK_STALE_SECONDS`，默认 600s）时才把 `processing` 标记 `interrupted`，**Worker / 只读实例必须设 `none`**（Serverless 每次冷启动都会跑启动初始化，无脑全量改写会误杀其他实例在跑的任务）；③ 进度上报节流（进度步长 5）+ **心跳线程**（`TASK_HEARTBEAT_SECONDS`，默认 30s）——下载 / FFmpeg / ASR 等长阻塞步骤期间持续刷新 `updated_at`，供陈旧判定与后续 reaper 使用。
+
 ## 本地运行
 
 ```bash

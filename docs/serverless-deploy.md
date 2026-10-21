@@ -295,6 +295,10 @@ s info -t s.yaml
 | `CORS_ORIGINS` | 你的正式域名 | 默认只放行 localhost；Vercel 预览域已由 `CORS_ORIGIN_REGEX` 覆盖 |
 | `RATE_LIMIT_PER_MINUTE` | `10`（0 = 关闭） | 配置 Redis 后为全实例共享配额 |
 | `MAX_AUDIO_SIZE_MB` | `100` | 与 `memorySize` 匹配；过大易 OOM |
+| `TASK_TTL_SECONDS` | `604800`（7 天） | 任务 JSON 含完整文字稿；0 = 永久保留（不推荐，Redis 会无限增长） |
+| `TASK_INIT_MODE` | `recover`（API）/ `none`（Worker） | Worker 必须 `none`，否则每次冷启动会把其他实例在跑的任务判为中断 |
+| `TASK_STALE_SECONDS` | `600` | 超过该时长无心跳写入才判为遗留任务；须明显大于心跳间隔 |
+| `TASK_HEARTBEAT_SECONDS` | `30` | 长阻塞步骤（下载 / FFmpeg / ASR）靠心跳保活；0 = 关闭 |
 | `CLOUD_ASR_BASE_URL` / `CLOUD_ASR_MODEL` | 见 `.env.example` | 换服务商/模型时覆盖 |
 
 `TASK_DB_PATH`、`WHISPER_*`、`ENABLE_VOCAL_SEPARATION`、`BILI_COOKIE` 在 FC 上都不需要（`BILI_COOKIE` 为预留能力，当前未实现）。
@@ -378,7 +382,8 @@ NEXT_PUBLIC_USE_MOCK=false        # 构建期常量，改完必须重新构建
 | 静态 FFmpeg 为 GPLv3 | 对外分发镜像需遵守 GPL | 保留许可声明；如不可接受，改用 apt 版 FFmpeg（镜像约 +400MB） |
 | 无本地 ASR | `ASR_ENGINE=local` 不可用 | 固定 `cloud`，`ASR_ENGINE_FALLBACK` 留空 |
 | B站风控 / yt-dlp 失效 | 解析或字幕失败 | 定期重建镜像升级 `yt-dlp`；关注 `EXTRACT_TIMEOUT_SECONDS` |
-| Redis 任务无 TTL | 任务记录无限增长 | S2 增加 TTL/归档；当前可用 Redis 淘汰策略兜底 |
+| Redis 任务无 TTL | 任务记录无限增长 | **S2-P0 已修**：`TASK_TTL_SECONDS`（默认 7 天，滑动续期）；0 = 永久保留 |
+| 冷启动即改写任务状态 | 多实例下误杀在途任务 | **S2-P0 已修**：只把「陈旧」（`TASK_STALE_SECONDS` 内无心跳）的 `processing` 判为 `interrupted`；Worker 侧设 `TASK_INIT_MODE=none` |
 
 ### 8.3 S2 改造方向：独立函数触发
 
@@ -391,6 +396,8 @@ NEXT_PUBLIC_USE_MOCK=false        # 构建期常量，改完必须重新构建
    - FC **异步调用**（`InvokeFunction` 异步模式）：`api` 投递事件，`worker` 独立执行，不受原请求生命周期影响；
    - **MNS / RocketMQ 队列触发**：天然带重试与削峰，配合死信队列。
 3. **状态与幂等**：任务状态继续放 Redis（`TASK_STORE=redis` 已具备），worker 按 `taskId` 幂等更新；补 TTL 与失败重试上限。
+   > **S2-P0 已完成**：`TASK_TTL_SECONDS`（默认 7 天滑动续期）、`TASK_INIT_MODE=none`（Worker 启动不改写状态）、`attempts` 字段、进度心跳（`TASK_HEARTBEAT_SECONDS`）与写入节流、同步桥接连接泄漏修复。
+   > 仍待 P2/P4：Worker 幂等领取（`SET NX EX`）、超时收割（reaper）、`TASK_TIMEOUT` 错误码。
 4. **前端零改动**：仍是 `POST /api/transcribe` + `GET /api/transcribe/{taskId}` 轮询，契约不变。
 5. **超时/规格**：worker 函数单独配置更长超时、更大内存；`api` 函数保持小规格低成本。
 
