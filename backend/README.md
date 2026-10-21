@@ -2,7 +2,7 @@
 
 已实现：
 - `POST /api/parse`：yt-dlp 解析 B站视频链接 → `{ title, cover, duration, platform, videoId }`
-- `POST /api/transcribe`：创建转写任务（BackgroundTasks 异步执行）→ `{ taskId, status, progress, stage }`；可选 `engine` 字段手动选择转写引擎（`local` 默认 / `cloud`，见下文云端 ASR 章节）
+- `POST /api/transcribe`：创建转写任务（默认 `ENQUEUE_MODE=inline` 走 BackgroundTasks 异步执行）→ `{ taskId, status, progress, stage }`；可选 `engine` 字段手动选择转写引擎（`local` 默认 / `cloud`，见下文云端 ASR 章节）
 - `GET /api/transcribe/{taskId}`：轮询任务 → `{ status, stage, progress, transcript, plainText, video?, error?, transcriptSource? }`
 - `POST /api/summarize`：AI 总结（无状态）→ 请求 `{ transcript, title, duration }`，响应 `{ summary, keyPoints: [{time,text}], chapters: [{title,timeStart,timeEnd,note}] }`；keyPoints 时间戳强制取自原 transcript（后端就近吸附校验）
 
@@ -208,7 +208,8 @@ backend/app/
     ├── subtitles.py     # CC/AI 字幕轨道选择与解析（bilibili json / json3 / vtt）
     ├── audio.py         # yt-dlp 下载音轨到内存（BytesIO）+ FFmpeg 管道转 16kHz 单声道 WAV
     ├── asr.py           # faster-whisper 本地推理 / 云端 OpenAI 兼容客户端
-    ├── transcribe.py    # 流水线编排（BackgroundTasks 入口，进度更新）
+    ├── transcribe.py    # 流水线编排（进度更新 + 心跳）
+    ├── dispatcher.py    # 任务分发（ENQUEUE_MODE：inline | fc | mns | redis）
     └── tasks.py         # 任务注册表（SQLite 持久化 backend/data/tasks.db + 内存写穿缓存）
 ```
 
@@ -218,3 +219,9 @@ backend/app/
 显式导出的环境变量优先于文件值）——run.bat / 控制台.ps1 / 手动 uvicorn 等所有启动方式统一生效，
 改完 Key 后重启后端即可（`run.bat restart` 或托盘「重启」）。
 `CORS_ORIGINS` 默认放行本地前端；`CORS_ORIGIN_REGEX` 默认放行所有 `*.vercel.app`（预览与生产域）。
+
+**任务分发（S2-P1）**：`POST /api/transcribe` 不再直接 `background_tasks.add_task(...)`，而是构造
+`TranscribeJob`（`task_id` / `url` / `video` / `prefer_subtitles` / `hotwords` / `engine` 六元组，可 `to_dict()` 序列化）
+交给 `services/dispatcher.enqueue()`。`ENQUEUE_MODE=inline`（默认）时行为与改造前**完全一致**；
+`fc` / `mns` / `redis` 是 P3/P4 的实现位，当前显式抛 `DispatcherNotImplementedError`（绝不静默丢任务），
+路由会把该任务标记为 `failed` 再返回 500，避免留下永远 `processing` 的孤儿任务。配错模式值会告警并降级 `inline`。

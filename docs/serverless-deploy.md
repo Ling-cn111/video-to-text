@@ -299,6 +299,7 @@ s info -t s.yaml
 | `TASK_INIT_MODE` | `recover`（API）/ `none`（Worker） | Worker 必须 `none`，否则每次冷启动会把其他实例在跑的任务判为中断 |
 | `TASK_STALE_SECONDS` | `600` | 超过该时长无心跳写入才判为遗留任务；须明显大于心跳间隔 |
 | `TASK_HEARTBEAT_SECONDS` | `30` | 长阻塞步骤（下载 / FFmpeg / ASR）靠心跳保活；0 = 关闭 |
+| `ENQUEUE_MODE` | `inline` | 任务分发模式。`inline` = 同进程 BackgroundTasks；`fc`/`mns`/`redis` 为 P3/P4 实现位，当前显式报错 |
 | `CLOUD_ASR_BASE_URL` / `CLOUD_ASR_MODEL` | 见 `.env.example` | 换服务商/模型时覆盖 |
 
 `TASK_DB_PATH`、`WHISPER_*`、`ENABLE_VOCAL_SEPARATION`、`BILI_COOKIE` 在 FC 上都不需要（`BILI_COOKIE` 为预留能力，当前未实现）。
@@ -397,6 +398,7 @@ NEXT_PUBLIC_USE_MOCK=false        # 构建期常量，改完必须重新构建
    - **MNS / RocketMQ 队列触发**：天然带重试与削峰，配合死信队列。
 3. **状态与幂等**：任务状态继续放 Redis（`TASK_STORE=redis` 已具备），worker 按 `taskId` 幂等更新；补 TTL 与失败重试上限。
    > **S2-P0 已完成**：`TASK_TTL_SECONDS`（默认 7 天滑动续期）、`TASK_INIT_MODE=none`（Worker 启动不改写状态）、`attempts` 字段、进度心跳（`TASK_HEARTBEAT_SECONDS`）与写入节流、同步桥接连接泄漏修复。
+   > **S2-P1 已完成**：`services/dispatcher.py` + `TranscribeJob`（完整作业体，可 `to_dict()` 作 FC 事件 payload）+ `ENQUEUE_MODE=inline|fc|mns|redis`（默认 inline，行为不变；未实现模式显式报错）。
    > 仍待 P2/P4：Worker 幂等领取（`SET NX EX`）、超时收割（reaper）、`TASK_TIMEOUT` 错误码。
 4. **前端零改动**：仍是 `POST /api/transcribe` + `GET /api/transcribe/{taskId}` 轮询，契约不变。
 5. **超时/规格**：worker 函数单独配置更长超时、更大内存；`api` 函数保持小规格低成本。

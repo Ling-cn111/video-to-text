@@ -202,8 +202,12 @@ def test_cloud_failure_without_fallback_raises_original(monkeypatch, tmp_path):
 
 @pytest.fixture(autouse=True)
 def _noop_pipeline(monkeypatch):
-    """拦截后台流水线：接口层测试不触发真实下载/转写。"""
-    monkeypatch.setattr("app.routers.transcribe.run_transcription_pipeline", lambda *args, **kwargs: None)
+    """拦截后台流水线：接口层测试不触发真实下载/转写。
+
+    S2-P1 起调用点搬到 dispatcher（模块属性访问 transcribe.run_transcription_pipeline），
+    所以 patch 目标相应改为 app.services.transcribe。
+    """
+    monkeypatch.setattr("app.services.transcribe.run_transcription_pipeline", lambda *args, **kwargs: None)
 
 
 def test_submit_cloud_without_key_rejected_before_task_creation(monkeypatch):
