@@ -68,6 +68,23 @@ TASK_STORE: str = os.getenv("TASK_STORE", "memory").lower()
 # Redis 连接串（仅 TASK_STORE=redis 时生效；未配置或包缺失自动降级 memory 并打警告）
 REDIS_URL: str = os.getenv("REDIS_URL", "")
 
+# ---- 任务生命周期（S2-P0）----
+# 任务保留期（秒）：create/update 写入时附带 EX，滑动续期；0 = 不设 TTL。
+# 默认 7 天：任务 JSON 含完整文字稿（27 分钟视频约 20-30KB），无 TTL 会无限增长。
+TASK_TTL_SECONDS: int = int(os.getenv("TASK_TTL_SECONDS", "604800"))
+
+# 启动恢复模式：recover（默认，把「陈旧」processing 任务标记 interrupted）| none（不处理）。
+# Worker 侧必须设 none：Serverless 每次冷启动都跑 init，recover 会误杀其他实例正在跑的任务。
+TASK_INIT_MODE: str = os.getenv("TASK_INIT_MODE", "recover").strip().lower()
+
+# 判定「陈旧」的阈值（秒）：processing 任务超过该时长没有心跳写入，才认为是遗留任务。
+# 必须明显大于心跳间隔（TASK_HEARTBEAT_SECONDS），否则会误杀正在下载/转码/ASR 的任务。
+TASK_STALE_SECONDS: int = int(os.getenv("TASK_STALE_SECONDS", "600"))
+
+# 进度心跳间隔（秒）：长阻塞步骤（下载/FFmpeg/云端 ASR）期间定时刷新 updated_at，
+# 供 TASK_STALE_SECONDS 判定与后续 reaper（S2-P4）识别僵尸任务；0 = 关闭。
+TASK_HEARTBEAT_SECONDS: float = float(os.getenv("TASK_HEARTBEAT_SECONDS", "30"))
+
 # 请求限流（令牌桶，任务 H）：每 IP 每分钟 POST 请求数上限；0 = 禁用
 RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "10"))
 

@@ -3,7 +3,19 @@
 入口 run_transcription_pipeline 交由 FastAPI BackgroundTasks 在响应返回后执行。
 音频全程内存化（S1-B）：下载/转换/分离均以 BytesIO 流转，不落持久磁盘；
 仅 demucs / qwen3 / funasr 等「只认文件路径」的组件内部用系统临时目录并即用即删。
+
+S2-P0 进度上报（ProgressReporter）：
+- 节流：进度变化 < PROGRESS_STEP 且阶段未变时不写存储（云端 ASR 无回调，
+  本地 ASR 每分段都回调，节流后写入次数从「分段数」降到「进度档数」）
+- 心跳：独立守护线程每 TASK_HEARTBEAT_SECONDS 刷新一次 updated_at，
+  覆盖下载/FFmpeg/ASR 等长阻塞步骤——没有心跳，reaper（S2-P4）无法区分
+  「实例被回收的僵尸任务」与「正在跑的任务」，Serverless 下会误杀。
 """
+import logging
+import threading
+import time
+
+from app.config import TASK_HEARTBEAT_SECONDS
 from app.errors import AppException
 from app.schemas import TranscriptItem, VideoInfo
 from app.services import asr
@@ -11,12 +23,91 @@ from app.services.audio import convert_to_wav_16k_mono, download_audio
 from app.services.subtitles import try_extract_subtitle_transcript
 from app.services.tasks import update_task
 
+logger = logging.getLogger(__name__)
+
 # 各阶段进度锚点
 PROGRESS_PARSE = 5
 PROGRESS_EXTRACT_START = 15
 PROGRESS_EXTRACT_DONE = 35
 PROGRESS_ASR_START = 40
 PROGRESS_ASR_SPAN = 55
+
+# 进度写入最小步长：小于该值的进度变化不落存储（阶段切换始终写）
+PROGRESS_STEP = 5
+
+
+class ProgressReporter:
+    """任务进度上报器：节流写入 + 定时心跳（S2-P0）。
+
+    - `set(stage, progress)`：阶段变化或进度涨幅 ≥ PROGRESS_STEP 才写
+    - 心跳线程：距上次写入超过 heartbeat_seconds 时补一次写入（只刷 updated_at 语义，
+      进度值保持不变），保证长阻塞步骤期间任务不被判为「陈旧」
+    - `close()`：停止心跳；之后的 `set()` 变成 no-op（避免收尾后又被心跳覆盖）
+    """
+
+    def __init__(self, task_id: str, heartbeat_seconds: float | None = None) -> None:
+        self._task_id = task_id
+        self._lock = threading.Lock()
+        self._last_progress = -1
+        self._last_stage: str | None = None
+        self._last_write = 0.0
+        self._closed = False
+        self._interval = TASK_HEARTBEAT_SECONDS if heartbeat_seconds is None else float(heartbeat_seconds)
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        if self._interval > 0:
+            self._thread = threading.Thread(
+                target=self._heartbeat, name=f"task-heartbeat-{task_id[:8]}", daemon=True
+            )
+            self._thread.start()
+
+    def set(self, stage: str, progress: int) -> None:
+        """按需写入：阶段变化或进度涨幅达标才落存储。"""
+        with self._lock:
+            if self._closed:
+                return
+            stage_changed = stage != self._last_stage
+            if not stage_changed and progress - self._last_progress < PROGRESS_STEP:
+                return
+            self._last_stage = stage
+            self._last_progress = progress
+            self._write(stage, progress)
+
+    def bump(self, progress: int) -> None:
+        """只推进进度（阶段不变）。"""
+        with self._lock:
+            if self._closed:
+                return
+            if progress - self._last_progress < PROGRESS_STEP:
+                return
+            self._last_progress = progress
+            self._write(self._last_stage or "parse_link", progress)
+
+    def close(self) -> None:
+        self._stop.set()
+        with self._lock:
+            self._closed = True
+
+    # ---- 内部 ----
+
+    def _write(self, stage: str, progress: int) -> None:
+        """调用方需持有 self._lock。写入失败只记日志：进度不是任务成败的关键路径。"""
+        self._last_write = time.monotonic()
+        try:
+            update_task(self._task_id, stage=stage, progress=progress)
+        except Exception:  # pragma: no cover - 存储抖动不应打断转写
+            logger.warning("任务进度写入失败（task_id=%s）", self._task_id, exc_info=True)
+
+    def _heartbeat(self) -> None:
+        while not self._stop.wait(self._interval):
+            with self._lock:
+                if self._closed:
+                    return
+                if self._last_progress < 0:
+                    continue  # 还没有任何进度上报，心跳无内容可刷
+                if time.monotonic() - self._last_write < self._interval:
+                    continue
+                self._write(self._last_stage or "parse_link", self._last_progress)
 
 
 def _finish(task_id: str, transcript: list[dict], source: str) -> None:
@@ -54,9 +145,10 @@ def run_transcription_pipeline(
     engine 为请求级手动选择（local | cloud，缺省跟随 ASR_ENGINE）；
     云端运行期故障由 asr.transcribe_audio 内的 ASR_ENGINE_FALLBACK 降级本地。
     """
+    reporter = ProgressReporter(task_id)
     try:
         # 阶段一：字幕快路径（分层降级：yt-dlp CC → dm/view AI；秒级返回）
-        update_task(task_id, stage="parse_link", progress=PROGRESS_PARSE)
+        reporter.set("parse_link", PROGRESS_PARSE)
         if prefer_subtitles:
             try:
                 subtitle_result = try_extract_subtitle_transcript(url)
@@ -64,14 +156,15 @@ def run_transcription_pipeline(
                 subtitle_result = None  # 字幕路径失败不阻断，回退 ASR
             if subtitle_result:
                 subtitle_items, subtitle_source = subtitle_result
-                update_task(task_id, stage="asr", progress=PROGRESS_ASR_START)
+                reporter.set("asr", PROGRESS_ASR_START)
+                reporter.close()
                 _finish(task_id, subtitle_items, subtitle_source)
                 return
 
         # 阶段二：下载音轨 + FFmpeg 管道转 16kHz 单声道 WAV（全程内存，S1-B）
-        update_task(task_id, stage="extract_audio", progress=PROGRESS_EXTRACT_START)
+        reporter.set("extract_audio", PROGRESS_EXTRACT_START)
         audio = download_audio(url)
-        update_task(task_id, stage="extract_audio", progress=PROGRESS_EXTRACT_DONE)
+        reporter.set("extract_audio", PROGRESS_EXTRACT_DONE)
         wav = convert_to_wav_16k_mono(audio)
 
         # 可选：人声分离（Demucs）。智能触发：非语音占比超阈值或显式开启；
@@ -87,10 +180,10 @@ def run_transcription_pipeline(
                     pass  # 降级：人声分离失败不影响转写主流程
 
         # 阶段三：ASR（本地 faster-whisper 或云端；音频以 BytesIO 传入）
-        update_task(task_id, stage="asr", progress=PROGRESS_ASR_START)
+        reporter.set("asr", PROGRESS_ASR_START)
 
         def on_asr_progress(ratio: float) -> None:
-            update_task(task_id, progress=PROGRESS_ASR_START + int(ratio * PROGRESS_ASR_SPAN))
+            reporter.bump(PROGRESS_ASR_START + int(ratio * PROGRESS_ASR_SPAN))
 
         # 上下文提示：热词（专有名词）+ 视频标题，引导 ASR 识别
         initial_prompt = video.title if video else None
@@ -104,6 +197,10 @@ def run_transcription_pipeline(
         )
         if not transcript:
             raise AppException("TRANSCRIBE_FAILED", "未能识别出语音内容", 500)
+        reporter.close()
         _finish(task_id, transcript, "asr")
     except Exception as exc:
+        reporter.close()
         _fail(task_id, exc)
+    finally:
+        reporter.close()

@@ -12,7 +12,9 @@ from app.routers.transcribe import router as transcribe_router
 from app.services import tasks as task_store
 from app.services.rate_limit import RateLimitMiddleware
 
-# 任务持久化初始化（SQLite）：加载历史任务，未完成的标记 interrupted
+# 任务存储初始化：API 侧负责「重启恢复」（TASK_INIT_MODE=recover，默认）。
+# Worker 侧必须传 recover_interrupted=False 或设 TASK_INIT_MODE=none：
+# Serverless 每次冷启动都会执行到这里，recover 会把其他实例在跑的任务误判为中断。
 task_store.init_task_store()
 
 app = FastAPI(

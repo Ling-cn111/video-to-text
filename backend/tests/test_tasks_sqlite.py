@@ -79,5 +79,28 @@ def test_startup_marks_processing_tasks_interrupted(task_db):
     assert get_task(task_id).status == "interrupted"
 
 
+def test_init_task_store_without_recovery_keeps_processing(task_db):
+    """Worker 启动语义：init_task_store(recover_interrupted=False) 不改写任务状态。
+
+    Serverless 每次冷启动都会执行启动初始化；若沿用「全量打 interrupted」，
+    会把其他实例正在跑的任务全部误杀（S2-P0）。
+    """
+    task_id = create_task(VIDEO)
+
+    tasks_module.init_task_store(task_db, recover_interrupted=False)
+
+    assert get_task(task_id).status == "processing"
+
+
+def test_init_task_store_honours_init_mode_env(task_db, monkeypatch):
+    """TASK_INIT_MODE=none 时，即使不显式传参也不做恢复改写。"""
+    task_id = create_task(VIDEO)
+    monkeypatch.setattr(tasks_module, "TASK_INIT_MODE", "none")
+
+    tasks_module.init_task_store(task_db)
+
+    assert get_task(task_id).status == "processing"
+
+
 def test_get_unknown_task_returns_none(task_db):
     assert get_task("no-such-task") is None

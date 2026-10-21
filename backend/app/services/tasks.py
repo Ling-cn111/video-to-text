@@ -4,15 +4,29 @@
 - MemoryTaskStore：SQLite 持久化 + 内存写穿缓存（任务 H 现有实现完整搬迁；
   进程内轮询零 SQL，未命中回源 DB；重启时 processing 任务标记 interrupted）
 - RedisTaskStore：redis.asyncio 实现，task:{task_id} 存任务全量 JSON；
-  重启语义（interrupted 标记）由 init() 扫描实现，与 Memory 对齐
+  重启语义（interrupted 标记）由 init() 扫描实现
+
+S2-P0 地基（异步架构前置）：
+- TTL：create / update / init 写入统一走 `_set`，按 TASK_TTL_SECONDS 滑动续期，
+  避免任务 JSON（含完整文字稿）在 Redis 里无限增长
+- init 语义可关：`init(recover_interrupted=False)` 只建表/预热，不做任何状态改写。
+  Worker 必须用 False——Serverless 每次冷启动都会跑 init，recover 会误杀其他实例
+  正在跑的任务；Redis 实现还要求任务「陈旧」（updated_at 早于 TASK_STALE_SECONDS）
+  才判定 interrupted，避免把心跳正常的任务判死
+- attempts：任务级重试计数（P2 幂等领取 / P4 reaper 使用），随 JSON 持久化
+- 同步桥接复用**单个常驻事件循环**（后台线程），不再每次 asyncio.run 新建 loop：
+  Redis client 按 loop 缓存，旧实现每次调用都会新建 client 且永不回收（连接泄漏）
 
 环境变量（app/config.py）：
 - TASK_STORE=memory（默认）| redis
 - REDIS_URL：仅 redis 模式生效；未配置或 redis 包缺失自动降级 memory 并打警告
+- TASK_TTL_SECONDS（默认 604800 = 7 天，0 = 不设 TTL）
+- TASK_INIT_MODE=recover（默认）| none
+- TASK_STALE_SECONDS（默认 600，仅 Redis init 判定陈旧用）
 
 模块级同步兼容包装（create_task / get_task / update_task / set_stage）委托
-当前 store，业务层零改动。桥接用 asyncio.run：仅适用于同步上下文——
-未来路由改 async def 时，须改为直接 await store 方法并删除桥接层。
+当前 store，业务层零改动。桥接仅适用于同步上下文——路由改 async def 后
+应直接 await store 方法（在事件循环内调用桥接会抛 RuntimeError）。
 """
 import asyncio
 import json
@@ -21,11 +35,19 @@ import sqlite3
 import threading
 import time
 import uuid
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from app.config import REDIS_URL, TASK_DB_PATH, TASK_STORE
+from app.config import (
+    REDIS_URL,
+    TASK_DB_PATH,
+    TASK_INIT_MODE,
+    TASK_STALE_SECONDS,
+    TASK_STORE,
+    TASK_TTL_SECONDS,
+)
 from app.schemas import TranscriptItem, VideoInfo
 
 if TYPE_CHECKING:
@@ -46,6 +68,7 @@ class TranscribeTask:
     error: dict | None = None  # { code, message }
     engine: str | None = None  # 本次任务的 ASR 引擎（local | cloud | 引擎名），重试沿用
     transcript_source: str | None = None  # 文字稿来源：subtitle_cc | subtitle_ai | asr
+    attempts: int = 0  # 已执行次数（S2：Worker 重试计数 / reaper 判定依据）
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -62,10 +85,19 @@ def _payload_dict(task: TranscribeTask) -> dict:
         "error": task.error,
         "engine": task.engine,
         "transcript_source": task.transcript_source,
+        "attempts": task.attempts,
     }
 
 
-def _task_from_payload(payload: dict, task_id: str, status: str, progress: int, stage: str, created_at: float) -> TranscribeTask:
+def _task_from_payload(
+    payload: dict,
+    task_id: str,
+    status: str,
+    progress: int,
+    stage: str,
+    created_at: float,
+    updated_at: float | None = None,
+) -> TranscribeTask:
     video = payload.get("video")
     return TranscribeTask(
         task_id=task_id,
@@ -78,7 +110,11 @@ def _task_from_payload(payload: dict, task_id: str, status: str, progress: int, 
         error=payload.get("error"),
         engine=payload.get("engine"),
         transcript_source=payload.get("transcript_source"),
+        attempts=int(payload.get("attempts") or 0),
         created_at=created_at,
+        # updated_at 必须往返保真：S2 的「陈旧判定」（心跳超时）完全依赖它；
+        # 旧数据无该字段时回落到 created_at（更保守：更容易被判为陈旧）
+        updated_at=updated_at if updated_at is not None else created_at,
     )
 
 
@@ -100,7 +136,15 @@ def _dumps(task: TranscribeTask) -> str:
 
 def _loads(raw: str) -> TranscribeTask:
     data = json.loads(raw)
-    return _task_from_payload(data, data["task_id"], data["status"], data["progress"], data["stage"], data["created_at"])
+    return _task_from_payload(
+        data,
+        data["task_id"],
+        data["status"],
+        data["progress"],
+        data["stage"],
+        data["created_at"],
+        data.get("updated_at"),
+    )
 
 
 class TaskStore(Protocol):
@@ -161,10 +205,14 @@ class MemoryTaskStore:
         conn.commit()
 
     def _task_of_row(self, row: tuple) -> TranscribeTask:
-        return _task_from_payload(json.loads(row[6]), row[0], row[1], row[2], row[3], row[4])
+        return _task_from_payload(json.loads(row[6]), row[0], row[1], row[2], row[3], row[4], row[5])
 
-    async def init(self) -> None:
-        """幂等初始化：建库/建表、加载历史任务、未完成标记 interrupted。"""
+    async def init(self, recover_interrupted: bool = True) -> None:
+        """幂等初始化：建库/建表、加载历史任务。
+
+        recover_interrupted=True（API 默认）：processing 任务标记 interrupted（进程重启即中断）；
+        False（Worker / 只读实例）：只加载，不改任何任务状态。
+        """
         if self._initialized:
             return
         with self._lock:
@@ -173,7 +221,7 @@ class MemoryTaskStore:
             ).fetchall()
             for row in rows:
                 task = self._task_of_row(row)
-                if task.status == "processing":
+                if recover_interrupted and task.status == "processing":
                     task.status = "interrupted"
                     task.updated_at = time.time()
                     self._upsert_row(task)
@@ -219,16 +267,20 @@ class MemoryTaskStore:
 class RedisTaskStore:
     """redis.asyncio 实现：task:{task_id} 存任务全量 JSON。
 
-    - 连接池绑定 event loop 不可跨 loop 复用 → 每个 loop 独立 client
-      （同步桥接 asyncio.run 每次新建 loop，对应每次新 client，无跨 loop 复用问题）
-    - init() 扫描全量任务并标记 interrupted，与 Memory 重启语义对齐
+    - 连接池绑定 event loop 不可跨 loop 复用 → 每个 loop 独立 client；
+      `_run_async` 复用常驻 loop 后，client 数量收敛为「桥接 loop + 应用 loop」，
+      不再随调用次数增长（S2-P0 修复连接泄漏）
+    - 所有写入走 `_set`：按 TASK_TTL_SECONDS 滑动续期（0 = 不设 TTL）
+    - init() 只把「陈旧」的 processing 任务标记 interrupted（recover_interrupted=False 时完全不改）
     """
 
     _KEY_PREFIX = "task:"
 
-    def __init__(self, url: str, client_factory=None) -> None:
+    def __init__(self, url: str, client_factory=None, ttl_seconds: int | None = None, stale_seconds: int | None = None) -> None:
         self._url = url
         self._client_factory = client_factory  # 测试注入 fakeredis 用
+        self._ttl = TASK_TTL_SECONDS if ttl_seconds is None else int(ttl_seconds)
+        self._stale = TASK_STALE_SECONDS if stale_seconds is None else int(stale_seconds)
         self._clients: dict[asyncio.AbstractEventLoop, "redis.asyncio.Redis"] = {}
 
     def _client(self) -> "redis.asyncio.Redis":
@@ -248,23 +300,58 @@ class RedisTaskStore:
     def _key(task_id: str) -> str:
         return f"{RedisTaskStore._KEY_PREFIX}{task_id}"
 
-    async def init(self) -> None:
-        """启动初始化：processing 任务标记 interrupted（服务重启即中断）。"""
+    async def _set(self, key: str, task: TranscribeTask) -> None:
+        """统一写入入口：带 TTL 滑动续期（TASK_TTL_SECONDS=0 时退化为普通 SET）。"""
+        if self._ttl > 0:
+            await self._client().set(key, _dumps(task), ex=self._ttl)
+        else:
+            await self._client().set(key, _dumps(task))
+
+    async def close(self) -> None:
+        """关闭当前 loop 的 client（其余 loop 的由各自 loop 结束时回收）。
+
+        生产无需显式调用（进程退出即断连）；测试与长驻 Worker 显式释放更干净。
+        """
+        loop = asyncio.get_running_loop()
+        client = self._clients.pop(loop, None)
+        if client is not None:
+            await client.aclose()
+
+    async def init(self, recover_interrupted: bool = True) -> None:
+        """启动初始化。
+
+        recover_interrupted=True：把**陈旧**的 processing 任务标记 interrupted。
+        「陈旧」= 超过 TASK_STALE_SECONDS 没有写入（心跳），用于区分「上一个进程留下的
+        遗留任务」与「别的实例正在跑的任务」——Serverless 下每个实例冷启动都会 init，
+        无脑全量改写会把并发实例的在途任务误杀。
+
+        recover_interrupted=False：只建连，不做任何状态改写（Worker 用）。
+        """
         client = self._client()
+        if not recover_interrupted:
+            return
+        now = time.time()
         async for key in client.scan_iter(match=f"{self._KEY_PREFIX}*"):
+            # 只处理 task:{task_id}；未来的派生 key（如 task:lock:{id}）不参与恢复扫描
+            suffix = key.decode() if isinstance(key, bytes) else key
+            if ":" in suffix[len(self._KEY_PREFIX):]:
+                continue
             raw = await client.get(key)
             if raw is None:
                 continue
             task = _loads(raw)
-            if task.status == "processing":
-                task.status = "interrupted"
-                task.updated_at = time.time()
-                await client.set(key, _dumps(task))
+            if task.status != "processing":
+                continue
+            if now - task.updated_at < self._stale:
+                continue  # 心跳正常：可能有别的实例正在处理，不动它
+            task.status = "interrupted"
+            task.updated_at = now
+            await self._set(key, task)
 
     async def create(self, video: VideoInfo | None, engine: str | None = None) -> str:
         task_id = uuid.uuid4().hex
         task = TranscribeTask(task_id=task_id, video=video, engine=engine)
-        await self._client().set(self._key(task_id), _dumps(task))
+        await self._set(self._key(task_id), task)
         return task_id
 
     async def get(self, task_id: str) -> TranscribeTask | None:
@@ -278,7 +365,7 @@ class RedisTaskStore:
         for key, value in fields.items():
             setattr(task, key, value)
         task.updated_at = time.time()
-        await self._client().set(self._key(task_id), _dumps(task))
+        await self._set(self._key(task_id), task)
 
 
 def _build_store(mode: str, redis_url: str | None) -> TaskStore:
@@ -298,16 +385,69 @@ def _build_store(mode: str, redis_url: str | None) -> TaskStore:
 
 _STORE: TaskStore = _build_store(TASK_STORE, REDIS_URL)
 
+# 同步桥接的常驻事件循环（懒启动，守护线程持有）
+_LOOP: asyncio.AbstractEventLoop | None = None
+_LOOP_LOCK = threading.Lock()
+
+# 单次桥接调用的最长等待（秒）：防止 Redis 挂起时永久占住请求线程
+_BRIDGE_TIMEOUT_SECONDS = 30.0
+
 
 def get_task_store() -> TaskStore:
     return _STORE
 
 
 def _run_async(coro):
-    """同步 → async 桥接：仅适用于同步上下文（FastAPI 同步 def 路由 /
-    BackgroundTasks）。未来路由改 async def 时，须改为直接 await store 的
-    async 方法并删除本桥接层（asyncio.run 不允许在已有 event loop 中调用）。"""
-    return asyncio.run(coro)
+    """同步 → async 桥接：在**常驻后台事件循环**上执行并等待结果。
+
+    为什么不是 asyncio.run：每次新建 loop 会让按 loop 缓存的 Redis client
+    （RedisTaskStore._clients）只增不减——每次 store 调用泄漏一个连接池。
+    现在所有桥接调用共用同一个 loop，client 数量收敛为常数。
+
+    仅适用于同步上下文（FastAPI 同步 def 路由 / BackgroundTasks 线程）。
+    在已有事件循环的协程里调用会抛 RuntimeError（避免阻塞自身 loop 造成死锁），
+    此类调用方应改为直接 await store 方法。
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        coro.close()  # 避免 "coroutine was never awaited" 警告
+        raise RuntimeError(
+            "_run_async 不能在事件循环内调用：请直接 await store 的 async 方法"
+        )
+    future = asyncio.run_coroutine_threadsafe(coro, _bridge_loop())
+    try:
+        # 超时兜底：桥接 loop 卡死（Redis 连接挂起）时不至于把请求线程永久占住
+        return future.result(timeout=_BRIDGE_TIMEOUT_SECONDS)
+    except FutureTimeoutError:
+        future.cancel()
+        raise TimeoutError(
+            f"任务存储操作超时（>{_BRIDGE_TIMEOUT_SECONDS}s）：请检查 REDIS_URL 连通性"
+        ) from None
+
+
+def _bridge_loop() -> asyncio.AbstractEventLoop:
+    """懒启动常驻事件循环（守护线程）；进程退出即结束，无需显式关闭。"""
+    global _LOOP
+    with _LOOP_LOCK:
+        loop = _LOOP
+        if loop is not None and not loop.is_closed():
+            return loop
+        loop = asyncio.new_event_loop()
+        ready = threading.Event()
+
+        def _run() -> None:
+            asyncio.set_event_loop(loop)
+            loop.call_soon(ready.set)
+            loop.run_forever()
+
+        threading.Thread(target=_run, name="task-store-bridge", daemon=True).start()
+        if not ready.wait(timeout=5):  # pragma: no cover - 极端调度失败
+            raise RuntimeError("任务存储桥接事件循环启动超时")
+        _LOOP = loop
+        return loop
 
 
 def create_task(video: VideoInfo | None, engine: str | None = None) -> str:
@@ -326,15 +466,22 @@ def set_stage(task_id: str, stage: str, progress: int) -> None:
     update_task(task_id, stage=stage, progress=progress)
 
 
-def init_task_store(db_path: str | None = None) -> None:
-    """启动初始化（幂等）：main.py 启动时调用。db_path 指定时重建 MemoryTaskStore（测试用）。"""
+def init_task_store(db_path: str | None = None, recover_interrupted: bool | None = None) -> None:
+    """启动初始化（幂等）。
+
+    db_path 指定时重建 MemoryTaskStore（测试用）。
+    recover_interrupted 缺省由 TASK_INIT_MODE 决定：recover（API，默认）| none（Worker）。
+    显式传参优先于环境变量。
+    """
     global _STORE
     if db_path is not None:
         _STORE = MemoryTaskStore(db_path)
+    if recover_interrupted is None:
+        recover_interrupted = TASK_INIT_MODE != "none"
     # init 为启动钩子（不属于 TaskStore 存储接口），两个实现均有
     init = getattr(_STORE, "init", None)
     if init is not None:
-        _run_async(init())
+        _run_async(init(recover_interrupted=recover_interrupted))
     else:  # pragma: no cover - 防御分支
         logger.warning("当前 store（%s）无 init()，跳过启动初始化", type(_STORE).__name__)
 
@@ -343,4 +490,4 @@ def reset_task_store_for_tests(db_path: str) -> None:
     """测试辅助：指向独立 DB 并强制重新初始化（清空内存缓存）。"""
     global _STORE
     _STORE = MemoryTaskStore(db_path)
-    _run_async(_STORE.init())
+    _run_async(_STORE.init(recover_interrupted=True))
