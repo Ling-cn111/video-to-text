@@ -58,11 +58,21 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
+      # test_audio_memory.py 的 FFmpeg 管道用例由 skipif(check_ffmpeg()) 守卫：
+      # ubuntu runner 默认无 ffmpeg 时会被静默跳过 = 假绿（S1-E 实测 130 passed, 1 skipped）。
+      # 固定安装 ffmpeg，并在测试前断言可用，防止该用例再次退化为 skip。
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Verify FFmpeg is available
+        run: python -c "from app.services.audio import check_ffmpeg; raise SystemExit(0 if check_ffmpeg() else 'ffmpeg not on PATH')"
+
       # CI 跳过依赖外网真实视频的集成测试（-m network）、需要可选依赖 Demucs 的测试
       # （-m separation，见 backend/requirements-separation.txt）与需要大模型权重的
       # 本地引擎测试（-m asr_heavy，见 backend/requirements-asr.txt）；本地用 `pytest` 全量运行
+      # -rs：在摘要里列出每个 skip 的原因，避免再次出现「被跳过但没人发现」
       - name: Test
-        run: pytest -m "not network and not separation and not asr_heavy"
+        run: pytest -m "not network and not separation and not asr_heavy" -rs
 
   e2e:
     name: e2e locked features
