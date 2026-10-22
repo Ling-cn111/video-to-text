@@ -72,8 +72,8 @@ def test_post_rebuilds_url_from_video_id(captured_job):
 
 
 def test_post_marks_task_failed_when_dispatch_raises(monkeypatch):
-    """分发失败（如 ENQUEUE_MODE=fc 未实现）→ 任务落 failed，不留孤儿 processing。"""
-    monkeypatch.setattr(dispatcher_module, "_DISPATCHER", _build_dispatcher("fc"))
+    """分发失败（如 ENQUEUE_MODE=mns 未实现）→ 任务落 failed，不留孤儿 processing。"""
+    monkeypatch.setattr(dispatcher_module, "_DISPATCHER", _build_dispatcher("mns"))
     # raise_server_exceptions=False：模拟真实 HTTP 行为（异常由 main.py 的兜底 handler 转 500）
     tolerant_client = TestClient(app, raise_server_exceptions=False)
     store = tasks_module._STORE
@@ -108,3 +108,110 @@ def test_post_inline_mode_still_completes_subtitle_flow(monkeypatch):
     assert detail.status_code == 200
     assert detail.json()["status"] == "completed"
     assert detail.json()["plainText"] == "分发后仍能完成"
+
+
+# ---- ENQUEUE_MODE=fc：投递到 FC 异步（S2-P3）----
+
+WORKER_URL = "https://video-to-text-worker.abc123.cn-hangzhou.fcapp.run"
+
+
+def _fc_dispatcher(seen: list, status_code: int = 202):
+    """构造打到 MockTransport 的 FcDispatcher（不联网）。"""
+    import httpx
+
+    from app.services.dispatcher import FcDispatcher
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(status_code, headers={"X-Fc-Request-Id": "req-1"})
+
+    return FcDispatcher(url=WORKER_URL, token="s3cret", transport=httpx.MockTransport(handler))
+
+
+def test_post_fc_mode_dispatches_without_running_pipeline(monkeypatch):
+    """fc 模式：请求内只投递，不同步执行 pipeline，任务保持 processing 供轮询。"""
+    seen: list = []
+    monkeypatch.setattr(dispatcher_module, "_DISPATCHER", _fc_dispatcher(seen))
+
+    pipeline_calls = []
+    monkeypatch.setattr(
+        "app.services.transcribe.run_transcription_pipeline",
+        lambda *a, **k: pipeline_calls.append(a),
+    )
+
+    response = client.post("/api/transcribe", json=BODY)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "processing"
+    assert len(seen) == 1
+    assert seen[0].headers["X-Fc-Invocation-Type"] == "Async"
+    assert seen[0].headers["X-Worker-Token"] == "s3cret"
+    assert pipeline_calls == []
+
+    # 任务仍是 processing（真正的完成由 worker 写回）
+    detail = client.get(f"/api/transcribe/{response.json()['taskId']}")
+    assert detail.json()["status"] == "processing"
+
+
+def test_post_fc_mode_sends_complete_job(monkeypatch):
+    """投递的 body 必须含 pipeline 需要的全部字段（worker 侧不再回读 Redis 补字段）。"""
+    import json
+
+    seen: list = []
+    monkeypatch.setattr(dispatcher_module, "_DISPATCHER", _fc_dispatcher(seen))
+
+    response = client.post(
+        "/api/transcribe",
+        json={**BODY, "hotwords": ["转写"], "url": "https://www.bilibili.com/video/BV1GJ411x7h7"},
+    )
+
+    body = json.loads(seen[0].content)
+    assert body["task_id"] == response.json()["taskId"]
+    assert body["url"] == "https://www.bilibili.com/video/BV1GJ411x7h7"
+    assert body["video"]["videoId"] == "BV1GJ411x7h7"
+    assert body["hotwords"] == ["转写"]
+    assert body["prefer_subtitles"] is True
+    assert body["engine"] == "local"
+
+
+def test_post_fc_mode_marks_failed_when_fc_rejects(monkeypatch):
+    """FC 拒收（如 404 路径配错）→ 任务落 failed，不让前端无限轮询。"""
+    monkeypatch.setattr(dispatcher_module, "_DISPATCHER", _fc_dispatcher([], status_code=404))
+    tolerant_client = TestClient(app, raise_server_exceptions=False)
+    store = tasks_module._STORE
+    before = set(store._tasks)
+
+    response = tolerant_client.post("/api/transcribe", json=BODY)
+
+    assert response.status_code == 500
+    new_ids = set(store._tasks) - before
+    assert len(new_ids) == 1
+    task = store._tasks[new_ids.pop()]
+    assert task.status == "failed"
+    assert task.error == {"code": "TRANSCRIBE_FAILED", "message": "任务分发失败，请重试"}
+
+
+def test_post_fc_mode_marks_failed_when_url_missing(monkeypatch):
+    """FC_WORKER_URL 漏配：启动不崩，但请求必须明确失败（不静默丢任务）。"""
+    import httpx
+
+    from app.services.dispatcher import FcDispatcher
+
+    monkeypatch.setattr(
+        dispatcher_module,
+        "_DISPATCHER",
+        FcDispatcher(url="", transport=httpx.MockTransport(lambda r: httpx.Response(202))),
+    )
+    tolerant_client = TestClient(app, raise_server_exceptions=False)
+    store = tasks_module._STORE
+    before = set(store._tasks)
+
+    response = tolerant_client.post("/api/transcribe", json=BODY)
+
+    assert response.status_code == 500
+    new_ids = set(store._tasks) - before
+    assert len(new_ids) == 1
+    task_id = new_ids.pop()
+    assert store._tasks[task_id].status == "failed"
+    assert tolerant_client.get(f"/api/transcribe/{task_id}").json()["status"] == "failed"
+

@@ -100,6 +100,21 @@ TASK_LOCK_SECONDS: int = int(os.getenv("TASK_LOCK_SECONDS", "3600"))
 # 非空时要求请求头 X-Worker-Token 完全一致，否则 401。
 WORKER_TOKEN: str = os.getenv("WORKER_TOKEN", "")
 
+# ---- FC 异步分发（S2-P3）----
+
+# worker 函数的 HTTP 触发器地址，形如 https://<子域>.<region>.fcapp.run。
+# 必须显式配置：fcapp.run 的子域含随机串，无法由 region + 函数名推导。
+# 为空时 ENQUEUE_MODE=fc 仍可正常启动（不阻断应用引导），但每次分发都会抛
+# DispatchError，由路由层把任务标 failed 并返回 500。
+FC_WORKER_URL: str = os.getenv("FC_WORKER_URL", "").strip()
+
+# worker 函数上的作业路由，必须与 app/worker_app.py 的 WORKER_PATH 一致。
+FC_WORKER_PATH: str = os.getenv("FC_WORKER_PATH", "/internal/worker/transcribe").strip()
+
+# 异步投递超时（秒）：异步调用只等 FC 回 202，不需要等作业真正跑完，
+# 因此可以远小于 pipeline 的超时。
+FC_ASYNC_TIMEOUT_SECONDS: float = float(os.getenv("FC_ASYNC_TIMEOUT_SECONDS", "5"))
+
 # 请求限流（令牌桶，任务 H）：每 IP 每分钟 POST 请求数上限；0 = 禁用
 RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "10"))
 

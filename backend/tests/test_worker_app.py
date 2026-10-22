@@ -9,13 +9,14 @@
 import asyncio
 import json
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from app.services import tasks as tasks_module
 from app.services import transcribe as transcribe_module
-from app.services.dispatcher import TranscribeJob
-from app.worker_app import WORKER_PATH, app as worker_app
+from app.services.dispatcher import FcDispatcher, TranscribeJob
+from app.worker_app import INVOKE_PATH, WORKER_PATH, app as worker_app
 
 client = TestClient(worker_app)
 
@@ -309,3 +310,113 @@ def test_worker_app_has_no_rate_limit_middleware():
     names = [m.cls.__name__ for m in worker_app.user_middleware]
     assert "RateLimitMiddleware" not in names
     assert "CORSMiddleware" not in names
+
+
+# ---- InvokeFunction 兼容入口（S2-P3）----
+
+def test_invoke_path_matches_fc_convention():
+    """FC 的 InvokeFunction 固定把 event POST 到 /invoke，路径不能改。"""
+    assert INVOKE_PATH == "/invoke"
+
+
+def test_invoke_runs_job_from_raw_body(new_task, subtitle_ok, store):
+    """octet-stream 原始字节也必须能解析（FC 的 event 就是裸 body）。"""
+    raw = json.dumps(_job(new_task)).encode()
+
+    response = client.post(INVOKE_PATH, content=raw, headers={"Content-Type": "application/octet-stream"})
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "task_id": new_task, "task_status": "completed"}
+    assert asyncio.run(store.get(new_task)).plain_text == "Worker 跑通"
+
+
+def test_invoke_shares_idempotency_with_main_path(new_task, pipeline_calls, store):
+    """两个入口共用 _run_job：锁语义必须一致（不能各写一套）。"""
+    token = asyncio.run(store.acquire(new_task, 60))
+    assert token is not None
+
+    response = client.post(INVOKE_PATH, content=json.dumps(_job(new_task)).encode())
+
+    assert response.json() == {"status": "skipped", "reason": "locked", "task_id": new_task}
+    assert pipeline_calls == []
+
+
+def test_invoke_rejects_unparseable_body():
+    response = client.post(INVOKE_PATH, content=b"not json")
+    assert response.status_code == 422
+
+
+def test_invoke_rejects_empty_body():
+    response = client.post(INVOKE_PATH, content=b"")
+    assert response.status_code == 422
+
+
+def test_invoke_accepts_bearer_token(monkeypatch):
+    """Authorization: Bearer 与 X-Worker-Token 等价（便于切换触发器认证方式）。"""
+    monkeypatch.setattr("app.worker_app.WORKER_TOKEN", "s3cret")
+
+    assert client.post(INVOKE_PATH, content=json.dumps(_job("unknown")).encode()).status_code == 401
+    response = client.post(
+        INVOKE_PATH,
+        content=json.dumps(_job("unknown")).encode(),
+        headers={"Authorization": "Bearer s3cret"},
+    )
+    assert response.status_code == 200
+
+
+def test_main_path_accepts_bearer_token(monkeypatch):
+    monkeypatch.setattr("app.worker_app.WORKER_TOKEN", "s3cret")
+    response = client.post(WORKER_PATH, json=_job("unknown"), headers={"Authorization": "Bearer s3cret"})
+    assert response.status_code == 200
+
+
+def test_bearer_token_must_match_exactly(monkeypatch):
+    monkeypatch.setattr("app.worker_app.WORKER_TOKEN", "s3cret")
+    for header in ("Bearer nope", "Basic s3cret", "s3cret", "Bearer "):
+        assert client.post(WORKER_PATH, json=_job("unknown"), headers={"Authorization": header}).status_code == 401
+
+
+def test_non_ascii_token_degrades_to_401_not_500(monkeypatch):
+    """`secrets.compare_digest` 对含非 ASCII 的 str 会抛 TypeError → 500。
+
+    HTTP header 本身只能传 ASCII，所以这种配置下**所有请求**都会失败；把比较改成
+    bytes 后至少退化成干净的 401，而不是满屏 500。
+    """
+    monkeypatch.setattr("app.worker_app.WORKER_TOKEN", "口令-中文")
+
+    for headers in ({"X-Worker-Token": "wrong"}, {"Authorization": "Bearer wrong"}, {}):
+        assert client.post(WORKER_PATH, json=_job("unknown"), headers=headers).status_code == 401
+
+
+# ---- FcDispatcher → worker_app 回环（S2-P3）----
+
+def test_fc_dispatcher_delivers_body_worker_accepts(new_task, subtitle_ok):
+    """FcDispatcher 发出的请求体，必须能被真实 worker 应用跑通。
+
+    这覆盖 P3 最容易出错的两处拼接：路径（WORKER_PATH）与请求体格式。
+    不联网、不需要 FC 环境，但走的是真实的 httpx 客户端代码路径。
+    """
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(202, headers={"X-Fc-Request-Id": "local"})
+
+    FcDispatcher(url="https://worker.test", transport=httpx.MockTransport(handler)).enqueue(
+        TranscribeJob(task_id=new_task, url=URL)
+    )
+
+    assert len(captured) == 1
+    request = captured[0]
+    # 路径必须与 worker 实际挂载点一致
+    assert request.url.path == WORKER_PATH
+
+    # 同一份 body 喂给真实 worker 应用，确认能跑完
+    response = client.post(
+        WORKER_PATH,
+        content=request.content,
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 200
+    assert response.json()["task_status"] == "completed"
+

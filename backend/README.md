@@ -225,8 +225,23 @@ worker_app.py            # 独立 Worker ASGI 应用（S2-P2，Serverless 异步
 **任务分发（S2-P1）**：`POST /api/transcribe` 不再直接 `background_tasks.add_task(...)`，而是构造
 `TranscribeJob`（`task_id` / `url` / `video` / `prefer_subtitles` / `hotwords` / `engine` 六元组，可 `to_dict()` 序列化）
 交给 `services/dispatcher.enqueue()`。`ENQUEUE_MODE=inline`（默认）时行为与改造前**完全一致**；
-`fc` / `mns` / `redis` 是 P3/P4 的实现位，当前显式抛 `DispatcherNotImplementedError`（绝不静默丢任务），
-路由会把该任务标记为 `failed` 再返回 500，避免留下永远 `processing` 的孤儿任务。配错模式值会告警并降级 `inline`。
+`fc` 自 P3 起真正可用（见下）；`mns` / `redis` 是 P4 的实现位，当前显式抛 `DispatcherNotImplementedError`
+（绝不静默丢任务），路由会把该任务标记为 `failed` 再返回 500，避免留下永远 `processing` 的孤儿任务。
+配错模式值会告警并降级 `inline`。
+
+**FC 异步分发（S2-P3）**：`ENQUEUE_MODE=fc` 时，`FcDispatcher` 把作业 `POST` 到 worker 函数的
+**HTTP 触发器**地址，并带 `X-Fc-Invocation-Type: Async`——FC 收到后立即回 **202** 并把事件落内部队列，
+API 函数不再受请求生命周期约束。
+
+- **为什么不用 OpenAPI `InvokeFunction`**：那条路必须做 ACS3-HMAC-SHA256 签名并常驻 AK/SK；
+  而 FC 官方文档三处明确 HTTP 触发器支持请求级异步（见 `docs/s2-async-recon.md` §8）。
+  改走触发器后**不需要签名、不需要 AK/SK、不需要 SDK**，凭据面最小。
+- **必配** `FC_WORKER_URL`（worker 触发器的 `*.fcapp.run` 地址）。漏配不会阻断启动，
+  但每次分发都会抛 `DispatchError` → 任务 `failed` + 500（明确失败，不静默丢任务）。
+- **可选** `FC_WORKER_PATH`（默认 `/internal/worker/transcribe`）、`FC_ASYNC_TIMEOUT_SECONDS`（默认 5s）。
+- **失败不重试**：FC 自身已默认重试 3 次，应用层再重试会叠加放大重复计费；直接抛给路由层标 `failed`。
+- **本地验证**（不联网、不需要 FC）：`pytest tests/test_dispatcher.py tests/test_worker_app.py -q`，
+  其中 `test_fc_dispatcher_delivers_body_worker_accepts` 把 `FcDispatcher` 的请求体直接喂给真实 worker 应用。
 
 **独立 Worker（S2-P2）**：`app/worker_app.py` 是第二个 ASGI 应用（`uvicorn app.worker_app:app`），
 供 Serverless 平台异步调用，与 API 应用**完全隔离**——不挂 `RateLimitMiddleware` / CORS，也不 import
@@ -235,7 +250,8 @@ worker_app.py            # 独立 Worker ASGI 应用（S2-P2，Serverless 异步
 
 - **入口**：`POST /internal/worker/transcribe`，请求体即作业体（`TranscribeJob.to_dict()`）；同时宽容兼容
   `{"body": "<json>"}` / `{"payload": ...}` / `{"body": "<base64>", "isBase64Encoded": true}` 等平台包装体，
-  不依赖任何特定 Header 定位 `task_id`
+  不依赖任何特定 Header 定位 `task_id`。另挂 `POST /invoke` 别名（FC 的 `InvokeFunction` 固定投递到该路径），
+  当前不用于生产，仅为将来切换调用方式留退路
 - **幂等领取**：执行前 `SET task:lock:{taskId} {token} NX EX TASK_LOCK_SECONDS` 抢锁，抢不到返回
   `{"status": "skipped", "reason": "locked"}`；释放/续期用 WATCH/MULTI 比对令牌（避免误删他人已续期的锁），
   续期挂在 `ProgressReporter` 的 30s 心跳上，长任务不会因锁过期被重复领取
@@ -243,6 +259,7 @@ worker_app.py            # 独立 Worker ASGI 应用（S2-P2，Serverless 异步
   平台重试不会重跑已完成任务（云端 ASR 会重复计费）
 - **返回码语义**：pipeline 内部已把业务异常收敛为 `failed` → 返回 **200**（重试无意义）；只有胶水层/
   未捕获的基础设施异常才标 `failed` 并返回 **5xx**，交给平台重试
-- **鉴权**：`WORKER_TOKEN` 非空时要求请求头 `X-Worker-Token` 一致（401），为空则不校验
+- **鉴权**：`WORKER_TOKEN` 非空时要求请求头 `X-Worker-Token` 一致，或 `Authorization: Bearer <token>`
+  （两种等价，便于将来把触发器认证方式改成 Bearer）；为空则不校验
 - **兜底分工**：进程被平台强杀（超时/OOM/缩容）时 Worker 无法自救——锁靠 TTL 过期释放，
   任务状态靠 P0 心跳停止 + P4 reaper 判定 `interrupted`
