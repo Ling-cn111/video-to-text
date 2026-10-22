@@ -161,6 +161,50 @@ def test_init_is_idempotent(store):
     assert asyncio.run(store.get(task_id)).status == "interrupted"
 
 
+# ---- Reaper 存储原语（S2-P4）----
+
+def test_list_processing_tasks_filters_by_status(store):
+    """只返回 processing：策略（多陈旧算僵尸）留给 reaper 层，存储层不做判定。"""
+    alive = asyncio.run(store.create(VIDEO))
+    done = asyncio.run(store.create(VIDEO))
+    failed = asyncio.run(store.create(VIDEO))
+    asyncio.run(store.update(done, status="completed"))
+    asyncio.run(store.update(failed, status="failed"))
+
+    # 陈旧与否都算 processing：存储层不做陈旧判定
+    asyncio.run(_backdate(store, alive, 3600))
+
+    ids = {task.task_id for task in asyncio.run(store.list_processing_tasks())}
+    assert ids == {alive}
+
+
+def test_list_processing_tasks_is_empty_when_none(store):
+    assert asyncio.run(store.list_processing_tasks()) == []
+
+
+def test_fail_if_stale_marks_failed_with_ttl_preserved(store):
+    """改写状态时必须沿用 _set 的滑动 TTL（Redis 实现别退化成无 TTL 的 SET）。"""
+    task_id = asyncio.run(store.create(VIDEO))
+    asyncio.run(_backdate(store, task_id, 3600))
+    error = {"code": "TASK_TIMEOUT", "message": "任务处理超时"}
+
+    assert asyncio.run(store.fail_if_stale(task_id, 600, error)) is True
+
+    task = asyncio.run(store.get(task_id))
+    assert task.status == "failed"
+    assert task.error == error
+    if isinstance(store, RedisTaskStore):
+        assert asyncio.run(_ttl_of(store, task_id)) > 0
+
+
+def test_fail_if_stale_respects_threshold(store):
+    task_id = asyncio.run(store.create(VIDEO))
+    asyncio.run(_backdate(store, task_id, 100))
+
+    assert asyncio.run(store.fail_if_stale(task_id, 600, {"code": "TASK_TIMEOUT", "message": "x"})) is False
+    assert asyncio.run(store.get(task_id)).status == "processing"
+
+
 # ---- TTL（S2-P0）----
 
 async def _ttl_of(store: RedisTaskStore, task_id: str) -> int:

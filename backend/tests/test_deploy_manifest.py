@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from app.worker_app import INVOKE_PATH, WORKER_PATH
+from app.worker_app import INVOKE_PATH, REAP_PATH, WORKER_PATH
 
 yaml = pytest.importorskip("yaml")
 
@@ -55,6 +55,12 @@ def _env(props: dict) -> dict:
 def _http_trigger(props: dict) -> dict:
     triggers = [t for t in props["triggers"] if t["triggerType"] == "http"]
     assert len(triggers) == 1, "每个函数应恰好有一个 HTTP 触发器"
+    return triggers[0]
+
+
+def _timer_trigger(props: dict) -> dict:
+    triggers = [t for t in props["triggers"] if t["triggerType"] == "timer"]
+    assert len(triggers) == 1, "worker 应恰好有一个定时触发器（S2-P4 reaper）"
     return triggers[0]
 
 
@@ -114,8 +120,9 @@ def test_worker_path_matches_worker_app_constant(api):
 
 
 def test_invoke_alias_is_documented_as_fallback(api):
-    """`/invoke` 是 InvokeFunction 的固定落点，不能被误配成主路径。"""
+    """`/invoke` 是 InvokeFunction 与事件源触发器的固定落点，不能被误配成主路径。"""
     assert _env(api)["FC_WORKER_PATH"] != INVOKE_PATH
+    assert _env(api)["FC_WORKER_PATH"] != REAP_PATH
 
 
 def test_api_worker_token_is_shared(api, worker):
@@ -161,6 +168,62 @@ def test_worker_trigger_only_allows_post(worker):
 def test_api_trigger_allows_browser_methods(api):
     methods = set(_http_trigger(api)["triggerConfig"]["methods"])
     assert {"GET", "POST", "OPTIONS"} <= methods
+
+
+# ---- 定时触发器（S2-P4 reaper）----
+
+def test_worker_has_timer_trigger_for_reaper(worker):
+    """僵尸任务清理靠定时触发器驱动；漏配 = 任务永远卡 processing。"""
+    trigger = _timer_trigger(worker)
+    assert trigger["triggerConfig"]["enable"] is True
+
+
+def test_api_has_no_timer_trigger(api):
+    """reaper 只在 worker 侧跑：API 函数多实例，挂定时器会各自抢锁空转。"""
+    assert [t for t in api["triggers"] if t["triggerType"] == "timer"] == []
+
+
+def test_timer_cron_is_six_field_and_runs_every_five_minutes(worker):
+    """FC cron 是 6 段（秒 分 时 日 月 周），最小粒度 1 分钟。
+
+    写成 5 段（Linux cron 习惯）会被 FC 拒绝；间隔必须远小于
+    TASK_STALE_SECONDS，否则僵尸任务要等很久才被收割。
+    """
+    cron = _timer_trigger(worker)["triggerConfig"]["cronExpression"]
+    fields = cron.split()
+    assert len(fields) == 6, f"FC cron 必须是 6 段，实际：{cron!r}"
+    assert fields[1] == "*/5", f"应为每 5 分钟，实际：{cron!r}"
+
+
+def test_timer_interval_much_smaller_than_stale_threshold(worker):
+    """定时周期必须远小于陈旧阈值：否则僵尸任务要等好几轮才被收割。
+
+    从 cron 的「分」字段推出周期（只支持 `*/N` 与固定值两种写法），
+    与 TASK_STALE_SECONDS 比对，避免这条断言变成恒真。
+    """
+    minute_field = _timer_trigger(worker)["triggerConfig"]["cronExpression"].split()[1]
+    if minute_field.startswith("*/"):
+        interval_seconds = int(minute_field[2:]) * 60
+    else:
+        interval_seconds = 3600  # 每小时整点触发
+    stale = int(_env(worker)["TASK_STALE_SECONDS"])
+
+    assert interval_seconds * 2 <= stale, (
+        f"定时周期 {interval_seconds}s 相对陈旧阈值 {stale}s 太长："
+        "僵尸任务滞留时间会被放大到「阈值 + 周期」"
+    )
+
+
+def test_worker_reaper_lock_ttl_covers_single_scan(worker):
+    """互斥锁 TTL 只需覆盖单次扫描，不能照抄 TASK_LOCK_SECONDS（那是执行锁）。"""
+    env = _env(worker)
+    assert 0 < int(env["REAPER_LOCK_SECONDS"]) <= 600
+
+
+def test_timer_payload_is_present_but_not_load_bearing(worker):
+    """payload 只用于日志辨识；分流靠 triggerTime/triggerName 特征（见 worker_app）。"""
+    payload = _timer_trigger(worker)["triggerConfig"]["payload"]
+    assert isinstance(payload, str) and payload
 
 
 @pytest.mark.parametrize("props_name", ["api", "worker"])

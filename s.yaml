@@ -177,6 +177,8 @@ resources:
         TASK_HEARTBEAT_SECONDS: "30"
         # 执行锁 TTL，执行期间按心跳续期；崩溃后到期自动释放
         TASK_LOCK_SECONDS: "3600"
+        # Reaper 互斥锁 TTL：只需覆盖单次扫描耗时，与 TASK_LOCK_SECONDS 无关
+        REAPER_LOCK_SECONDS: "120"
         CLOUD_ASR_API_KEY: ${env('CLOUD_ASR_API_KEY')}
         ASR_ENGINE: cloud
         ASR_ENGINE_FALLBACK: ""
@@ -205,3 +207,16 @@ resources:
             authType: anonymous
             methods:
               - POST
+
+        # ---- S2-P4：僵尸任务清理（Reaper）----
+        # 关键约束：定时触发器是「事件调用」，不能指定 HTTP 路径，FC 固定把 event
+        # POST 到容器的 /invoke。worker_app 的 /invoke 按 triggerTime/triggerName
+        # 特征分流到 reaper，因此这里配的 payload 不参与路由，仅用于日志辨识。
+        - triggerName: reapTimer
+          triggerType: timer
+          triggerConfig:
+            # FC cron 为 6 段：秒 分 时 日 月 周（最小粒度 1 分钟）
+            # 每 5 分钟一轮：远小于 TASK_STALE_SECONDS(600s)，僵尸任务最长滞留约 15 分钟
+            cronExpression: "0 */5 * * * *"
+            enable: true
+            payload: '{"action":"reap"}'

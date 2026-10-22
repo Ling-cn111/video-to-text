@@ -179,7 +179,7 @@ pnpm dev
 | GET | `/api/transcribe/:taskId` | 轮询任务 → `{ status, stage, progress, video?, transcript?, plainText?, error? }` |
 | POST | `/api/summarize` | 生成总结 → `{ summary, keyPoints, chapters }` |
 
-- 错误响应统一为 `{ error: { code, message } }`：`INVALID_URL`(400) / `UNSUPPORTED_PLATFORM`(422) / `INVALID_TASK`(404) / `TRANSCRIBE_FAILED`(500) 等，完整定义见 `src/lib/types.ts`
+- 错误响应统一为 `{ error: { code, message } }`：`INVALID_URL`(400) / `UNSUPPORTED_PLATFORM`(422) / `INVALID_TASK`(404) / `TRANSCRIBE_FAILED`(500) / `TASK_TIMEOUT`(500) 等，完整定义见 `src/lib/types.ts`
 - 前端 Mock（Route Handlers）为**无状态**实现：taskId 自含上下文（base64url），进度按时间推算（全程约 10 秒）
 - 演示失败路径：`https://www.bilibili.com/video/BV1FailDemo`（60% 处失败，用于验证重试）
 - 真实后端模式下：解析由 FastAPI 完成（yt-dlp，仅放行 B站公开链接，服务端拒绝内网/保留地址），
