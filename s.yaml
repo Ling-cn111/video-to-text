@@ -1,4 +1,4 @@
-# 阿里云函数计算（FC 3.0）部署描述：API + Worker 双函数（S2-P3）
+# 阿里云函数计算（FC 3.0）部署描述：API + Worker 双函数（S2-P3 分发 / S2-Deploy 网络与角色）
 #
 # 部署：s deploy -t s.yaml
 # 查看：s info -t s.yaml      # 记录两个 HTTP 触发器地址
@@ -8,10 +8,13 @@
 #   2) 从 s info 取 worker 的 https://...fcapp.run 地址，写入部署机环境变量
 #      FC_WORKER_URL 后，再 s deploy 一次让 API 函数拿到它
 #
-# 密钥全部用 ${env('NAME')} 引用部署机环境变量，仓库里不含明文（注意必须带引号，
-# 写成 ${env(NAME)} 会被当成 JS 变量而报 NAME is not defined）：
+# 所有账号相关取值都用 ${env('NAME')} 引用部署机环境变量，仓库里不含明文、也不含
+# 账号内的资源 ID（注意必须带引号，写成 ${env(NAME)} 会被当成 JS 变量而报
+# NAME is not defined）：
 #   export REDIS_URL=... CLOUD_ASR_API_KEY=... DEEPSEEK_API_KEY=... \
-#          WORKER_TOKEN=... FC_WORKER_URL=... CORS_ORIGINS=...
+#          WORKER_TOKEN=... FC_WORKER_URL=... CORS_ORIGINS=... \
+#          FC_VPC_ID=... FC_VSWITCH_ID=... FC_SECURITY_GROUP_ID=...
+# 可选的 FC_ROLE_ARN 留空即使用 FC 服务关联角色（详见 docs/serverless-deploy.md §4.3）。
 #
 # 设计要点见 docs/serverless-deploy.md §5、docs/s2-async-recon.md §8。
 
@@ -72,12 +75,27 @@ resources:
       instanceConcurrency: 10
       # 需访问 worker 的 fcapp.run、bilibili、云端 ASR、DeepSeek
       internetAccess: true
-      # 若 Redis 用内网地址，必须配置同 VPC（示例值请替换）
-      # vpcConfig:
-      #   vpcId: vpc-xxxx
-      #   vSwitchIds:
-      #     - vsw-xxxx
-      #   securityGroupId: sg-xxxx
+      # ---- VPC 网络（访问云 Redis 内网地址必需）----
+      # 云数据库 Redis 的内网地址只在该 VPC 内可达，函数不配 VPC 时连接会超时，
+      # 应用侧会「静默降级 memory」并打警告——表现为多实例任务互不可见，很难排查。
+      # 三个值都是账号内的资源 ID，必须由部署机环境变量提供（仓库不含账号信息）。
+      # 注意：vSwitchId 必须落在 FC 支持的可用区内（cn-hangzhou: h/i/j/k/f/g），
+      # 否则部署报 InvalidArgument: vSwitch is in unsupported zone。
+      # 若 Redis 走公网地址（不推荐，无 TLS 且暴露公网），删掉 api/worker 两处 vpcConfig。
+      vpcConfig:
+        vpcId: ${env('FC_VPC_ID')}
+        vSwitchIds:
+          - ${env('FC_VSWITCH_ID')}
+        securityGroupId: ${env('FC_SECURITY_GROUP_ID')}
+
+      # ---- 函数执行角色（RAM）----
+      # 留空 = 使用 FC 服务关联角色 AliyunServiceRoleForFC，它已覆盖「写 SLS 日志 +
+      # 创建 ENI 打通 VPC + 拉取同账号 ACR 镜像」，够本项目用，推荐先留空。
+      # 只有需要「函数代码内访问其他云服务（OSS/KMS/表格存储…）」时才填自定义角色 ARN：
+      #   acs:ram::<账号ID>:role/<角色名>
+      # 注意：这个字段**不是** ACR 拉取或 VPC 通路的开关——那两件事由 FC 服务关联角色
+      # 与 vpcConfig 负责，填错角色反而可能让日志投递失败（详见 docs/serverless-deploy.md §4.3）。
+      role: ${env('FC_ROLE_ARN', '')}
 
       environmentVariables:
         # ---- 存储（必填）----
@@ -164,8 +182,20 @@ resources:
       timeout: 1800
       # 一实例一作业：内存模型最简单，避免多作业并发把内存打满
       instanceConcurrency: 1
+      # worker 既要拉 bilibili / 云端 ASR（公网），又要读 Redis（VPC 内网）：
+      # 「允许访问 VPC=是 + 允许函数访问公网=是」是 FC 支持的组合，非 GPU 函数还
+      # 支持 PrivateZone 私有域名解析。只配 vpcConfig 而不开 internetAccess 会让
+      # 下载与 ASR 全部失败。
       internetAccess: true
-      # vpcConfig:  # 同上，Redis 用内网地址时必须配
+      # 必须与 api 函数同一套 VPC/交换机/安全组：任务状态写在 Redis，worker 读不到
+      # 就只能降级 memory，表现为「任务永远停在 processing」。
+      vpcConfig:
+        vpcId: ${env('FC_VPC_ID')}
+        vSwitchIds:
+          - ${env('FC_VSWITCH_ID')}
+        securityGroupId: ${env('FC_SECURITY_GROUP_ID')}
+      # 同上：留空使用 FC 服务关联角色
+      role: ${env('FC_ROLE_ARN', '')}
 
       environmentVariables:
         TASK_STORE: redis

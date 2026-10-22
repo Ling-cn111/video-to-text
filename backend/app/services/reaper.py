@@ -6,7 +6,7 @@
 
 触发方式（生产）：FC 定时触发器 → 事件调用 → 容器 `/invoke` → 按事件特征分流到这里。
 为什么不是「Timer 直接打 /internal/worker/reap」：定时触发器是**事件调用**，不能指定
-HTTP 路径，FC 固定把 event POST 到 `/invoke`（见 docs/serverless-deploy.md §5.2）。
+HTTP 路径，FC 固定把 event POST 到 `/invoke`（见 docs/serverless-deploy.md §5.4）。
 `/internal/worker/reap` 保留给本地脚本与人工 curl。
 
 设计要点：
