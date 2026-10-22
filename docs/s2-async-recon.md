@@ -459,27 +459,48 @@ Timer（每 1 分钟）──► Worker 函数
 | **P0 地基**（不改行为） | `init(mark_interrupted=)` 拆分；TTL；`attempts` 字段；`_run_async` 泄漏修复；进度节流 | 单测（fakeredis） |
 | **P1 抽象** | `services/dispatcher.py` + `Queue`/`Enqueue` 接口 + `inline` 实现（保持现状） | 现有测试全绿，行为不变 |
 | **P2 Worker 入口** | `app/worker_app.py` + 幂等领取 + 心跳 | 本地 `uvicorn app.worker_app:app` 跑通 |
-| **P3 接 FC** | dispatcher 的 `fc` 实现 + `s.yaml` 双函数 + RAM 授权 | 真机部署验证 |
+| **P3 接 FC** | dispatcher 的 `fc` 实现 + `s.yaml` 双函数 + 触发器异步 | 真机部署验证（+ 本地 MockTransport 单测） |
 | **P4 兜底** | reaper（timer 函数）+ `TASK_TIMEOUT` 错误码 + 前端文案 | 模拟强杀后任务能自愈 |
 | **P5 文档** | 更新 `serverless-deploy.md` §8、`backend/README.md` | — |
 
 > P0/P1 是**纯后端、可本地全量验证**的，风险最低；建议先做这两步再谈接云。
 > **进度**：P0 ✅ / P1 ✅ / P2 ✅（`worker_app.py` + `task:lock:*` 幂等领取 + 心跳续期，事件体宽容解包，
-> 业务失败回 200、基础设施异常回 5xx；见 `tests/test_worker_app.py`）。
+> 业务失败回 200、基础设施异常回 5xx；见 `tests/test_worker_app.py`）/ **P3 ✅**（见下）。
+>
+> **P3 落地方式（与原计划的偏差，已与用户确认）**：原计划走 OpenAPI `InvokeFunction` + RAM 授权，
+> 实做改为 **HTTP 触发器 + `X-Fc-Invocation-Type: Async`**。依据：FC 官方文档三处明确 HTTP 触发器支持
+> 请求级异步调用（返回 202、落内部队列），且明确「无需认证时可在业务中校验 `Authorization` 自行鉴权」。
+> 收益：**不需要 ACS3-HMAC-SHA256 签名、不需要 AK/SK、不需要 SDK**，凭据面最小。
+> 代价：worker 函数需配 HTTP 触发器（仅开 POST、`authType: anonymous` + `WORKER_TOKEN` 兜底）。
+> 实现：`FcDispatcher`（`app/services/dispatcher.py`）、`s.yaml` 双函数模板、`POST /invoke` 兼容位。
 
 ---
 
-## 9. 待确认问题（需要你或平台侧确认）
+## 9. 待确认问题（P3 侦察已逐条关闭）
 
-1. **FC 自定义容器 + 异步调用的事件投递格式**：事件是否以 HTTP POST 到容器、打到哪个路径、body 结构、是否有 `x-fc-*` 头？（决定 `worker_app.py` 的入口签名，**方案 A 的前置**）
+1. **FC 自定义容器 + 异步调用的事件投递格式**：事件是否以 HTTP POST 到容器、打到哪个路径、body 结构、是否有 `x-fc-*` 头？
    > **P2 已按宽容策略落地**：入口 `POST /internal/worker/transcribe`，只要求 body 能解出 `task_id`，
-   > 同时兼容裸作业体 / `{"body": ...}` / `{"payload": ...}` / base64 包装；P3 真机联调时无需改代码。
-2. **FC 3.0 函数超时上限**与「HTTP 触发器同步调用」的实际上限（15 分钟这个数字待核对）。
-3. **是否接受新增依赖**：方案 A 需 FC SDK，方案 B 需 MNS SDK。镜像体积与冷启动会略受影响（当前 406MB）。
-4. **任务保留期**：`TASK_TTL_SECONDS` 取 7 天是否合适？（关系到用户「历史任务」的可回访窗口）
-5. **重试策略**：失败自动重试 1-2 次是否可接受（云端 ASR 会计费）？还是只在「网络类错误」重试？
-6. **本地 ASR 是否上云**：若上云，Worker 镜像需要 `requirements-asr.txt`（torch/ctranslate2，数 GB）→ 镜像策略要重新设计，方案 B 的价值会显著上升。
-7. **并发上限**：单实例 `instanceConcurrency` 与 Worker 最大实例数如何设定（影响 Redis 连接数与云端 ASR 配额）。
+   > 同时兼容裸作业体 / `{"body": ...}` / `{"payload": ...}` / base64 包装。
+   > **P3 已核实**：HTTP 触发器调用是**透传模式**（原始 method/path/headers/body 直达容器）；
+   > 异步调用带 `X-Fc-Invocation-Type: Async` 返回 202 + `X-Fc-Request-Id`。`InvokeFunction` API 则固定
+   > 投递到 `POST /invoke`、`Content-Type: application/octet-stream`、body = event（已补别名路由）。
+   > **仍未确认**：异步重放时 path 是否保持不变（见下第 8 条）。
+2. **FC 3.0 函数超时上限**：官方文档未在本次抓取的页面中给出确切数字，`s.yaml` 用 1800s，**部署时须对照
+   当前地域配额确认**，超限需在配额中心申请。
+3. **是否接受新增依赖**：**已不需要**。P3 走触发器异步，只用已有的 `httpx`，无 SDK、无新依赖。
+4. **任务保留期**：`TASK_TTL_SECONDS=604800`（7 天），已落地为滑动续期。
+5. **重试策略**：接受 FC 默认 3 次；应用层**不额外重试**（避免与 FC 重试叠加放大重复计费）。
+   Worker 对「已完成 / 已失败 / 锁冲突」返回 200 `skipped`，让 FC 的重试不产生副作用。
+6. **本地 ASR 是否上云**：不上云（镜像体积失控）。云端 ASR 免费且准确，`ASR_ENGINE=cloud`、
+   `ASR_ENGINE_FALLBACK=""`。
+7. **并发上限**：worker 设 `instanceConcurrency: 1`（一实例一作业，内存模型最简单）；
+   api 设 10。Redis 连接数与云端 ASR 配额按实际压测再调。
+8. **【新】异步调用是否原样透传 path**：官方只写「将请求持久化保存，然后立即返回响应」，未明确 path
+   是否保持。同步透传是明确的，异步极可能一致。**这是 P3 唯一的真机待验证项**：
+   `docs/serverless-deploy.md` §7.2 第 1 步的 curl 专门验它；若返回 404，只改 `FC_WORKER_PATH`，代码零改动。
+9. **【新】Worker 崩溃后的重试被锁挡住**：FC 重试间隔 0.5/1/2 秒，`TASK_LOCK_SECONDS=3600`，
+   3 次重试都会撞锁 `skipped`。任务停在 `processing` 直到 P4 reaper 按 `TASK_STALE_SECONDS` 判定。
+   P3 只承诺「投递可靠 + 正常路径幂等」，崩溃恢复归 P4。
 
 ---
 
@@ -511,3 +532,8 @@ Timer（每 1 分钟）──► Worker 函数
 | 执行锁 acquire/release/renew | `backend/app/services/tasks.py`（Protocol + 两个实现） |
 | Worker 端到端用例 | `backend/tests/test_worker_app.py` |
 | 心跳钩子（锁续期） | `backend/app/services/transcribe.py` `ProgressReporter._fire_hook` |
+| **FC 分发（P3）** | `backend/app/services/dispatcher.py` `FcDispatcher` / `DispatchError` |
+| **FC 双函数模板（P3）** | `s.yaml`（仓库根目录） |
+| **FC 相关环境变量（P3）** | `backend/app/config.py` `FC_WORKER_URL` / `FC_WORKER_PATH` / `FC_ASYNC_TIMEOUT_SECONDS` |
+| **InvokeFunction 兼容入口（P3）** | `backend/app/worker_app.py` `INVOKE_PATH` / `run_transcribe_job_via_invoke` |
+| **分发单测（P3）** | `backend/tests/test_dispatcher.py`（MockTransport）、`test_transcribe_dispatch.py`（HTTP 端到端） |

@@ -11,6 +11,13 @@
 - 包装体：`{"body": "<json 字符串>"}` / `{"body": {...}}` / `{"payload": ...}`
 - 网关风格：`{"body": "<base64>", "isBase64Encoded": true}`
 
+两个入口（S2-P3 补第二个）：
+- `POST /internal/worker/transcribe`：HTTP 触发器 + `X-Fc-Invocation-Type: Async`
+  异步调用时 FC 透传原始请求，这是主路径；
+- `POST /invoke`：`InvokeFunction` API 调用时 FC 固定把 event 作为 body POST 到
+  `/invoke`（Content-Type: application/octet-stream）。当前不用于生产，保留它
+  是为了将来若改走「无触发器 + OpenAPI 签名」时 worker 侧零改动。
+
 执行语义：
 1. 任务不存在 / 非 processing → 200 skipped（确定性结果，不触发平台重试）
 2. `SET NX EX` 抢锁失败 → 200 skipped（另一实例在处理）
@@ -25,7 +32,7 @@ import logging
 import secrets
 from typing import Any, Callable
 
-from fastapi import Body, FastAPI, Header, HTTPException
+from fastapi import Body, FastAPI, Header, HTTPException, Request
 
 from app.config import TASK_LOCK_SECONDS, WORKER_TOKEN
 from app.services import tasks as task_store
@@ -34,8 +41,11 @@ from app.services.dispatcher import TranscribeJob
 
 logger = logging.getLogger(__name__)
 
-# Worker 路由
+# Worker 路由（HTTP 触发器异步调用，主路径）
 WORKER_PATH = "/internal/worker/transcribe"
+
+# InvokeFunction API 兼容入口（FC 固定投递到该路径）
+INVOKE_PATH = "/invoke"
 
 # 解包最多下钻层数（防畸形事件无限递归）
 _MAX_UNWRAP_DEPTH = 4
@@ -67,12 +77,30 @@ async def _ensure_initialized() -> None:
     _initialized = True
 
 
-def _verify_token(token: str | None) -> None:
-    """WORKER_TOKEN 未配置时不校验；配置后要求完全一致。"""
+def _token_matches(candidate: str | None) -> bool:
+    """常量时间比较；非 ASCII token 也安全（`compare_digest` 对 str 仅支持 ASCII）。"""
+    if not candidate:
+        return False
+    return secrets.compare_digest(candidate.encode("utf-8"), WORKER_TOKEN.encode("utf-8"))
+
+
+def _verify_token(token: str | None, authorization: str | None = None) -> None:
+    """WORKER_TOKEN 未配置时不校验；配置后要求完全一致。
+
+    接受两种携带方式：
+    - `X-Worker-Token: <token>`（P2 约定，api 侧 FcDispatcher 默认发这个）
+    - `Authorization: Bearer <token>`（FC 触发器若改成 Bearer 认证，网关会先校验，
+      到达容器时仍是这个头；两种都认可以避免切换认证方式时改代码）
+    """
     if not WORKER_TOKEN:
         return
-    if not token or not secrets.compare_digest(token, WORKER_TOKEN):
-        raise HTTPException(status_code=401, detail="worker token 无效")
+    if _token_matches(token):
+        return
+    if authorization:
+        scheme, _, value = authorization.partition(" ")
+        if scheme.lower() == "bearer" and _token_matches(value.strip()):
+            return
+    raise HTTPException(status_code=401, detail="worker token 无效")
 
 
 def _decode_body(value: Any, is_base64: bool) -> Any:
@@ -219,10 +247,34 @@ async def _run_job(job: TranscribeJob) -> dict:
 async def run_transcribe_job(
     payload: Any = Body(...),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> dict:
-    """执行一次转写作业（平台异步调用入口）。"""
+    """执行一次转写作业（HTTP 触发器异步调用入口，主路径）。"""
     await _ensure_initialized()
-    _verify_token(x_worker_token)
+    _verify_token(x_worker_token, authorization)
+    return await _run_job(_parse_job(payload))
+
+
+@app.post(INVOKE_PATH)
+async def run_transcribe_job_via_invoke(
+    request: Request,
+    x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> dict:
+    """`InvokeFunction` API 调用入口（FC 固定投递到 `/invoke`，body 为 octet-stream）。
+
+    不用于当前生产路径（P3 走 HTTP 触发器），保留它是为了将来若改走
+    「无触发器 + OpenAPI 签名」时 worker 侧零改动。因此这里直接读原始字节，
+    不依赖 FastAPI 的 JSON 解析（octet-stream 不会被解析成 JSON）。
+    """
+    await _ensure_initialized()
+    _verify_token(x_worker_token, authorization)
+
+    raw = await request.body()
+    try:
+        payload = _decode_body(raw, is_base64=False) if raw else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"作业体无法解析：{exc}") from exc
     return await _run_job(_parse_job(payload))
 
 

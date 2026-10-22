@@ -74,7 +74,7 @@ def create_transcription(payload: StartTranscribeRequest, background_tasks: Back
     try:
         enqueue(job, background_tasks=background_tasks)
     except Exception:
-        # 分发失败（如 ENQUEUE_MODE=fc 尚未实现）：把任务落到 failed，
+        # 分发失败（fc 投递被拒 / 网络不通 / mns|redis 尚未实现）：把任务落到 failed，
         # 避免留下永远停在 processing 的孤儿任务被前端无限轮询。
         logger.error("任务分发失败（task_id=%s, job=%s）", task_id, job, exc_info=True)
         update_task(
