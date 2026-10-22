@@ -13,6 +13,9 @@
 - 触发器只放行必要方法、认证方式与 `WORKER_TOKEN` 兜底一致
 - 异步重试/存活时间在 FC 允许区间内
 - 仓库里不含明文密钥（全部 `${env('NAME')}` 占位）
+- **网络与角色（S2-Deploy）**：两函数都有完整 `vpcConfig`（否则连不上 VPC 内网 Redis）、
+  同一套网络、`internetAccess` 保持开启、`role` 默认留空走服务关联角色
+- **文档模板与 `s.yaml` 一致**（按 YAML 解析比对 `docs/serverless-deploy.md` §5.1 的模板块）
 
 `yaml` 由 `uvicorn[standard]` 传递引入，缺失时跳过而不是失败。
 """
@@ -26,6 +29,7 @@ from app.worker_app import INVOKE_PATH, REAP_PATH, WORKER_PATH
 yaml = pytest.importorskip("yaml")
 
 MANIFEST = Path(__file__).resolve().parents[2] / "s.yaml"
+DOC = Path(__file__).resolve().parents[2] / "docs" / "serverless-deploy.md"
 
 # `${env('NAME')}` / `${env('NAME', '默认值')}`——注意必须有引号
 _ENV_MAGIC = re.compile(r"^\$\{env\('([A-Z0-9_]+)'(?:, '([^']*)')?\)\}$")
@@ -289,3 +293,112 @@ def test_worker_is_sized_for_oom_not_cost(worker):
     assert worker["cpu"] >= 2
     assert worker["timeout"] >= 600
     assert worker["instanceConcurrency"] == 1
+
+
+# ---- 网络与角色（S2-Deploy）----
+#
+# 这组断言防的是「部署成功但连不上 Redis」：FC 不会在部署时校验 VPC 连通性，
+# 只会在函数执行时报超时，而应用侧又会静默降级 memory——表现成「多实例任务互不可见」，
+# 从日志几乎看不出是配置问题。
+
+@pytest.mark.parametrize("props_name", ["api", "worker"])
+def test_each_function_has_complete_vpc_config(manifest, props_name):
+    """fc3 schema：vpcConfig 结构体里三个字段都是必填，少一个直接部署失败。"""
+    vpc = manifest["resources"][props_name]["props"]["vpcConfig"]
+
+    assert isinstance(vpc, dict), "必须是结构体，不能是 auto（auto 建出的 VPC 里没有你的 Redis）"
+    assert set(vpc) == {"vpcId", "vSwitchIds", "securityGroupId"}
+    for key in ("vpcId", "securityGroupId"):
+        assert isinstance(vpc[key], str) and vpc[key]
+
+
+@pytest.mark.parametrize("props_name", ["api", "worker"])
+def test_vswitch_ids_is_a_list(manifest, props_name):
+    """schema 允许 array 或字符串 "auto"，但绝不接受单个裸字符串 ID。
+
+    写成 `vSwitchIds: vsw-xxx`（漏了 `-`）会被当成 auto 之外的非法类型，
+    报错信息还不直观。
+    """
+    vswitch_ids = manifest["resources"][props_name]["props"]["vpcConfig"]["vSwitchIds"]
+
+    assert isinstance(vswitch_ids, list) and vswitch_ids
+    assert all(isinstance(v, str) and v for v in vswitch_ids)
+
+
+def test_both_functions_share_the_same_network(api, worker):
+    """任务状态写在 Redis：api 与 worker 必须落在同一 VPC/交换机/安全组。
+
+    不一致的后果是单边可用——api 能写、worker 读不到（或反之），
+    任务停在 processing 直到 reaper 判超时。
+    """
+    assert api["vpcConfig"] == worker["vpcConfig"]
+
+
+@pytest.mark.parametrize("props_name", ["api", "worker"])
+def test_vpc_ids_are_env_placeholders(manifest, props_name):
+    """仓库不能含账号内的资源 ID（VPC/交换机/安全组都是账号私有信息）。"""
+    vpc = manifest["resources"][props_name]["props"]["vpcConfig"]
+
+    for key in ("vpcId", "securityGroupId"):
+        assert _ENV_MAGIC.match(vpc[key]), f"{key} 必须是 ${{env('...')}} 占位，实际为 {vpc[key]!r}"
+    for value in vpc["vSwitchIds"]:
+        assert _ENV_MAGIC.match(value), f"vSwitchIds 项必须是 ${{env('...')}} 占位，实际为 {value!r}"
+
+
+def test_vpc_config_does_not_silently_fall_back_to_empty():
+    """`${env('FC_VPC_ID')}` 必须没有默认值。
+
+    带默认值（如 ''）会让缺配置时「部署成功、运行期连不上 Redis」；
+    不带默认值时 `s deploy` 直接报 FC_VPC_ID is not defined，失败得早且清晰。
+    """
+    text = MANIFEST.read_text(encoding="utf-8")
+    for name in ("FC_VPC_ID", "FC_VSWITCH_ID", "FC_SECURITY_GROUP_ID"):
+        assert re.search(rf"\$\{{env\('{name}'\)\}}", text), f"{name} 不应带默认值"
+        assert not re.search(rf"\$\{{env\('{name}',", text), f"{name} 不应带默认值"
+
+
+@pytest.mark.parametrize("props_name", ["api", "worker"])
+def test_internet_access_stays_on_with_vpc(manifest, props_name):
+    """配了 VPC 不等于放弃公网：FC 支持「访问 VPC + 访问公网」并存。
+
+    关掉 internetAccess 后 bilibili 下载、云端 ASR、DeepSeek 全部失败，
+    而 Redis 反而正常——排查方向会被完全带偏。
+    """
+    props = manifest["resources"][props_name]["props"]
+    assert props["vpcConfig"], "前提：该函数已配置 VPC"
+    assert props["internetAccess"] is True
+
+
+@pytest.mark.parametrize("props_name", ["api", "worker"])
+def test_function_role_is_optional_env_placeholder(manifest, props_name):
+    """`role` 留空即用 FC 服务关联角色（已覆盖 SLS 日志 + VPC ENI + 同账号 ACR 拉取）。
+
+    只有函数代码要访问其他云服务时才需要自定义角色，因此默认值必须是空串，
+    否则首次部署会被迫先去 RAM 建角色。注意 ARN 格式必须是
+    `acs:ram::<账号ID>:role/<角色名>`——只写角色名 fc3 会自动补全，但手写 YAML
+    时写错格式会被 FC 拒绝。
+    """
+    role = manifest["resources"][props_name]["props"]["role"]
+
+    match = _ENV_MAGIC.match(role)
+    assert match, f"role 必须是 ${{env('NAME', '默认值')}} 形式，实际为 {role!r}"
+    assert match.group(1) == "FC_ROLE_ARN"
+    assert match.group(2) == "", "默认值必须为空串（= 使用服务关联角色）"
+
+
+def test_documented_template_matches_the_real_manifest(manifest):
+    """文档里的完整模板必须与仓库 `s.yaml` 一致。
+
+    部署指南是「照着抄就能跑」的东西，一旦与 s.yaml 漂移，读者会抄到旧配置
+    （例如漏掉 vpcConfig），而这类问题只会在云上暴露。用测试把两份绑在一起。
+    """
+    doc = DOC.read_text(encoding="utf-8")
+    match = re.search(
+        r"<!-- BEGIN:s.yaml -->\s*```yaml\n(.*?)```\s*<!-- END:s.yaml -->",
+        doc,
+        re.S,
+    )
+    assert match, "docs/serverless-deploy.md 里找不到 <!-- BEGIN:s.yaml --> 包裹的模板块"
+
+    documented = yaml.safe_load(match.group(1))
+    assert documented == manifest, "文档模板与 s.yaml 不一致：请同步 §5 的完整模板"

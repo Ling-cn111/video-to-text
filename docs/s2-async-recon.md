@@ -512,13 +512,13 @@ Timer（每 1 分钟）──► Worker 函数
    api 设 10。Redis 连接数与云端 ASR 配额按实际压测再调。
 8. **【新】异步调用是否原样透传 path**：官方只写「将请求持久化保存，然后立即返回响应」，未明确 path
    是否保持。同步透传是明确的，异步极可能一致。**这是 P3 唯一的真机待验证项**：
-   `docs/serverless-deploy.md` §7.2 第 1 步的 curl 专门验它；若返回 404，只改 `FC_WORKER_PATH`，代码零改动。
+   `docs/serverless-deploy.md` §7.3 第 1 步的 curl 专门验它；若返回 404，只改 `FC_WORKER_PATH`，代码零改动。
 9. **【已由 P4 解决】Worker 崩溃后的重试被锁挡住**：FC 重试间隔 0.5/1/2 秒，`TASK_LOCK_SECONDS=3600`，
    3 次重试都会撞锁 `skipped`。任务停在 `processing` 直到 reaper 按 `TASK_STALE_SECONDS` 判定。
    **P4 落地方式**：worker 函数加定时触发器（`reapTimer`，每 5 分钟）→ FC 事件调用 → 容器 `/invoke`
    → 按 `triggerTime`/`triggerName` 特征分流到 `app/services/reaper.py`。**关键坑**：定时触发器
    不能指定 HTTP 路径，固定投递到 `/invoke`，所以 reaper 不能只挂在 `/internal/worker/reap`
-   （那个端点只留给本地脚本与人工 curl）。详见 `docs/serverless-deploy.md` §5.2、§7.2.1。
+   （那个端点只留给本地脚本与人工 curl）。详见 `docs/serverless-deploy.md` §5.4、§7.3.1。
 
 ---
 

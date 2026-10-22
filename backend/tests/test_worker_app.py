@@ -424,7 +424,7 @@ def test_fc_dispatcher_delivers_body_worker_accepts(new_task, subtitle_ok):
 # ---- 定时触发器分流 + Reaper 端点（S2-P4）----
 
 def _timer_event(payload: str = '{"action":"reap"}') -> bytes:
-    """FC 定时触发器事件体（官方格式，见 docs/serverless-deploy.md §5.2）。"""
+    """FC 定时触发器事件体（官方格式，见 docs/serverless-deploy.md §5.4）。"""
     return json.dumps(
         {
             "triggerTime": "2023-12-26T07:49:00Z",

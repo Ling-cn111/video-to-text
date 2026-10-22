@@ -1,13 +1,13 @@
 # 阿里云函数计算（FC）部署指南
 
 > 适用镜像：`backend/Dockerfile`（PR #43 / S1-D，云端 ASR 专用）　作者：S1-E　日期：2026-10-21
-> 最近更新：S2-P4（Reaper 僵尸任务清理，2026-10-22）
+> 最近更新：S2-Deploy（VPC / 函数角色 / 控制台全链路验证，2026-10-22）
 >
 > 关联文档：[backend/README.md § 容器化部署](../backend/README.md#容器化部署s1-d) · [ROADMAP](ROADMAP.md) · [asr-benchmark](asr-benchmark.md)
 
 ## 0. 结论先行
 
-**S2-P4 之后，异步转写在 FC 上已完整可用**（P3 打通异步分发，P4 补上崩溃兜底）。
+**S2-Deploy 之后，这份模板在云上可直接跑通「API → Worker → Redis」全链路**（P3 打通异步分发，P4 补上崩溃兜底，Deploy 补齐网络与权限）。
 
 | 能力 | FC 上是否可用 | 说明 |
 | --- | --- | --- |
@@ -15,7 +15,8 @@
 | `POST /api/summarize`（DeepSeek 总结） | ✅ | 同步接口，30-70 秒，需把函数超时调到 ≥ 90 秒 |
 | 字幕快路径转写（B站 CC / AI 字幕，5-7 秒） | ✅ | 走 worker 函数异步执行（P3） |
 | 云端 ASR 转写（19-43 秒 / 150 秒音频） | ✅ | 走 worker 函数异步执行（P3），`timeout: 1800` |
-| 崩溃恢复（OOM / 超时被杀） | ✅ | 定时触发器每 5 分钟收割僵尸任务（P4，见 §7.2.1） |
+| 任务存储（多实例共享） | ✅ | 需 `vpcConfig` + 内网 Redis；未配会**静默降级 memory**（§4.2） |
+| 崩溃恢复（OOM / 超时被杀） | ✅ | 定时触发器每 5 分钟收割僵尸任务（P4，见 §7.3.1） |
 | 本地 ASR（faster-whisper） | ❌ | 镜像不含本地重型依赖（S1-D 设计），`ASR_ENGINE=cloud` |
 
 历史背景：S1 时代 `POST /api/transcribe` 用 FastAPI `BackgroundTasks` 在**响应返回之后**跑转写，FC 在无活跃请求时会冻结实例，任务永远停在 `processing`。S2 把它拆成「api 函数分发 + worker 函数执行」，并在 P4 补上 reaper 兜底（见 §8）。
@@ -50,10 +51,11 @@ Vercel（Next.js 前端，rewrites 代理）
 | 镜像架构 | **linux/amd64** | FC 不支持 arm64；详见 §3 |
 | 镜像仓库 | 阿里云 ACR（个人版或企业版） | 与 FC 同地域延迟最低 |
 | 任务存储 | `TASK_STORE=redis` + `REDIS_URL` | 多实例必需；SQLite 在 FC 上不可用 |
-| Redis | 阿里云 Redis（或兼容服务） | 放在 VPC 内网，FC 需配 `vpcConfig` |
+| Redis | 阿里云 Redis（或兼容服务） | 放在 VPC 内网，FC 需配 `vpcConfig`（§4.2） |
+| VPC / 交换机 / 安全组 | 与 Redis 同 VPC；交换机在 FC 支持的可用区 | 见 §4.2，三个 ID 通过环境变量注入 |
 | FC 运行时 | `custom-container` | FC 3.0 + Serverless Devs `fc3` 组件 |
 | 前端 | Vercel（或任意 Next.js 托管） | `BACKEND_ORIGIN` 指向 FC 触发器地址 |
-| 账号权限 | RAM 子账号：FC 部署 + ACR 推送/拉取 | 不要用主账号 AccessKey |
+| 账号权限 | RAM 子账号：FC 部署 + ACR 推送/拉取（配 `FC_ROLE_ARN` 时另需 `ram:PassRole`） | 不要用主账号 AccessKey |
 
 ---
 
@@ -113,7 +115,11 @@ curl -s localhost:8000/api/capabilities  # {"cloudAsrConfigured":true,"summarize
 
 ---
 
-## 4. 推送到阿里云 ACR
+## 4. 云资源准备（ACR / VPC / 函数角色）
+
+部署前需要备好三类资源。§4.1 是镜像，§4.2 是「能连上 Redis」的前提，§4.3 是可选的函数角色。
+
+### 4.1 推送镜像到 ACR
 
 先在 **容器镜像服务控制台** 创建命名空间与镜像仓库（个人版免费；生产建议企业版，支持 VPC 域名与更稳定的拉取带宽）。
 
@@ -140,7 +146,70 @@ docker push registry.cn-hangzhou.aliyuncs.com/<namespace>/video-to-text-backend:
 
 - **同地域**：FC 与 ACR 选同一 region（如都用 `cn-hangzhou`），跨地域拉取更慢且可能失败。
 - FC 支持「ACR 镜像免密拉取」，可避免在 s.yaml 里写镜像仓库密码；若用私有仓库且不免密，需在 `customContainerConfig.registryConfig.authConfig` 配置账号密码（**不要提交明文到 git**）。
-- 用企业版 VPC 地址时，FC 必须配置同一 VPC 的 `vpcConfig`，否则拉不到镜像。
+- 用**企业版 VPC 域名**（`<instance>-registry-vpc.<region>.cr.aliyuncs.com`）时，FC 拉镜像走的是「函数所在 VPC」，因此必须给函数配 `vpcConfig`（§4.2）；若函数不在该 VPC，则要改用 `customContainerConfig.registryConfig.networkConfig` 单独指定拉取用的 VPC/交换机/安全组。同账号用公网域名 + 免密拉取时两者都不用配。
+
+### 4.2 准备 VPC / 交换机 / 安全组（访问云 Redis 的前提）
+
+**为什么必须配**：云数据库 Redis 的内网地址只在 VPC 内可达。函数不配 `vpcConfig` 时连接会超时，而应用侧会**静默降级到 memory 存储**（只打一条警告）——现象是「每个实例各有一份任务，多实例之间互相看不见」，几乎不可能从业务日志反推到网络配置。
+
+FC 3.0 的默认网络能力是「可访问公网、不可访问 VPC」。本项目需要**两者都要**：
+
+| 需求 | 目标 | 所需配置 |
+| --- | --- | --- |
+| 读 VPC 内网 Redis | `r-xxxx.redis.rds.aliyuncs.com:6379` | `vpcConfig` 三个字段 |
+| 下载 B站音频、调云端 ASR / DeepSeek | 公网 | `internetAccess: true` |
+
+官方明确支持「允许访问 VPC = 是 + 允许函数访问公网 = 是」这一组合（非 GPU 函数还支持 PrivateZone 私有域名解析）。**只配 VPC 不开 `internetAccess` 会让下载与 ASR 全部失败**，而 Redis 反而正常——排查方向会被完全带偏。
+
+准备步骤：
+
+1. **确认 Redis 所在的 VPC 与交换机**：云数据库 Redis 控制台 → 实例详情 → 「网络信息」里能看到 VPC ID 与交换机 ID。
+2. **确认交换机可用区是 FC 支持的**：FC 只在部分可用区有资源。`cn-hangzhou` 支持 `h / i / j / k / f / g`；其他地域的列表见[函数计算支持的可用区](https://help.aliyun.com/zh/functioncompute/configure-network-settings)。交换机落在不支持的可用区会报
+   `InvalidArgument: vSwitch is in unsupported zone`。
+   > 如果 Redis 的交换机不在支持列表里，**不要重建 Redis**：在同一 VPC 内、FC 支持可用区下新建一个交换机，把它填进 `vpcConfig` 即可——同一 VPC 内不同交换机私网互通。
+3. **准备安全组**（挂在函数 ENI 上，管的是**函数出方向**）：
+   - 出方向放行 `6379`（访问 Redis）与 `ICMP`（FC 会用它探测 VPC 连通性）；
+   - 入方向无需为 Redis 开口（那是 Redis 侧白名单的事）。
+4. **配 Redis 白名单**（管的是**谁能连进 Redis**）：把**函数所在交换机的网段**加入 Redis 白名单（例如 `192.168.1.0/24`）。白名单没配的典型表现同样是「连接超时」，且日志里看不出原因。
+5. **建议给两个交换机**：`vSwitchIds` 是列表，官方建议至少两个可用区，单可用区故障或 IP 不足时函数能调度到另一个子网。本仓库模板给了一个，按需追加。
+
+```bash
+# 部署机环境变量（三个 ID 都是账号内资源，不进仓库）
+export FC_VPC_ID=vpc-bp1xxxxxxxxxxxx
+export FC_VSWITCH_ID=vsw-bp1xxxxxxxxxxxx
+export FC_SECURITY_GROUP_ID=sg-bp1xxxxxxxxxxxx
+```
+
+> **代价**：官方明确「使用 VPC 功能会降低函数计算的冷启动效率」，建议非必要勿配。本项目因为必须连内网 Redis，属于必要场景。若你暂时用公网 Redis（有安全风险且无 TLS），把 `s.yaml` 里 api / worker 两处 `vpcConfig` 删掉即可。
+
+### 4.3 函数角色（`role`）：先留空，需要时再建
+
+`role` 字段的语义常被误解，这里说清楚三件事各自由谁负责：
+
+| 要做的事 | 实际由谁负责 | 与 `role` 的关系 |
+| --- | --- | --- |
+| 拉取 ACR 镜像 | FC **服务关联角色** `AliyunServiceRoleForFC`（含 `cr:PullRepository` 等）；跨账号才需 `registryConfig.authConfig` | 无关 |
+| 打通 VPC（创建 ENI） | 同上（含 `ecs:CreateNetworkInterface`、`vpc:DescribeVSwitchAttributes`）+ `vpcConfig` | 无关 |
+| 把日志写到 SLS | 同上（`logConfig: auto` 即可） | 无关 |
+| **函数代码里访问其他云服务**（OSS / KMS / 表格存储…） | **函数角色**（`role`）：FC 会 `AssumeRole` 拿临时 STS 并注入请求头 | 这才是它的用途 |
+
+所以：**本项目默认不需要配置 `role`**。模板里写成
+
+```yaml
+role: ${env('FC_ROLE_ARN', '')}
+```
+
+默认渲染成空串 → fc3 使用服务关联角色。首次登录 FC 控制台时系统会引导创建 `AliyunServiceRoleForFC`（若没创建，部署会提示需要授权）。
+
+只有在「函数代码里要读 KMS 凭据」这类场景才需要自定义角色：
+
+1. RAM 控制台 → 角色 → 创建角色 → 可信主体类型选 **云服务** → 信任主体名称选 **函数计算/FC**（等价于信任策略里 `Service` 为 `fc.aliyuncs.com`）。
+2. 给角色授予所需的最小权限策略（例如读某个 KMS 凭据）。
+3. 把 ARN 写进部署机变量：`export FC_ROLE_ARN=acs:ram::<账号ID>:role/<角色名>`。
+
+> ARN 格式必须是 `acs:ram::<账号ID>:role/<角色名>`。只写角色名时 fc3 会尝试自动补全（`Role.completionArn`），但手写 YAML 时写错格式会被 FC 直接拒绝。
+> 填了 `FC_ROLE_ARN` 时，**部署账号**还需要 `ram:PassRole`（条件 `acs:Service = fc.aliyuncs.com`），否则把角色绑到函数上会失败；留空则不需要。
+> 用 `vpcConfig` 的显式配置（而非 `auto`）时，部署账号**不需要** VPC / ECS 写权限——创建 ENI 由 FC 服务关联角色完成。`vpcConfig: auto` 才需要 `vpc:CreateVpc` / `vpc:CreateVSwitch` / `ecs:CreateSecurityGroup` 等一串权限，而且它新建的是一个**空 VPC**，里面并没有你的 Redis，所以本项目不选它。
 
 ---
 
@@ -155,11 +224,296 @@ docker push registry.cn-hangzhou.aliyuncs.com/<namespace>/video-to-text-backend:
 
 两者用**同一个镜像**，只在 `customContainerConfig.command` 上区分 ASGI 应用。
 
-### 5.1 两段式部署（重要）
+### 5.1 完整模板（可直接复制）
+
+下面是仓库根目录 `s.yaml` 的完整副本（`backend/tests/test_deploy_manifest.py::test_documented_template_matches_the_real_manifest` 会解析比对，防止文档漂移——改 `s.yaml` 记得同步这一段）。**相对 P3 版本新增了两块：每个函数的 `vpcConfig`（访问内网 Redis）与 `role`（函数执行角色，默认留空）。**
+
+<!-- BEGIN:s.yaml -->
+```yaml
+# 阿里云函数计算（FC 3.0）部署描述：API + Worker 双函数（S2-P3 分发 / S2-Deploy 网络与角色）
+#
+# 部署：s deploy -t s.yaml
+# 查看：s info -t s.yaml      # 记录两个 HTTP 触发器地址
+#
+# 首次部署是「两段式」，因为 API 函数需要 worker 的触发器地址（FC_WORKER_URL）：
+#   1) 先 s deploy 建出两个函数（FC_WORKER_URL 留空不阻断启动，只是分发会失败）
+#   2) 从 s info 取 worker 的 https://...fcapp.run 地址，写入部署机环境变量
+#      FC_WORKER_URL 后，再 s deploy 一次让 API 函数拿到它
+#
+# 所有账号相关取值都用 ${env('NAME')} 引用部署机环境变量，仓库里不含明文、也不含
+# 账号内的资源 ID（注意必须带引号，写成 ${env(NAME)} 会被当成 JS 变量而报
+# NAME is not defined）：
+#   export REDIS_URL=... CLOUD_ASR_API_KEY=... DEEPSEEK_API_KEY=... \
+#          WORKER_TOKEN=... FC_WORKER_URL=... CORS_ORIGINS=... \
+#          FC_VPC_ID=... FC_VSWITCH_ID=... FC_SECURITY_GROUP_ID=...
+# 可选的 FC_ROLE_ARN 留空即使用 FC 服务关联角色（详见 docs/serverless-deploy.md §4.3）。
+#
+# 设计要点见 docs/serverless-deploy.md §5、docs/s2-async-recon.md §8。
+
+edition: 3.0.0
+name: video-to-text-fc
+access: default
+
+vars:
+  region: cn-hangzhou
+  acr: registry.cn-hangzhou.aliyuncs.com
+  namespace: your-namespace
+  repo: video-to-text-backend
+  tag: v0.1.0
+  image: ${vars.acr}/${vars.namespace}/${vars.repo}:${vars.tag}
+
+resources:
+  # ============================================================
+  # API 函数：解析链接 / 总结 / 字幕快路径 / 投递异步作业
+  # ============================================================
+  api:
+    component: fc3
+    props:
+      region: ${vars.region}
+      functionName: video-to-text-api
+      description: video-to-text API（S2-P3：分发到 worker 函数）
+      runtime: custom-container
+      # 自定义容器只用镜像：fc3 部署前会主动 unset code（代码目录不会被打包上传），
+      # 保留它只是为了将来若切回非容器运行时可复用
+      code: ./backend
+
+      customContainerConfig:
+        image: ${vars.image}
+        # entrypoint = 镜像 ENTRYPOINT（可执行文件），command = 参数（覆盖镜像 CMD）
+        entrypoint:
+          - uvicorn
+        command:
+          - app.main:app
+          - --host
+          - 0.0.0.0
+          - --port
+          - "9000"
+        # 必须与容器实际监听端口一致，FC 靠它做健康检查与流量转发
+        port: 9000
+        healthCheckConfig:
+          httpGetUrl: /api/health
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+
+      # 1C2G：解析 + 总结（同步 30-70s）；音频全程在内存流转（S1-B），512MB 易 OOM
+      cpu: 1
+      memorySize: 2048
+      # 同步总结最长 30-70s，留余量；异步分发只等 202，不受此限
+      timeout: 120
+      # 允许单实例处理多个并发请求，降低冷启动影响
+      instanceConcurrency: 10
+      # 需访问 worker 的 fcapp.run、bilibili、云端 ASR、DeepSeek
+      internetAccess: true
+      # ---- VPC 网络（访问云 Redis 内网地址必需）----
+      # 云数据库 Redis 的内网地址只在该 VPC 内可达，函数不配 VPC 时连接会超时，
+      # 应用侧会「静默降级 memory」并打警告——表现为多实例任务互不可见，很难排查。
+      # 三个值都是账号内的资源 ID，必须由部署机环境变量提供（仓库不含账号信息）。
+      # 注意：vSwitchId 必须落在 FC 支持的可用区内（cn-hangzhou: h/i/j/k/f/g），
+      # 否则部署报 InvalidArgument: vSwitch is in unsupported zone。
+      # 若 Redis 走公网地址（不推荐，无 TLS 且暴露公网），删掉 api/worker 两处 vpcConfig。
+      vpcConfig:
+        vpcId: ${env('FC_VPC_ID')}
+        vSwitchIds:
+          - ${env('FC_VSWITCH_ID')}
+        securityGroupId: ${env('FC_SECURITY_GROUP_ID')}
+
+      # ---- 函数执行角色（RAM）----
+      # 留空 = 使用 FC 服务关联角色 AliyunServiceRoleForFC，它已覆盖「写 SLS 日志 +
+      # 创建 ENI 打通 VPC + 拉取同账号 ACR 镜像」，够本项目用，推荐先留空。
+      # 只有需要「函数代码内访问其他云服务（OSS/KMS/表格存储…）」时才填自定义角色 ARN：
+      #   acs:ram::<账号ID>:role/<角色名>
+      # 注意：这个字段**不是** ACR 拉取或 VPC 通路的开关——那两件事由 FC 服务关联角色
+      # 与 vpcConfig 负责，填错角色反而可能让日志投递失败（详见 docs/serverless-deploy.md §4.3）。
+      role: ${env('FC_ROLE_ARN', '')}
+
+      environmentVariables:
+        # ---- 存储（必填）----
+        TASK_STORE: redis
+        REDIS_URL: ${env('REDIS_URL')}
+        TASK_TTL_SECONDS: "604800"
+        # API 侧负责把「陈旧」processing 任务判为 interrupted
+        TASK_INIT_MODE: recover
+        TASK_STALE_SECONDS: "600"
+        TASK_HEARTBEAT_SECONDS: "30"
+        # ---- 外部服务（必填）----
+        CLOUD_ASR_API_KEY: ${env('CLOUD_ASR_API_KEY')}
+        DEEPSEEK_API_KEY: ${env('DEEPSEEK_API_KEY')}
+        ASR_ENGINE: cloud
+        # 镜像不含本地 ASR，留空禁用降级（否则云端失败后会尝试本地并报「未安装」）
+        ASR_ENGINE_FALLBACK: ""
+        LLM_PROVIDER: deepseek
+        # ---- Web ----
+        CORS_ORIGINS: ${env('CORS_ORIGINS', 'https://your-frontend.vercel.app')}
+        RATE_LIMIT_PER_MINUTE: "10"
+        MAX_AUDIO_SIZE_MB: "100"
+        EXTRACT_TIMEOUT_SECONDS: "30"
+        # ---- S2-P3：异步分发 ----
+        ENQUEUE_MODE: fc
+        # worker 函数的 HTTP 触发器地址（s info 里取），首次部署可留空
+        FC_WORKER_URL: ${env('FC_WORKER_URL', '')}
+        FC_WORKER_PATH: /internal/worker/transcribe
+        FC_ASYNC_TIMEOUT_SECONDS: "5"
+        # 与 worker 函数保持一致，Worker 端点用它校验投递来源
+        WORKER_TOKEN: ${env('WORKER_TOKEN', '')}
+
+      logConfig: auto
+
+      triggers:
+        - triggerName: httpTrigger
+          triggerType: http
+          qualifier: LATEST
+          triggerConfig:
+            # 公网入口，鉴权由应用层（限流 + 业务校验）承担
+            authType: anonymous
+            # 只放行实际用到的：GET=健康检查/任务查询，POST=解析/转写/总结，
+            # OPTIONS=浏览器 CORS 预检
+            methods:
+              - GET
+              - POST
+              - OPTIONS
+
+  # ============================================================
+  # Worker 函数：下载音频 + ASR（长任务，异步调用）
+  # ============================================================
+  worker:
+    component: fc3
+    props:
+      region: ${vars.region}
+      functionName: video-to-text-worker
+      description: video-to-text Worker（S2-P2/P3：异步执行转写）
+      runtime: custom-container
+      code: ./backend
+
+      customContainerConfig:
+        image: ${vars.image}
+        # 同一镜像，只换 ASGI 应用
+        entrypoint:
+          - uvicorn
+        command:
+          - app.worker_app:app
+          - --host
+          - 0.0.0.0
+          - --port
+          - "9000"
+        port: 9000
+        healthCheckConfig:
+          httpGetUrl: /api/health
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+
+      # 2C4G：100MB 音频 + yt-dlp + ffmpeg 转码 + 云端 ASR，OOM 风险优先于成本
+      cpu: 2
+      memorySize: 4096
+      # 长视频转写；请对照当前地域配额确认上限，超限需在配额中心申请
+      timeout: 1800
+      # 一实例一作业：内存模型最简单，避免多作业并发把内存打满
+      instanceConcurrency: 1
+      # worker 既要拉 bilibili / 云端 ASR（公网），又要读 Redis（VPC 内网）：
+      # 「允许访问 VPC=是 + 允许函数访问公网=是」是 FC 支持的组合，非 GPU 函数还
+      # 支持 PrivateZone 私有域名解析。只配 vpcConfig 而不开 internetAccess 会让
+      # 下载与 ASR 全部失败。
+      internetAccess: true
+      # 必须与 api 函数同一套 VPC/交换机/安全组：任务状态写在 Redis，worker 读不到
+      # 就只能降级 memory，表现为「任务永远停在 processing」。
+      vpcConfig:
+        vpcId: ${env('FC_VPC_ID')}
+        vSwitchIds:
+          - ${env('FC_VSWITCH_ID')}
+        securityGroupId: ${env('FC_SECURITY_GROUP_ID')}
+      # 同上：留空使用 FC 服务关联角色
+      role: ${env('FC_ROLE_ARN', '')}
+
+      environmentVariables:
+        TASK_STORE: redis
+        REDIS_URL: ${env('REDIS_URL')}
+        TASK_TTL_SECONDS: "604800"
+        # 关键：Worker 冷启动不得改写其他实例在途任务（代码里也显式传 False，双保险）
+        TASK_INIT_MODE: none
+        TASK_STALE_SECONDS: "600"
+        TASK_HEARTBEAT_SECONDS: "30"
+        # 执行锁 TTL，执行期间按心跳续期；崩溃后到期自动释放
+        TASK_LOCK_SECONDS: "3600"
+        # Reaper 互斥锁 TTL：只需覆盖单次扫描耗时，与 TASK_LOCK_SECONDS 无关
+        REAPER_LOCK_SECONDS: "120"
+        CLOUD_ASR_API_KEY: ${env('CLOUD_ASR_API_KEY')}
+        ASR_ENGINE: cloud
+        ASR_ENGINE_FALLBACK: ""
+        MAX_AUDIO_SIZE_MB: "100"
+        EXTRACT_TIMEOUT_SECONDS: "30"
+        # Worker 不再分发，保持 inline（且不 import dispatcher 的投递路径）
+        ENQUEUE_MODE: inline
+        WORKER_TOKEN: ${env('WORKER_TOKEN', '')}
+
+      # 异步调用策略：默认 3 次重试与 TASK_TTL_SECONDS（7 天）对齐
+      asyncInvokeConfig:
+        maxAsyncRetryAttempts: 3
+        maxAsyncEventAgeInSeconds: 604800
+
+      logConfig: auto
+
+      # 仅 POST：API 侧以 X-Fc-Invocation-Type: Async 投递，FC 立即回 202
+      triggers:
+        - triggerName: httpTrigger
+          triggerType: http
+          qualifier: LATEST
+          triggerConfig:
+            # 官方文档明确：无需认证时可在业务层校验 Authorization 自行鉴权。
+            # 这里由 WORKER_TOKEN（X-Worker-Token / Bearer）兜底。
+            # 若要更严：改成 authType: function（签名认证），但会重新引入签名 SDK。
+            authType: anonymous
+            methods:
+              - POST
+
+        # ---- S2-P4：僵尸任务清理（Reaper）----
+        # 关键约束：定时触发器是「事件调用」，不能指定 HTTP 路径，FC 固定把 event
+        # POST 到容器的 /invoke。worker_app 的 /invoke 按 triggerTime/triggerName
+        # 特征分流到 reaper，因此这里配的 payload 不参与路由，仅用于日志辨识。
+        - triggerName: reapTimer
+          triggerType: timer
+          triggerConfig:
+            # FC cron 为 6 段：秒 分 时 日 月 周（最小粒度 1 分钟）
+            # 每 5 分钟一轮：远小于 TASK_STALE_SECONDS(600s)，僵尸任务最长滞留约 15 分钟
+            cronExpression: "0 */5 * * * *"
+            enable: true
+            payload: '{"action":"reap"}'
+```
+<!-- END:s.yaml -->
+
+关键结构速览：
+
+| 配置块 | 位置 | 作用 |
+| --- | --- | --- |
+| `customContainerConfig` | 两函数 | 镜像 + 启动命令 + 监听端口 + 健康检查 |
+| `vpcConfig` | 两函数，**必须完全相同** | 访问 VPC 内网 Redis（§4.2） |
+| `internetAccess: true` | 两函数 | 与 `vpcConfig` 并存：下载 B站音频、调云端 ASR |
+| `role` | 两函数，默认空 | 留空 = FC 服务关联角色（§4.3） |
+| `environmentVariables` | 两函数 | 见 §6；账号相关的值全部走 `${env(...)}` |
+| `triggers` | api 一个 HTTP；worker 一个 HTTP + 一个 timer | timer 是 P4 的 reaper 驱动 |
+
+### 5.2 两段式部署（重要）
 
 API 函数需要 worker 的触发器地址（`FC_WORKER_URL`），而该地址要等 worker 创建后才有，且 `fcapp.run` 子域含随机串、无法由 region + 函数名推导。因此：
 
 ```bash
+# ---- 第 0 步：把账号相关取值全部导出（缺一个都会让 s deploy 报错）----
+export REDIS_URL=redis://:password@r-xxxx.redis.rds.aliyuncs.com:6379/0
+export CLOUD_ASR_API_KEY=sk-xxxx
+export DEEPSEEK_API_KEY=sk-xxxx
+export WORKER_TOKEN=$(openssl rand -hex 24)
+export CORS_ORIGINS=https://your-frontend.vercel.app
+# VPC 三个 ID（§4.2）；这三个没有默认值，缺了 s deploy 会直接失败
+export FC_VPC_ID=vpc-bp1xxxxxxxxxxxx
+export FC_VSWITCH_ID=vsw-bp1xxxxxxxxxxxx
+export FC_SECURITY_GROUP_ID=sg-bp1xxxxxxxxxxxx
+# 可选：自定义函数角色 ARN，留空则用 FC 服务关联角色（§4.3）
+# export FC_ROLE_ARN=acs:ram::<账号ID>:role/<角色名>
+
 # ---- 第一段：先建出两个函数（FC_WORKER_URL 留空不阻断启动，只是分发会失败）----
 s deploy -t s.yaml
 
@@ -171,12 +525,22 @@ s info -t s.yaml
 # ---- 第二段：把该地址写进部署机环境变量后重新部署 ----
 export FC_WORKER_URL=https://video-to-text-worker.abc123def.cn-hangzhou.fcapp.run
 s deploy -t s.yaml
+
+# ---- 确认 VPC / 角色真的落到了函数上（别只看部署成功的绿字）----
+s info -t s.yaml
+# 期望：两个函数都能看到 vpcConfig（vpcId / vSwitchIds / securityGroupId）
+#       与 role（空 = 服务关联角色）
 ```
 
 > `FC_WORKER_URL` 漏配时应用**仍能启动**（不阻断引导），但每次 `POST /api/transcribe` 都会明确失败：任务被标 `failed`（`TRANSCRIBE_FAILED`「任务分发失败，请重试」）+ 返回 500。这是刻意设计——宁可明确报错，也不静默丢任务。
+>
+> `FC_VPC_ID` / `FC_VSWITCH_ID` / `FC_SECURITY_GROUP_ID` 则**故意不给默认值**：留空会导致「部署成功、运行期连不上 Redis」，比部署时直接报 `FC_VPC_ID is not defined` 难查得多。
 
-### 5.2 关键字段说明
+### 5.4 关键字段说明
 
+- **`vpcConfig`（S2-Deploy）**：两个函数**必须配置成完全相同的一组** `vpcId` / `vSwitchIds` / `securityGroupId`，否则任务状态写不到同一个 Redis（api 能写、worker 读不到）。三个字段在 fc3 schema 里都是必填，缺一个直接部署失败。`vSwitchIds` 是**列表**（schema 允许 `array` 或字符串 `"auto"`，但不接受单个裸字符串 ID）。交换机必须落在 FC 支持的可用区，否则报 `InvalidArgument: vSwitch is in unsupported zone`；不在列表里就同 VPC 内新建一个交换机，别重建 Redis。详见 §4.2。
+- **`internetAccess: true` 与 `vpcConfig` 并存**：FC 默认「可访问公网、不可访问 VPC」，配了 VPC 后仍需显式开 `internetAccess` 才能同时走公网。关掉它会让 B站下载、云端 ASR、DeepSeek 全部失败，而 Redis 反而正常——排查方向会被带偏。
+- **`role`（S2-Deploy）**：函数**执行角色**，留空即用 FC 服务关联角色 `AliyunServiceRoleForFC`（已覆盖 SLS 日志、VPC ENI、同账号 ACR 拉取）。它**不是** ACR 拉取或 VPC 通路的开关，只有「函数代码里访问其他云服务」才需要填。详见 §4.3。
 - **`port` 必须等于 uvicorn 实际监听端口**（模板统一用 9000）。端口不一致的典型表现是函数部署成功但请求 502/超时、健康检查一直失败。
 - **`entrypoint` / `command` 语义与 Docker 一致**：`entrypoint` 是可执行文件（`uvicorn`），`command` 是参数。镜像本身 `CMD` 监听 8000，模板通过这两个字段覆盖为 9000。
 - **`instanceConcurrency: 1`（worker）**：一实例一作业，内存模型最简单。100MB 音频全程在内存 + ffmpeg 转码，并发跑多作业容易 OOM。
@@ -188,7 +552,7 @@ s deploy -t s.yaml
 - **内置域名仅用于测试**：官方说明 `*.fcapp.run` 只适合联调，对外服务应绑已备案的自定义域名。上线前请替换。
 - **`code: ./backend`**：自定义容器（`runtime: custom-container`）**只使用镜像**，fc3 在部署前会主动 `unset` 掉 `code`（见 `resources/fc/impl/replace-function-config.ts`），代码目录不会被打进镜像。保留该字段只是为了将来若切回非容器运行时可直接复用，删掉也不影响部署。
 
-### 5.3 环境变量怎么注入
+### 5.5 环境变量怎么注入
 
 `s.yaml` 里所有密钥都写成 `${env('NAME')}`，由部署机环境变量提供，仓库不含明文：
 
@@ -199,16 +563,32 @@ export DEEPSEEK_API_KEY=sk-xxxx
 export WORKER_TOKEN=$(openssl rand -hex 24)
 export CORS_ORIGINS=https://your-frontend.vercel.app
 export FC_WORKER_URL=https://video-to-text-worker.abc123def.cn-hangzhou.fcapp.run
+# 网络（§4.2）与可选角色（§4.3）
+export FC_VPC_ID=vpc-bp1xxxxxxxxxxxx
+export FC_VSWITCH_ID=vsw-bp1xxxxxxxxxxxx
+export FC_SECURITY_GROUP_ID=sg-bp1xxxxxxxxxxxx
+# export FC_ROLE_ARN=acs:ram::<账号ID>:role/<角色名>
 s deploy -t s.yaml
 ```
 
-> **语法必须带引号**：Serverless Devs 的魔法变量是 `${env('NAME')}` / `${env('NAME', '默认值')}`（内部按 JS 表达式求值）。写成 `${env(NAME)}` 会抛 `NAME is not defined`，`s deploy` 直接失败。模板里 `FC_WORKER_URL` / `WORKER_TOKEN` / `CORS_ORIGINS` 都带了默认值，缺省不会报错。
+> **语法必须带引号**：Serverless Devs 的魔法变量是 `${env('NAME')}` / `${env('NAME', '默认值')}`（内部按 JS 表达式求值）。写成 `${env(NAME)}` 会抛 `NAME is not defined`，`s deploy` 直接失败。模板里 `FC_WORKER_URL` / `WORKER_TOKEN` / `CORS_ORIGINS` / `FC_ROLE_ARN` 都带了默认值，缺省不会报错；`FC_VPC_ID` / `FC_VSWITCH_ID` / `FC_SECURITY_GROUP_ID` **故意没有默认值**，缺了会在部署时就失败（比运行期连不上 Redis 好查）。
 
-控制台等价路径：函数计算 3.0 → 创建函数 → **自定义容器** → 选择 ACR 镜像 → 监听端口填 9000 → 配置环境变量 / VPC / 实例规格 → 创建 HTTP 触发器（api 开 GET+POST，worker 只开 POST）。
+> **别把这三个 ID 写进仓库**：它们是账号内资源标识。想少敲几次可以放在一个不被提交的 `deploy.env` 里，`set -a; . ./deploy.env; set +a` 后再 `s deploy`。
+
+控制台等价路径（不想用 `s deploy` 时）：函数计算 3.0 → 创建函数 → **自定义容器** → 选择 ACR 镜像 → 监听端口填 9000 → **高级配置 → 网络：允许访问 VPC 选「自定义配置」并填 VPC/交换机/安全组，允许函数访问公网保持开启** → 配置环境变量 / 实例规格 → 创建 HTTP 触发器（api 开 GET+POST，worker 只开 POST + 一个定时触发器）。控制台路径容易漏掉「网络」那一步，漏了就是本文件反复强调的静默降级现象。
 
 ---
 
 ## 6. 环境变量清单
+
+先分清两类变量，别混：
+
+| 类别 | 注入位置 | 本节的变量 |
+| --- | --- | --- |
+| **部署机变量** | 由 `s deploy` 读取（`${env('NAME')}`），**不会进入容器** | `FC_VPC_ID`、`FC_VSWITCH_ID`、`FC_SECURITY_GROUP_ID`、`FC_ROLE_ARN` |
+| **函数运行时变量** | 写进 `environmentVariables`，容器内 `os.getenv` 可读 | 下面 §6.1 / §6.2 的全部 |
+
+`FC_VPC_ID` / `FC_VSWITCH_ID` / `FC_SECURITY_GROUP_ID` 是账号内的资源 ID，只在部署时用来生成 `vpcConfig`，**故意没有默认值**——缺了 `s deploy` 会直接报 `xxx is not defined`，比「部署成功但运行期连不上 Redis」好查得多（§4.2）。
 
 ### 6.1 必填（4 项 + `ENQUEUE_MODE=fc` 时多 1 项）
 
@@ -261,7 +641,106 @@ s deploy -t s.yaml
 
 ## 7. 部署后验收
 
-### 7.1 基础连通
+### 7.1 控制台验证全链路（API → Worker → Redis）
+
+目标：**不依赖任何本地脚本**，只在阿里云控制台里跑一次真实视频转写，并确认任务状态确实落在 Redis（而不是某个实例的内存里）。
+
+> 为什么必须查 Redis：`REDIS_URL` 连不上时应用会**静默降级到 memory**（只打一条警告）。此时 API 和 Worker 各自持有一份任务，表现是「任务永远停在 `processing`」，而 HTTP 接口看起来一切正常。只看接口返回会误判成「链路通了」。
+
+#### 步骤 0：确认 VPC 真的落到了函数上
+
+```bash
+s info -t s.yaml
+```
+
+两个函数（`video-to-text-api` / `video-to-text-worker`）都应能看到 `vpcConfig` 的 `vpcId` / `vSwitchIds` / `securityGroupId`，且**三者完全相同**。看不到就说明 §5.2 的 `s deploy` 没带环境变量，先补齐再往下走。
+
+#### 步骤 1：在控制台取 API 函数的公网地址
+
+函数计算控制台 → **函数管理 → 函数列表** → 地域选 `cn-hangzhou` → 点 `video-to-text-api` → **触发器**页签 → `httpTrigger` 那一行的「公网访问地址」。
+
+形如 `https://video-to-text-api.<随机串>.cn-hangzhou.fcapp.run`。把它记下来，后面几步要用：
+
+```bash
+API_URL=https://video-to-text-api.<随机串>.cn-hangzhou.fcapp.run
+```
+
+#### 步骤 2：在控制台「测试函数」里发一次真实转写请求
+
+同一个函数详情页 → **测试函数**页签（Web 函数以 HTTP 请求方式测试）：
+
+| 项 | 值 |
+| --- | --- |
+| 请求方法 | `POST` |
+| 路径 | `/api/transcribe` |
+| 请求头 | `Content-Type: application/json` |
+| 请求体 | `{"videoId":"BV1xxxxxxxxx","engine":"cloud"}` |
+
+期望响应 `200`：
+
+```json
+{"taskId":"<32 位十六进制>","status":"processing","stage":"parse_link","progress":0}
+```
+
+- `videoId` 换成任意**真实存在**的 B站视频；`engine` 必须是 `cloud`（镜像不含本地 ASR）。
+- 这一步会真实调用云端 ASR，**产生真实费用**，别拿长视频反复压测。
+- 若当前控制台版本的测试面板不支持自定义请求方法与请求体（各版本文案不同：`测试函数` / `在线测试`），直接用 §7.3 的 `curl`——两者等价，验证目标一致。
+- 返回 `404`：路径写错（注意不要带 `/backend-api` 前缀，那是 Vercel 侧的代理前缀）。
+- 返回 `422`：请求体字段不对（`videoId` 是必填）。
+- 返回 `500` + `{"error":{"code":"TRANSCRIBE_FAILED","message":"任务分发失败，请重试"}}`：API 侧投递失败，查 §5.2 的 `FC_WORKER_URL`。
+
+#### 步骤 3：在 Worker 函数日志里确认作业被异步执行
+
+控制台 → `video-to-text-worker` → **日志**页签（或 `s logs -t s.yaml --function-name video-to-text-worker --tail`）。
+
+期望依次看到：
+
+```
+Worker 领取任务（task_id=...）        ← 抢锁成功
+stage 推进：parse_link → extract_audio → asr → completed
+```
+
+- 完全没有日志：API 的异步投递没成功（查 api 日志的 `FC 投递被拒` / `FC 投递失败`）。
+- 日志里是 `skipped`（`reason=locked` 或 `already_*`）：任务被重复投递，属正常幂等；看有没有另一次执行把它跑完。
+
+#### 步骤 4：在 Redis 里确认状态流转（这一步才是「全链路」的证据）
+
+阿里云 Redis 控制台 → 目标实例 → **登录**（或 DMS for Redis）→ 执行：
+
+```
+GET task:<taskId>
+```
+
+期望看到任务 JSON，并且：
+
+| 检查点 | 期望 | 说明 |
+| --- | --- | --- |
+| `status` | `processing` → `completed` | 轮询几次能看到变化 |
+| `transcript` | 非空数组 | 真实转写结果 |
+| `updated_at` | 递增 | 心跳写入生效 |
+| `TTL task:<taskId>` | 约 `604800` | 滑动续期生效（7 天） |
+| `GET task:lock:<taskId>` | 执行期间存在、完成后消失 | `release` 带 token 正常释放 |
+
+**若 `GET task:<taskId>` 返回 `(nil)`，但 `GET /api/transcribe/<taskId>` 能查到任务**：说明函数降级到了 memory 存储，Redis 根本没连上。按顺序查：
+
+1. 函数上 `vpcConfig` 是否真的存在（步骤 0）；
+2. Redis 白名单是否放行了**函数所在交换机**的网段；
+3. 安全组出方向是否放行 `6379` 与 `ICMP`；
+4. `REDIS_URL` 是否用了实例的**内网地址**（不是公网地址）、端口 `6379`、密码做了 URL 编码；
+5. worker 日志里的 `redis 降级` 警告。
+
+#### 步骤 5：接口侧确认
+
+```bash
+TASK=<步骤 2 拿到的 taskId>
+curl -s "$API_URL/api/transcribe/$TASK" | jq '{status,stage,progress,transcriptSource}'
+```
+
+期望 `status=completed`，`transcriptSource` 为 `subtitle_cc` / `subtitle_ai` / `asr` 之一（取决于该视频是否有字幕）。
+
+> 顺带验一次 reaper：控制台 → `video-to-text-worker` → 测试函数里对 `/internal/worker/reap` 发 POST（带 `X-Worker-Token`），期望 `{"status":"ok","scanned":N,"reaped":0}`。详见 §7.3.1。
+
+### 7.2 基础连通
 
 ```bash
 API_URL=https://video-to-text-api.<随机串>.cn-hangzhou.fcapp.run
@@ -280,7 +759,7 @@ curl -s -X POST $API_URL/api/parse \
   -d '{"url":"https://www.bilibili.com/video/BV1xxxxxxxxx"}'
 ```
 
-### 7.2 异步链路验收（S2-P3 核心）
+### 7.3 异步链路验收（S2-P3 核心）
 
 ```bash
 # 1) 先单独验证 worker：触发器 + token + 异步头
@@ -314,11 +793,11 @@ done
 | 第 2 步一直 `processing` 且 `attempts` 不增 | api 侧投递失败，查 api 日志的 `FC 投递被拒` / `FC 投递失败` |
 | 第 2 步 `attempts` 增长但 `stage` 不动 | worker 侧问题，查 worker 日志 |
 | 第 2 步变 `completed` 且 `transcriptSource` 为 `subtitle_cc` / `subtitle_ai` / `asr` | 全链路打通 |
-| 任务 `failed`（「任务分发失败，请重试」） | `FC_WORKER_URL` 漏配或写错，见 §5.1 |
+| 任务 `failed`（「任务分发失败，请重试」） | `FC_WORKER_URL` 漏配或写错，见 §5.2 |
 
 > `attempts` 字段在 `GET /api/transcribe/{taskId}` 的响应里不返回（前端契约未变），需查 Redis `task:{taskId}` 的 JSON。
 
-### 7.2.1 Reaper 验收（S2-P4）
+### 7.3.1 Reaper 验收（S2-P4）
 
 三种验法，从便宜到真实：
 
@@ -361,7 +840,7 @@ LUA
 
 > **不要**把 `FC_WORKER_PATH` 配成 `/internal/worker/reap`——那是人工入口，定时触发器永远打不到自定义路径。
 
-### 7.3 日志
+### 7.4 日志
 
 ```bash
 s logs -t s.yaml --function-name video-to-text-api --tail
@@ -370,7 +849,7 @@ s logs -t s.yaml --function-name video-to-text-worker --tail
 
 优先看：容器启动日志（uvicorn 是否 listen 成功）、`redis` 降级警告、`已投递到 FC（task_id=..., request_id=...）`。
 
-### 7.4 前端切换
+### 7.5 前端切换
 
 ```bash
 # Vercel 环境变量
@@ -408,7 +887,10 @@ NEXT_PUBLIC_USE_MOCK=false        # 构建期常量，改完必须重新构建
 | Redis 任务无 TTL | 任务记录无限增长 | **S2-P0 已修**：`TASK_TTL_SECONDS`（默认 7 天，滑动续期）；0 = 永久保留 |
 | 冷启动即改写任务状态 | 多实例下误杀在途任务 | **S2-P0 已修**：只把「陈旧」（`TASK_STALE_SECONDS` 内无心跳）的 `processing` 判为 `interrupted`；Worker 侧设 `TASK_INIT_MODE=none` |
 | 异步调用 Body ≤ 128 KB | 事件体过大会被 FC 拒收 | `TranscribeJob.to_dict()` 仅几百字节；**不要往事件体里塞文字稿**（P1 只传入参的设计已保证） |
-| Worker 崩溃后重试被锁挡住 | 任务停在 `processing` | **P3 已知缺口**：FC 重试间隔 0.5/1/2 秒，而 `TASK_LOCK_SECONDS=3600`，3 次重试都会撞锁返回 `skipped`。恢复依赖 **P4 reaper**（按 `TASK_STALE_SECONDS=600` 判 `interrupted`）。P3 只承诺「投递可靠 + 正常路径幂等」 |
+| Worker 崩溃后重试被锁挡住 | 任务停在 `processing` | **P4 已修**：worker 函数上的定时触发器（`reapTimer`，每 5 分钟）扫描心跳超时（`TASK_STALE_SECONDS=600`）的 `processing` 任务，标 `failed` + `TASK_TIMEOUT`。见 §7.3.1 |
+| 未配 `vpcConfig` | 连不上 VPC 内网 Redis，**静默降级 memory** | 多实例各持一份任务，表现为「任务永远 `processing`」；接口看起来却正常。必须给两个函数配同一套 `vpcConfig`（§4.2） |
+| 配了 `vpcConfig` 但关掉 `internetAccess` | B站下载 / 云端 ASR / DeepSeek 全部失败 | FC 支持「访问 VPC + 访问公网」并存，两个开关都要开（§4.2） |
+| 误以为 `role` 管 ACR 拉取 / VPC 通路 | 白建角色、甚至配错导致日志丢失 | 这两件事由 FC 服务关联角色 `AliyunServiceRoleForFC` 负责；`role` 只用于「函数代码访问其他云服务」（§4.3） |
 | 内置 `*.fcapp.run` 域名仅用于测试 | 生产稳定性无保障 | 官方明确建议绑已备案自定义域名；上线前替换 `FC_WORKER_URL` 与前端 `BACKEND_ORIGIN` |
 
 ### 8.3 S2 改造方向：独立函数触发
@@ -422,13 +904,15 @@ NEXT_PUBLIC_USE_MOCK=false        # 构建期常量，改完必须重新构建
    - **HTTP 触发器 + 请求级异步**（P3 采用）：`api` 用 `httpx` POST 到 worker 的触发器地址并带
      `X-Fc-Invocation-Type: Async`，FC 立即回 202 并落内部队列。**不需要 ACS3 签名、不需要 AK/SK、不需要 SDK**；
    - 备选：FC **OpenAPI 异步调用**（`InvokeFunction` + 签名）——需要 RAM 授权与常驻 AK/SK，仅当不允许配触发器时考虑；
-   - 规模化后：**MNS / RocketMQ 队列触发**（P4），天然带重试、削峰与死信队列。
+   - 规模化后：**MNS / RocketMQ 队列触发**（尚未实现），天然带重试、削峰与死信队列。
 3. **状态与幂等**：任务状态继续放 Redis（`TASK_STORE=redis` 已具备），worker 按 `taskId` 幂等更新；补 TTL 与失败重试上限。
    > **S2-P0 已完成**：`TASK_TTL_SECONDS`（默认 7 天滑动续期）、`TASK_INIT_MODE=none`（Worker 启动不改写状态）、`attempts` 字段、进度心跳（`TASK_HEARTBEAT_SECONDS`）与写入节流、同步桥接连接泄漏修复。
    > **S2-P1 已完成**：`services/dispatcher.py` + `TranscribeJob`（完整作业体，可 `to_dict()` 作 FC 事件 payload）+ `ENQUEUE_MODE=inline|fc|mns|redis`（默认 inline，行为不变；未实现模式显式报错）。
    > **S2-P2 已完成**：`app/worker_app.py` 独立 ASGI 应用（`POST /internal/worker/transcribe`）——不挂限流/CORS、不 import `app.main`，启动 `init(recover_interrupted=False)`；`SET task:lock:{id} NX EX` 幂等领取 + 心跳续期 + WATCH 比对释放；pipeline 经 `asyncio.to_thread` 执行（同步实现不能直接 await）；业务失败回 200、基础设施异常回 5xx。
    > **S2-P3 已完成**：`ENQUEUE_MODE=fc` 真正可用——`FcDispatcher` 用 `httpx` 把 `TranscribeJob` POST 到 worker 函数的 **HTTP 触发器**，带 `X-Fc-Invocation-Type: Async`（FC 立即回 202 并落内部队列）。**不签名、不引 SDK、不常驻 AK/SK**；`WORKER_TOKEN` 双向校验；worker 新增 `POST /invoke` 别名（`InvokeFunction` 兼容位）；`s.yaml` 双函数模板入库。
-   > 仍待 P4：超时收割（reaper）、`TASK_TIMEOUT` 错误码、MNS/Redis 队列模式。
+   > **S2-P4 已完成**：worker 函数加定时触发器（`reapTimer`，6 段 cron，每 5 分钟）→ FC 事件调用 → 容器 `/invoke` → 按 `triggerTime`/`triggerName` 特征分流到 `app/services/reaper.py`；`TASK_TIMEOUT` 错误码落地；`REAPER_LOCK_SECONDS` 互斥锁防多实例并发扫描。
+   > **S2-Deploy 已完成**：`s.yaml` 补 `vpcConfig`（两函数同一套 VPC/交换机/安全组，访问内网 Redis）与 `role`（默认留空走 FC 服务关联角色）；文档补完整模板、网络/角色准备与「控制台全链路验证」流程。
+   > 仍待实现：MNS / Redis 队列模式。
 4. **前端零改动**：仍是 `POST /api/transcribe` + `GET /api/transcribe/{taskId}` 轮询，契约不变。
 5. **超时/规格**：worker 函数单独配置更长超时、更大内存；`api` 函数保持小规格低成本。
 
@@ -447,13 +931,13 @@ uvicorn app.worker_app:app --host 0.0.0.0 --port 9000
 
 ### 8.4 P3 遗留与真机待验证项
 
-- **R1（待真机确认）异步调用是否原样透传 path**：官方只写明「将请求持久化保存，然后立即返回响应」，没有一句明确说异步重放时 path 保持不变。同步透传模式是明确的，异步极可能一致。§7.2 第 1 步的 `curl` 就是专门验证这一点——若返回 404，把 `FC_WORKER_PATH` 改成实际收到的路径即可（代码侧零改动）。
+- **R1（待真机确认）异步调用是否原样透传 path**：官方只写明「将请求持久化保存，然后立即返回响应」，没有一句明确说异步重放时 path 保持不变。同步透传模式是明确的，异步极可能一致。§7.3 第 1 步的 `curl` 就是专门验证这一点——若返回 404，把 `FC_WORKER_PATH` 改成实际收到的路径即可（代码侧零改动）。
 - **R2（已确认）异步 Body 上限 128 KB**：`TranscribeJob.to_dict()` 仅几百字节，余量充足。**不要往事件体里塞文字稿**——P1 只传作业入参的设计已规避。
-- **R3（已由 P4 关闭）崩溃恢复**：worker 被 OOM/超时杀掉后，FC 的 3 次重试（间隔 0.5/1/2 秒）都会撞上 `TASK_LOCK_SECONDS=3600` 的锁并返回 `skipped`。现在由 worker 函数上的定时触发器（`reapTimer`，每 5 分钟）兜底：扫描 `status=processing` 且 `now - updated_at > TASK_STALE_SECONDS`（默认 600s）的任务，标 `failed` + `TASK_TIMEOUT`（「任务处理超时，可能因服务器资源受限中断，请重试」）。验收见 §7.2.1。
+- **R3（已由 P4 关闭）崩溃恢复**：worker 被 OOM/超时杀掉后，FC 的 3 次重试（间隔 0.5/1/2 秒）都会撞上 `TASK_LOCK_SECONDS=3600` 的锁并返回 `skipped`。现在由 worker 函数上的定时触发器（`reapTimer`，每 5 分钟）兜底：扫描 `status=processing` 且 `now - updated_at > TASK_STALE_SECONDS`（默认 600s）的任务，标 `failed` + `TASK_TIMEOUT`（「任务处理超时，可能因服务器资源受限中断，请重试」）。验收见 §7.3.1。
 - **R7（P4 新增，已知行为）误杀后任务可能「复活」**：如果 worker 其实活着但心跳连续断了 20 次（>600s，概率极低），任务会被判 `failed`，随后 worker 跑完时 `_finish` 会无条件写回 `completed`。这是可接受的——用户最多先看到一次错误提示，实际结果仍会落库。
 - **R8（P4 新增，已知限制）Reaper 是全量扫描**：`status` 存在任务 JSON 体内，Redis 侧无法服务端过滤，每轮 `SCAN task:*` 要反序列化全部未过期任务（7 天 TTL 下可能上千 key）。当前量级完全够用；规模化后建议加 `ZSET task:processing`（score=updated_at）索引。**P4 不主动删 `task:lock:*`**：任务已 `failed`，重投会在 `_run_job` 首个状态检查返回 `skipped`；强删锁会破坏「release 必须带 token」的不变量，若 worker 还活着会导致同一任务被跑第二遍。
 
-在此之前，请不要把 FC 版本用于「无字幕视频」的生产流量——除非已切到 `ENQUEUE_MODE=fc` 并完成 §7.2 验收。
+在此之前，请不要把 FC 版本用于「无字幕视频」的生产流量——除非已切到 `ENQUEUE_MODE=fc` 并完成 §7.3 验收。
 
 ---
 
@@ -465,13 +949,13 @@ uvicorn app.worker_app:app --host 0.0.0.0 --port 9000
 | 拉取镜像失败 / `ImagePullBackOff` | ACR 地址错、无权限、跨地域、VPC 未打通 | 检查镜像地址与 tag；配置免密拉取或 `registryConfig`；企业版 VPC 地址需配 `vpcConfig` |
 | 请求 502 / 健康检查失败 | 端口不一致；uvicorn 未监听 `0.0.0.0`；启动即崩 | 对齐 `port` 与 `--port`；看启动日志；本地 `docker run` 复现 |
 | 请求超时 / 504 | `timeout` 太小（总结 30-70s） | 调到 120s 以上 |
-| 任务一直 `processing` | `ENQUEUE_MODE=inline` 下 BackgroundTasks 被冻结；或 `fc` 模式投递失败 | 云端切 `ENQUEUE_MODE=fc`（§5、§7.2）；查 api 日志的 `FC 投递被拒` / `FC 投递失败` |
+| 任务一直 `processing` | `ENQUEUE_MODE=inline` 下 BackgroundTasks 被冻结；或 `fc` 模式投递失败 | 云端切 `ENQUEUE_MODE=fc`（§5、§7.3）；查 api 日志的 `FC 投递被拒` / `FC 投递失败` |
 | api 日志 `FC 投递被拒（HTTP 404）` | `FC_WORKER_URL` 少了路径，或异步未透传 path | 检查 `FC_WORKER_URL` + `FC_WORKER_PATH`；参考 §8.4 R1 |
 | api 日志 `FC 投递被拒（HTTP 401）` | `WORKER_TOKEN` 两侧不一致 | 让 api 与 worker 用同一个 `WORKER_TOKEN` |
 | api 日志 `FC 投递被拒（HTTP 403）` | 触发器认证方式不是 `anonymous` | 改触发器认证方式，或改用 Bearer/签名 |
-| 任务 `failed`（「任务分发失败，请重试」） | `FC_WORKER_URL` 漏配 / 写错 / FC 拒收 | 见 §5.1 两段式部署 |
-| 任务一直 `processing`，超过 15 分钟仍未变 `failed` | 定时触发器没生效（S2-P4） | `s info` 查 worker 的 `reapTimer`；手工 `curl /internal/worker/reap` 验逻辑；见 §7.2.1 |
-| worker 日志 `收到定时触发器事件` 但随后 422 | `/invoke` 分流未命中 | 确认 event 含 `triggerTime` + `triggerName`；见 §7.2.1 判读表 |
+| 任务 `failed`（「任务分发失败，请重试」） | `FC_WORKER_URL` 漏配 / 写错 / FC 拒收 | 见 §5.2 两段式部署 |
+| 任务一直 `processing`，超过 15 分钟仍未变 `failed` | 定时触发器没生效（S2-P4） | `s info` 查 worker 的 `reapTimer`；手工 `curl /internal/worker/reap` 验逻辑；见 §7.3.1 |
+| worker 日志 `收到定时触发器事件` 但随后 422 | `/invoke` 分流未命中 | 确认 event 含 `triggerTime` + `triggerName`；见 §7.3.1 判读表 |
 | 任务 `failed`（「任务处理超时…」） | reaper 判定心跳超时（正常行为） | 用户点重试即可；若频繁出现说明实例被 OOM/超时杀，查 worker 规格与 `timeout` |
 | 429 `RATE_LIMITED` | 触发限流 | 调 `RATE_LIMIT_PER_MINUTE`；确认 Redis 生效（否则各实例各自计数） |
 | `CLOUD_NOT_CONFIGURED` | 未注入 `CLOUD_ASR_API_KEY` | 检查环境变量与 `s info` |
