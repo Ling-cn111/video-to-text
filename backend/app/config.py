@@ -100,6 +100,14 @@ TASK_LOCK_SECONDS: int = int(os.getenv("TASK_LOCK_SECONDS", "3600"))
 # 非空时要求请求头 X-Worker-Token 完全一致，否则 401。
 WORKER_TOKEN: str = os.getenv("WORKER_TOKEN", "")
 
+# ---- 僵尸任务清理 / Reaper（S2-P4）----
+
+# Reaper 互斥锁 TTL（秒）：保证同一时刻只有一个 Reaper 在扫。
+# 必须大于单次扫描耗时（SCAN + 逐条 GET），留足冷启动抖动余量。
+# 注意：这把锁只省算力，不承担正确性——fail_if_stale 自身是 CAS + 幂等，
+# 锁失效最多让两个 Reaper 扫同一批任务，不会写出错误状态。
+REAPER_LOCK_SECONDS: int = int(os.getenv("REAPER_LOCK_SECONDS", "120"))
+
 # ---- FC 异步分发（S2-P3）----
 
 # worker 函数的 HTTP 触发器地址，形如 https://<子域>.<region>.fcapp.run。

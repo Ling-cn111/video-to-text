@@ -24,6 +24,12 @@ S2-P2 执行锁（Worker 幂等领取）：
 - Memory：进程内字典 + 过期时刻（单进程，语义与 Redis 对齐便于测试复用）
 - init() 的恢复扫描已跳过含 `:` 的派生 key，`task:lock:*` 不会被当成任务
 
+S2-P4 僵尸任务清理（Reaper）：
+- list_processing_tasks / fail_if_stale 两个 async 方法，两个实现均支持
+- 判定策略（陈旧阈值、错误码、文案）不落在存储层，全部收敛在 app/services/reaper.py
+- fail_if_stale 必须做「状态 + 陈旧」二次校验：扫描与写入之间心跳可能刚刷新过，
+  盲写会把正在跑的任务误杀；Redis 侧用 WATCH/MULTI 保证校验与写入原子
+
 环境变量（app/config.py）：
 - TASK_STORE=memory（默认）| redis
 - REDIS_URL：仅 redis 模式生效；未配置或 redis 包缺失自动降级 memory 并打警告
@@ -181,6 +187,35 @@ class TaskStore(Protocol):
         """续期锁：令牌匹配返回 True。"""
         ...
 
+    # ---- 僵尸任务清理（S2-P4 Reaper）----
+
+    async def list_processing_tasks(self) -> list[TranscribeTask]:
+        """列出全部 status=processing 的任务（不做陈旧判定，策略留给 reaper 层）。
+
+        为什么不在存储层过滤陈旧：`updated_at` 与 `status` 都在任务 JSON 体内，
+        无论哪种实现都必须先反序列化才知道状态，服务端过滤省不掉工作量。
+        把「多陈旧算僵尸」这条策略收敛在 app/services/reaper.py 一处，避免两套实现各写一遍。
+        """
+        ...
+
+    async def fail_if_stale(
+        self, task_id: str, stale_seconds: int, error: dict
+    ) -> bool:
+        """仅当「仍是 processing」且「now - updated_at > stale_seconds」时标 failed。
+
+        返回是否真的改写。**必须二次校验**：扫描与写入之间心跳可能刚刷新过
+        updated_at，盲写会把正在跑的任务误杀（Serverless 下实例可能只是慢）。
+
+        Redis 用 WATCH/MULTI 比对（与 release 同一套路，不用 EVAL：fakeredis 无 Lua）。
+        """
+        ...
+
+
+# Reaper 互斥锁的保留 id：复用 acquire/release，不额外扩接口。
+# 为什么安全：task_id 恒为 uuid4().hex（32 位十六进制），与 "__reaper__" 不可能碰撞；
+# 对应 Redis key 为 task:lock:__reaper__，其中含 ":" 会被派生 key 过滤规则跳过。
+REAPER_LOCK_ID = "__reaper__"
+
 
 # 可选依赖：redis 包仅 redis 模式需要（requirements-redis.txt）；
 # 缺失时 _build_store 降级 memory，模块导入不炸
@@ -328,6 +363,29 @@ class MemoryTaskStore:
             if self._lock_alive(task_id) != token:
                 return False
             self._locks[task_id] = (token, time.time() + max(0, ttl_seconds))
+            return True
+
+    # ---- 僵尸任务清理（S2-P4 Reaper）----
+
+    async def list_processing_tasks(self) -> list[TranscribeTask]:
+        """遍历内存缓存（init 已把全部历史行载入，缓存即全集）。"""
+        with self._lock:
+            return [task for task in self._tasks.values() if task.status == "processing"]
+
+    async def fail_if_stale(
+        self, task_id: str, stale_seconds: int, error: dict
+    ) -> bool:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.status != "processing":
+                return False
+            now = time.time()
+            if now - task.updated_at <= stale_seconds:
+                return False
+            task.status = "failed"
+            task.error = error
+            task.updated_at = now
+            self._upsert_row(task)
             return True
 
 
@@ -479,6 +537,68 @@ class RedisTaskStore:
                 pipe.expire(key, max(1, ttl_seconds))
                 result = await pipe.execute()
                 return bool(result and result[0])
+            except _WatchError:  # type: ignore[misc]
+                return False
+
+    # ---- 僵尸任务清理（S2-P4 Reaper）----
+
+    async def list_processing_tasks(self) -> list[TranscribeTask]:
+        """SCAN task:* → 跳过派生 key → 逐条反序列化后按状态过滤。
+
+        用 SCAN 游标而非 KEYS：KEYS 在大 key 空间下会阻塞 Redis 主线程。
+        复杂度 O(任务总数)，已完成任务也要读一遍——status 在 JSON 体内，
+        没有廉价的服务端过滤手段（规模化优化见 docs/s2-async-recon.md 的 ZSET 索引）。
+        """
+        client = self._client()
+        prefix = self._KEY_PREFIX
+        tasks: list[TranscribeTask] = []
+        async for key in client.scan_iter(match=f"{prefix}*"):
+            suffix = _as_str(key) or ""
+            if ":" in suffix[len(prefix):]:
+                continue  # task:lock:* 等派生 key 不是任务本体
+            raw = await client.get(key)
+            if raw is None:
+                continue  # SCAN 与 GET 之间被 TTL 删除
+            task = _loads(raw)
+            if task.status == "processing":
+                tasks.append(task)
+        return tasks
+
+    async def fail_if_stale(
+        self, task_id: str, stale_seconds: int, error: dict
+    ) -> bool:
+        """WATCH 任务 key → 二次校验 status/updated_at → MULTI SET。
+
+        校验与写入之间任何写入都会让 WATCH 失效（WatchError），此时放弃本轮——
+        说明有人刚动过这条任务（心跳/收尾），下一轮 Reaper 再判即可。
+        """
+        key = self._key(task_id)
+        client = self._client()
+        async with client.pipeline(transaction=True) as pipe:
+            try:
+                await pipe.watch(key)
+                raw = await pipe.get(key)
+                if raw is None:
+                    await pipe.unwatch()
+                    return False
+                task = _loads(raw)
+                now = time.time()
+                if task.status != "processing":
+                    await pipe.unwatch()
+                    return False
+                if now - task.updated_at <= stale_seconds:
+                    await pipe.unwatch()
+                    return False
+                task.status = "failed"
+                task.error = error
+                task.updated_at = now
+                pipe.multi()
+                if self._ttl > 0:
+                    pipe.set(key, _dumps(task), ex=self._ttl)
+                else:
+                    pipe.set(key, _dumps(task))
+                await pipe.execute()
+                return True
             except _WatchError:  # type: ignore[misc]
                 return False
 

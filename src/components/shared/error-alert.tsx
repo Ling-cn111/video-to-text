@@ -46,6 +46,8 @@ function errorTitle(code: string): string {
       return '任务不存在'
     case 'TRANSCRIBE_FAILED':
       return '转写失败'
+    case 'TASK_TIMEOUT':
+      return '处理超时'
     case 'NETWORK_ERROR':
       return '网络异常'
     default:

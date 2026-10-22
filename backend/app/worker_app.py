@@ -11,18 +11,30 @@
 - 包装体：`{"body": "<json 字符串>"}` / `{"body": {...}}` / `{"payload": ...}`
 - 网关风格：`{"body": "<base64>", "isBase64Encoded": true}`
 
-两个入口（S2-P3 补第二个）：
+两个入口（S2-P3 补第二个，S2-P4 加 timer 分流）：
 - `POST /internal/worker/transcribe`：HTTP 触发器 + `X-Fc-Invocation-Type: Async`
   异步调用时 FC 透传原始请求，这是主路径；
-- `POST /invoke`：`InvokeFunction` API 调用时 FC 固定把 event 作为 body POST 到
-  `/invoke`（Content-Type: application/octet-stream）。当前不用于生产，保留它
-  是为了将来若改走「无触发器 + OpenAPI 签名」时 worker 侧零改动。
+- `POST /invoke`：`InvokeFunction` API 调用与**所有事件源触发器（含定时触发器）**
+  的固定落点，FC 把 event 作为 body POST 到这里（Content-Type: application/octet-stream）。
+
+S2-P4 定时触发器分流（关键约束）：
+阿里云 FC 的定时触发器是**事件调用**，不能指定 HTTP 路径——FC 固定投递到 `/invoke`。
+因此 reaper 不能只挂在 `/internal/worker/reap` 上，否则线上永远不会被触发。
+`/invoke` 按事件特征分流，判定顺序固定为：
+1. 含 `triggerTime` + `triggerName` → 定时事件，跑 reaper
+2. 含 `task_id` → 转写作业
+3. 其它 → 422
+Timer 必须优先：定时事件体里的 `payload` 是用户自定义字符串，理论上可能被配成
+一个恰好含 `task_id` 的 JSON，先判 timer 特征可避免误当作业执行。
+
+`/internal/worker/reap` 保留给本地脚本与人工 curl（Timer 打不到它）。
 
 执行语义：
 1. 任务不存在 / 非 processing → 200 skipped（确定性结果，不触发平台重试）
 2. `SET NX EX` 抢锁失败 → 200 skipped（另一实例在处理）
 3. pipeline 业务异常 → pipeline 内部已收敛为 failed，返回 200（重试无意义且会重复计费）
 4. 胶水层/未捕获异常 → 标 failed 后返回 5xx（基础设施类问题，值得平台重试）
+5. 定时触发器事件 → 跑 reaper，返回收割计数（与作业路径完全隔离）
 """
 import asyncio
 import base64
@@ -35,6 +47,7 @@ from typing import Any, Callable
 from fastapi import Body, FastAPI, Header, HTTPException, Request
 
 from app.config import TASK_LOCK_SECONDS, WORKER_TOKEN
+from app.services import reaper
 from app.services import tasks as task_store
 from app.services import transcribe
 from app.services.dispatcher import TranscribeJob
@@ -44,8 +57,11 @@ logger = logging.getLogger(__name__)
 # Worker 路由（HTTP 触发器异步调用，主路径）
 WORKER_PATH = "/internal/worker/transcribe"
 
-# InvokeFunction API 兼容入口（FC 固定投递到该路径）
+# InvokeFunction API / 事件源触发器（含定时触发器）的固定落点
 INVOKE_PATH = "/invoke"
+
+# 僵尸任务清理入口（S2-P4）：本地脚本 / 人工 curl 用，定时触发器打不到这里
+REAP_PATH = "/internal/worker/reap"
 
 # 解包最多下钻层数（防畸形事件无限递归）
 _MAX_UNWRAP_DEPTH = 4
@@ -157,6 +173,41 @@ def _parse_job(payload: Any) -> TranscribeJob:
         raise HTTPException(status_code=422, detail=f"作业体无法解析：{exc}") from exc
 
 
+def _looks_like_timer_event(payload: Any) -> bool:
+    """判定是否 FC 定时触发器事件：`{"triggerTime": ..., "triggerName": ..., "payload": ...}`。
+
+    沿与 `_unwrap_event` 相同的包装层下钻，兼容平台将来把 event 塞进 body 的情形。
+    只要求两个特征字段**同时存在**，不解析 payload 内容——payload 是用户自定义字符串，
+    依赖它做路由会出现「忘配 payload → reaper 静默不跑」这类更难排查的故障。
+    """
+    current = payload
+    for _ in range(_MAX_UNWRAP_DEPTH):
+        if isinstance(current, (str, bytes, bytearray)):
+            try:
+                current = _decode_body(current, is_base64=False)
+            except ValueError:
+                return False
+            continue
+        if not isinstance(current, dict):
+            return False
+        if "triggerTime" in current and "triggerName" in current:
+            return True
+        is_base64 = bool(current.get("isBase64Encoded"))
+        for key in ("body", "payload", "event", "data"):
+            if key in current:
+                value = current[key]
+                if isinstance(value, (str, bytes, bytearray)):
+                    try:
+                        value = _decode_body(value, is_base64 and key == "body")
+                    except ValueError:
+                        return False
+                current = value
+                break
+        else:
+            return False
+    return False
+
+
 def _lock_renewer(task_id: str, token: str, loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     """返回同步续期回调：pipeline 心跳线程 → 投递到 Worker 事件循环执行。
 
@@ -256,16 +307,16 @@ async def run_transcribe_job(
 
 
 @app.post(INVOKE_PATH)
-async def run_transcribe_job_via_invoke(
+async def run_invoke_entry(
     request: Request,
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> dict:
-    """`InvokeFunction` API 调用入口（FC 固定投递到 `/invoke`，body 为 octet-stream）。
+    """`InvokeFunction` API 与事件源触发器（含定时触发器）的统一入口。
 
-    不用于当前生产路径（P3 走 HTTP 触发器），保留它是为了将来若改走
-    「无触发器 + OpenAPI 签名」时 worker 侧零改动。因此这里直接读原始字节，
-    不依赖 FastAPI 的 JSON 解析（octet-stream 不会被解析成 JSON）。
+    FC 固定把 event 作为 body POST 到 `/invoke`（octet-stream），因此这里直接读原始
+    字节，不依赖 FastAPI 的 JSON 解析。分流顺序见模块 docstring：Timer 优先，
+    其次是转写作业。
     """
     await _ensure_initialized()
     _verify_token(x_worker_token, authorization)
@@ -274,8 +325,28 @@ async def run_transcribe_job_via_invoke(
     try:
         payload = _decode_body(raw, is_base64=False) if raw else None
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=f"作业体无法解析：{exc}") from exc
+        raise HTTPException(status_code=422, detail=f"事件体无法解析：{exc}") from exc
+
+    if _looks_like_timer_event(payload):
+        logger.info("收到定时触发器事件，执行僵尸任务清理")
+        return (await reaper.reap_once()).to_dict()
+
     return await _run_job(_parse_job(payload))
+
+
+@app.post(REAP_PATH)
+async def reap_stale_tasks(
+    x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> dict:
+    """僵尸任务清理（S2-P4）：本地脚本 / 人工 curl 入口。
+
+    线上由 FC 定时触发器经 `/invoke` 触发（定时触发器无法指定 HTTP 路径），
+    这个端点存在的意义是「不依赖云上定时器也能验一遍 reaper」。
+    """
+    await _ensure_initialized()
+    _verify_token(x_worker_token, authorization)
+    return (await reaper.reap_once()).to_dict()
 
 
 @app.get("/api/health")

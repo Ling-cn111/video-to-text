@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from app.services import tasks as tasks_module
 from app.services import transcribe as transcribe_module
 from app.services.dispatcher import FcDispatcher, TranscribeJob
-from app.worker_app import INVOKE_PATH, WORKER_PATH, app as worker_app
+from app.worker_app import INVOKE_PATH, REAP_PATH, WORKER_PATH, app as worker_app
 
 client = TestClient(worker_app)
 
@@ -419,4 +419,143 @@ def test_fc_dispatcher_delivers_body_worker_accepts(new_task, subtitle_ok):
     )
     assert response.status_code == 200
     assert response.json()["task_status"] == "completed"
+
+
+# ---- 定时触发器分流 + Reaper 端点（S2-P4）----
+
+def _timer_event(payload: str = '{"action":"reap"}') -> bytes:
+    """FC 定时触发器事件体（官方格式，见 docs/serverless-deploy.md §5.2）。"""
+    return json.dumps(
+        {
+            "triggerTime": "2023-12-26T07:49:00Z",
+            "triggerName": "reapTimer",
+            "payload": payload,
+        }
+    ).encode()
+
+
+def _stale_task(store, seconds: float = 3600) -> str:
+    """建一条心跳已停止的任务。"""
+    import time
+
+    from app.schemas import VideoInfo
+
+    task_id = asyncio.run(store.create(VideoInfo(**VIDEO)))
+    task = asyncio.run(store.get(task_id))
+    task.updated_at = time.time() - seconds
+    with store._lock:
+        store._upsert_row(task)
+    return task_id
+
+
+@pytest.fixture()
+def isolated_store(monkeypatch, tmp_path):
+    """Reaper 会扫描**全库** processing 任务，必须用独立库，否则会收割别的用例留下的任务。"""
+    fresh = tasks_module.MemoryTaskStore(str(tmp_path / "reaper.db"))
+    monkeypatch.setattr(tasks_module, "_STORE", fresh)
+    monkeypatch.setattr("app.worker_app._initialized", False)
+    return fresh
+
+
+def test_reap_path_is_not_the_invoke_path():
+    """定时触发器打不到自定义路径，所以两个端点必须区分开（别把 REAP_PATH 配进 s.yaml）。"""
+    assert REAP_PATH == "/internal/worker/reap"
+    assert REAP_PATH != INVOKE_PATH
+
+
+def test_reap_endpoint_reaps_stale_task(isolated_store):
+    task_id = _stale_task(isolated_store)
+
+    response = client.post(REAP_PATH)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["reaped"] == 1
+    assert task_id in payload["task_ids"]
+    assert asyncio.run(isolated_store.get(task_id)).status == "failed"
+    assert asyncio.run(isolated_store.get(task_id)).error["code"] == "TASK_TIMEOUT"
+
+
+def test_reap_endpoint_keeps_fresh_task(isolated_store):
+    from app.schemas import VideoInfo
+
+    task_id = asyncio.run(isolated_store.create(VideoInfo(**VIDEO)))
+
+    response = client.post(REAP_PATH)
+
+    assert response.status_code == 200
+    assert response.json()["reaped"] == 0
+    assert asyncio.run(isolated_store.get(task_id)).status == "processing"
+
+
+def test_reap_endpoint_requires_token(monkeypatch, isolated_store):
+    monkeypatch.setattr("app.worker_app.WORKER_TOKEN", "s3cret")
+
+    assert client.post(REAP_PATH).status_code == 401
+    assert client.post(REAP_PATH, headers={"X-Worker-Token": "nope"}).status_code == 401
+    assert client.post(REAP_PATH, headers={"X-Worker-Token": "s3cret"}).status_code == 200
+
+
+def test_invoke_routes_timer_event_to_reaper(isolated_store):
+    """定时触发器事件必须走 reaper，而不是被当成作业体回 422。"""
+    task_id = _stale_task(isolated_store)
+
+    response = client.post(INVOKE_PATH, content=_timer_event())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["reaped"] == 1
+    assert asyncio.run(isolated_store.get(task_id)).status == "failed"
+
+
+def test_invoke_timer_routing_ignores_payload_content(isolated_store):
+    """payload 是用户自定义字符串，不参与路由（忘配 payload 不能让 reaper 静默失效）。"""
+    task_id = _stale_task(isolated_store)
+
+    response = client.post(INVOKE_PATH, content=_timer_event(payload="anything"))
+
+    assert response.status_code == 200
+    assert response.json()["reaped"] == 1
+    assert asyncio.run(isolated_store.get(task_id)).status == "failed"
+
+
+def test_invoke_timer_wins_over_task_id_in_payload(isolated_store):
+    """判定顺序：Timer 优先。payload 里恰好有 task_id 也不能被当作业执行。"""
+    payload = json.dumps({"triggerTime": "2023-12-26T07:49:00Z", "triggerName": "t", "payload": {"task_id": "x"}})
+    task_id = _stale_task(isolated_store)
+
+    response = client.post(INVOKE_PATH, content=payload.encode())
+
+    assert response.status_code == 200
+    assert "reaped" in response.json()  # 走的是 reaper 结果，不是作业结果
+    assert asyncio.run(isolated_store.get(task_id)).status == "failed"
+
+
+def test_invoke_still_runs_job_after_timer_routing(new_task, subtitle_ok):
+    """分流不能破坏原有作业路径。"""
+    response = client.post(INVOKE_PATH, content=json.dumps(_job(new_task)).encode())
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "task_id": new_task, "task_status": "completed"}
+
+
+def test_invoke_rejects_body_without_timer_or_task_id():
+    """两个特征都不满足仍是 422（不能被误判成定时事件）。"""
+    response = client.post(INVOKE_PATH, content=json.dumps({"triggerTime": "2023-12-26T07:49:00Z"}).encode())
+    assert response.status_code == 422
+
+
+def test_timer_detection_handles_wrapped_body():
+    """平台若把 event 塞进 body 包装层，也要能识别（与 _unwrap_event 同宽容度）。"""
+    from app.worker_app import _looks_like_timer_event
+
+    event = json.loads(_timer_event())
+    assert _looks_like_timer_event(event) is True
+    assert _looks_like_timer_event({"body": json.dumps(event)}) is True
+    assert _looks_like_timer_event({"payload": event}) is True
+    assert _looks_like_timer_event(_job("x")) is False
+    assert _looks_like_timer_event(None) is False
+    assert _looks_like_timer_event("not json") is False
 

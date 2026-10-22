@@ -290,6 +290,21 @@ return StartTaskResponse(...)
 2. 收割器：扫 `task:*`，`status=processing` 且 `now - updated_at > STALE_SECONDS`（建议 ≥ 函数超时 + 2 分钟）→ 标 `failed`（`error.code=TASK_TIMEOUT`）或重新入队（若 `attempts < MAX_ATTEMPTS`）。
 3. 收割器可挂在：Worker 的定时器触发器（方案 C 顺带）、或 API 函数每 N 次请求触发一次（不推荐）、或独立的 timer 函数（推荐，成本极低）。
 
+**P4 实际落地**（与上述建议的差异及原因）：
+
+- **只标 failed，不重新入队**。重投会撞上未过期的执行锁（`TASK_LOCK_SECONDS=3600`）返回 `skipped`；
+  且自动重跑有重复计费风险。让用户点重试（新 `task_id` + 新锁）语义最干净。
+- **不主动删 `task:lock:*`**。任务已 `failed`，任何重投都会在 `_run_job` 首个状态检查返回
+  `skipped: already_failed`；强删锁会破坏「release 必须带 token」的不变量，若 worker 其实还活着
+  就会让同一任务被跑第二遍。
+- **挂在 worker 函数的定时触发器上**（不是独立 timer 函数）：改动最小，逻辑已独立成
+  `app/services/reaper.py`，将来嫌冷启动贵只需加一个 resource。
+- **踩到的坑**：定时触发器是**事件调用**，不能指定 HTTP 路径，FC 固定投递到容器 `/invoke`。
+  所以 reaper 端点 `/internal/worker/reap` 只能作人工入口，`/invoke` 必须按事件特征分流。
+- **并发安全**：`reaper:lock`（复用 `acquire`/`release`，保留 id `__reaper__`）只省算力；
+  正确性靠 `fail_if_stale` 的 CAS（Redis 用 WATCH/MULTI）——即使锁失效，两个 reaper 同时扫
+  也只会有一个写入成功。
+
 ### 5.5 `_run_async()` 的连接泄漏（**当前就有，S2 会放大**）
 
 `tasks.py:306-310`：
@@ -498,9 +513,12 @@ Timer（每 1 分钟）──► Worker 函数
 8. **【新】异步调用是否原样透传 path**：官方只写「将请求持久化保存，然后立即返回响应」，未明确 path
    是否保持。同步透传是明确的，异步极可能一致。**这是 P3 唯一的真机待验证项**：
    `docs/serverless-deploy.md` §7.2 第 1 步的 curl 专门验它；若返回 404，只改 `FC_WORKER_PATH`，代码零改动。
-9. **【新】Worker 崩溃后的重试被锁挡住**：FC 重试间隔 0.5/1/2 秒，`TASK_LOCK_SECONDS=3600`，
-   3 次重试都会撞锁 `skipped`。任务停在 `processing` 直到 P4 reaper 按 `TASK_STALE_SECONDS` 判定。
-   P3 只承诺「投递可靠 + 正常路径幂等」，崩溃恢复归 P4。
+9. **【已由 P4 解决】Worker 崩溃后的重试被锁挡住**：FC 重试间隔 0.5/1/2 秒，`TASK_LOCK_SECONDS=3600`，
+   3 次重试都会撞锁 `skipped`。任务停在 `processing` 直到 reaper 按 `TASK_STALE_SECONDS` 判定。
+   **P4 落地方式**：worker 函数加定时触发器（`reapTimer`，每 5 分钟）→ FC 事件调用 → 容器 `/invoke`
+   → 按 `triggerTime`/`triggerName` 特征分流到 `app/services/reaper.py`。**关键坑**：定时触发器
+   不能指定 HTTP 路径，固定投递到 `/invoke`，所以 reaper 不能只挂在 `/internal/worker/reap`
+   （那个端点只留给本地脚本与人工 curl）。详见 `docs/serverless-deploy.md` §5.2、§7.2.1。
 
 ---
 
@@ -535,5 +553,12 @@ Timer（每 1 分钟）──► Worker 函数
 | **FC 分发（P3）** | `backend/app/services/dispatcher.py` `FcDispatcher` / `DispatchError` |
 | **FC 双函数模板（P3）** | `s.yaml`（仓库根目录） |
 | **FC 相关环境变量（P3）** | `backend/app/config.py` `FC_WORKER_URL` / `FC_WORKER_PATH` / `FC_ASYNC_TIMEOUT_SECONDS` |
-| **InvokeFunction 兼容入口（P3）** | `backend/app/worker_app.py` `INVOKE_PATH` / `run_transcribe_job_via_invoke` |
+| **InvokeFunction 兼容入口（P3）** | `backend/app/worker_app.py` `INVOKE_PATH` / `run_invoke_entry` |
 | **分发单测（P3）** | `backend/tests/test_dispatcher.py`（MockTransport）、`test_transcribe_dispatch.py`（HTTP 端到端） |
+| **Reaper 逻辑（P4）** | `backend/app/services/reaper.py` `reap_once` / `ReapResult` |
+| **Reaper 端点（P4）** | `backend/app/worker_app.py` `REAP_PATH` / `reap_stale_tasks` |
+| **定时事件分流（P4）** | `backend/app/worker_app.py` `_looks_like_timer_event` |
+| **Reaper 存储原语（P4）** | `backend/app/services/tasks.py` `list_processing_tasks` / `fail_if_stale` |
+| **Reaper 本地脚本（P4）** | `backend/scripts/reap.py`（`python -m scripts.reap --dry-run`） |
+| **Reaper 单测（P4）** | `backend/tests/test_reaper.py`（memory + fakeredis 参数化） |
+| **定时触发器配置（P4）** | `s.yaml` worker.triggers 的 `reapTimer` |
