@@ -90,6 +90,16 @@ TASK_HEARTBEAT_SECONDS: float = float(os.getenv("TASK_HEARTBEAT_SECONDS", "30"))
 # inline 保证本地开发、单机部署与既有测试的行为与改造前完全一致。
 ENQUEUE_MODE: str = os.getenv("ENQUEUE_MODE", "inline").strip().lower()
 
+# ---- Worker（S2-P2）----
+
+# 任务执行锁（秒）：Worker 领取任务时 SET NX EX 的 TTL，执行期间按心跳续期。
+# 必须大于「心跳间隔的若干倍」；Worker 崩溃后锁到期自动释放，重试才能重新领取。
+TASK_LOCK_SECONDS: int = int(os.getenv("TASK_LOCK_SECONDS", "3600"))
+
+# Worker 端点鉴权 token：为空 = 不校验（本地开发 / FC 内部鉴权已覆盖的场景）。
+# 非空时要求请求头 X-Worker-Token 完全一致，否则 401。
+WORKER_TOKEN: str = os.getenv("WORKER_TOKEN", "")
+
 # 请求限流（令牌桶，任务 H）：每 IP 每分钟 POST 请求数上限；0 = 禁用
 RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "10"))
 

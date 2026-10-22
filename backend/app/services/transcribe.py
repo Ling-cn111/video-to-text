@@ -14,6 +14,7 @@ S2-P0 进度上报（ProgressReporter）：
 import logging
 import threading
 import time
+from typing import Callable
 
 from app.config import TASK_HEARTBEAT_SECONDS
 from app.errors import AppException
@@ -45,7 +46,12 @@ class ProgressReporter:
     - `close()`：停止心跳；之后的 `set()` 变成 no-op（避免收尾后又被心跳覆盖）
     """
 
-    def __init__(self, task_id: str, heartbeat_seconds: float | None = None) -> None:
+    def __init__(
+        self,
+        task_id: str,
+        heartbeat_seconds: float | None = None,
+        on_heartbeat: "Callable[[], None] | None" = None,
+    ) -> None:
         self._task_id = task_id
         self._lock = threading.Lock()
         self._last_progress = -1
@@ -53,8 +59,13 @@ class ProgressReporter:
         self._last_write = 0.0
         self._closed = False
         self._interval = TASK_HEARTBEAT_SECONDS if heartbeat_seconds is None else float(heartbeat_seconds)
+        self._on_heartbeat = on_heartbeat
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        if self._interval <= 0 and on_heartbeat is not None:
+            # 心跳关闭但需要续期（Worker 锁）：按默认 30s 兜底，避免锁静默过期
+            logger.warning("TASK_HEARTBEAT_SECONDS<=0 但传入了 on_heartbeat，心跳按 30s 兜底")
+            self._interval = 30.0
         if self._interval > 0:
             self._thread = threading.Thread(
                 target=self._heartbeat, name=f"task-heartbeat-{task_id[:8]}", daemon=True
@@ -100,6 +111,9 @@ class ProgressReporter:
 
     def _heartbeat(self) -> None:
         while not self._stop.wait(self._interval):
+            if self._closed:
+                return
+            self._fire_hook()
             with self._lock:
                 if self._closed:
                     return
@@ -108,6 +122,15 @@ class ProgressReporter:
                 if time.monotonic() - self._last_write < self._interval:
                     continue
                 self._write(self._last_stage or "parse_link", self._last_progress)
+
+    def _fire_hook(self) -> None:
+        """心跳钩子（Worker 锁续期）：在锁外调用，避免阻塞进度写入；失败只记日志。"""
+        if self._on_heartbeat is None:
+            return
+        try:
+            self._on_heartbeat()
+        except Exception:  # pragma: no cover - 续期失败不打断转写
+            logger.warning("心跳钩子执行失败（task_id=%s）", self._task_id, exc_info=True)
 
 
 def _finish(task_id: str, transcript: list[dict], source: str) -> None:
@@ -139,13 +162,16 @@ def run_transcription_pipeline(
     prefer_subtitles: bool = True,
     hotwords: list[str] | None = None,
     engine: str | None = None,
+    on_heartbeat: Callable[[], None] | None = None,
 ) -> None:
     """后台转写主流程。任何异常都收敛为任务 failed + 友好信息。
 
     engine 为请求级手动选择（local | cloud，缺省跟随 ASR_ENGINE）；
     云端运行期故障由 asr.transcribe_audio 内的 ASR_ENGINE_FALLBACK 降级本地。
+
+    on_heartbeat：心跳回调（S2-P2），Worker 用它续期执行锁；同步上下文调用。
     """
-    reporter = ProgressReporter(task_id)
+    reporter = ProgressReporter(task_id, on_heartbeat=on_heartbeat)
     try:
         # 阶段一：字幕快路径（分层降级：yt-dlp CC → dm/view AI；秒级返回）
         reporter.set("parse_link", PROGRESS_PARSE)

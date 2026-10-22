@@ -101,3 +101,39 @@ def test_asr_progress_maps_into_span(writes):
     assert progresses[-1] == PROGRESS_ASR_START + PROGRESS_ASR_SPAN
     assert progresses == sorted(progresses)
     assert all(b - a >= PROGRESS_STEP for a, b in zip(progresses, progresses[1:]))
+
+
+def test_heartbeat_hook_fires_even_without_progress(writes):
+    """S2-P2：锁续期钩子必须独立于进度写入触发（否则长阻塞步骤期间锁会过期）。"""
+    calls: list[int] = []
+    reporter = ProgressReporter("t1", heartbeat_seconds=0.05, on_heartbeat=lambda: calls.append(1))
+    time.sleep(0.3)
+    reporter.close()
+    assert len(calls) >= 2
+    assert writes == []  # 没有进度上报时不应产生写入
+
+
+def test_heartbeat_hook_errors_do_not_break_reporter(writes):
+    """续期失败（Redis 抖动）不能让心跳线程退出，也不能打断转写。"""
+    calls: list[int] = []
+
+    def _boom():
+        calls.append(1)
+        raise RuntimeError("renew failed")
+
+    reporter = ProgressReporter("t1", heartbeat_seconds=0.05, on_heartbeat=_boom)
+    reporter.set("asr", 40)
+    time.sleep(0.3)
+    reporter.close()
+    assert len(calls) >= 2  # 线程仍存活，持续重试
+    assert writes  # 进度写入未受影响
+
+
+def test_heartbeat_hook_falls_back_when_heartbeat_disabled(monkeypatch, writes):
+    """TASK_HEARTBEAT_SECONDS=0 但需要续期时按 30s 兜底启动心跳线程。"""
+    monkeypatch.setattr(transcribe_module, "TASK_HEARTBEAT_SECONDS", 0)
+    calls: list[int] = []
+    reporter = ProgressReporter("t1", on_heartbeat=lambda: calls.append(1))
+    assert reporter._interval == 30.0
+    assert reporter._thread is not None
+    reporter.close()
