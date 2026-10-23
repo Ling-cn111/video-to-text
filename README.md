@@ -164,6 +164,11 @@ pnpm tauri build
 - `src-tauri/target/release/bundle/msi/*.msi`：WiX，适合企业分发 / 静默安装
 - `src-tauri/target/release/bundle/nsis/*-setup.exe`：NSIS，普通用户双击安装
 
+国内网络下若卡在下载 NSIS/WiX，需设置 GitHub 镜像：
+`$env:TAURI_BUNDLER_TOOLS_GITHUB_MIRROR = "https://ghfast.top/https://github.com"`。
+完整踩坑记录（WiX 中文代码页、安装模式差异、验收清单）见
+[docs/desktop-packaging.md](docs/desktop-packaging.md)。
+
 ### 与 Web 版的差异（为什么路由改了）
 
 Web 版靠 Next 服务端把 `/backend-api/*` 代理到后端；桌面端是纯静态文件（没有 Node 服务端），
