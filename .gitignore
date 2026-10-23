@@ -16,6 +16,9 @@
 # 桌面端构建：Mock 路由的临时暂存目录（scripts/build-desktop.mjs 用后即删）
 /.desktop-build/
 
+# 安装包产物（由 pnpm tauri build 生成，不入库；分发走 GitHub Release）
+/dist/
+
 # Tauri / Rust 编译产物（src-tauri/.gitignore 已含 /target、/gen/schemas）
 
 # production
