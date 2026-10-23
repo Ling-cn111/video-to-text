@@ -64,8 +64,9 @@ def _record_youtubedl_params(monkeypatch):
     `YoutubeDL`，让真实调用路径把 params 交出来——新增调用点漏设 no_color 时，
     只要它真的被走到就会暴露。
 
-    同时把 playurl API 路径打桩成失败：它是 B站专用的前置路径（纯 JSON，
-    不经过 yt-dlp），不打桩就会真的发网络请求，既慢又不稳定。
+    同时把前置的 API 路径打桩成失败：`parser` 会先试 B站 view API、`audio` 会先试
+    playurl API，两者都是纯 JSON、不经过 yt-dlp。不打桩就会真的发网络请求，
+    既慢又不稳定，还会让 yt-dlp 分支根本走不到（测试就白测了）。
     """
     import yt_dlp
 
@@ -73,11 +74,11 @@ def _record_youtubedl_params(monkeypatch):
 
     recorded: list[dict] = []
 
-    monkeypatch.setattr(
-        bili_playurl,
-        "get_audio_stream",
-        lambda *a, **kw: (_ for _ in ()).throw(ValueError("stubbed out")),
-    )
+    def _fail(*args, **kwargs):
+        raise ValueError("stubbed out")
+
+    monkeypatch.setattr(bili_playurl, "get_audio_stream", _fail)
+    monkeypatch.setattr(bili_playurl, "get_video_meta", _fail)
 
     class _Spy:
         def __init__(self, params=None, *args, **kwargs):

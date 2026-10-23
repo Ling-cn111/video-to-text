@@ -88,14 +88,50 @@ def _get_json(client: httpx.Client, url: str) -> dict:
     return payload.get("data") or {}
 
 
-def resolve_cid(bvid: str) -> int:
-    """bvid → cid（playurl 必需）。"""
+@dataclass(frozen=True)
+class VideoMeta:
+    """view API 返回的元数据（`/api/parse` 与 playurl 共用）。"""
+
+    bvid: str
+    aid: int
+    cid: int
+    title: str
+    cover: str
+    duration: int
+
+
+def get_video_meta(bvid: str) -> VideoMeta:
+    """bvid → 元数据。
+
+    这是 `/x/web-interface/view` 的纯 JSON 封装：机房 IP 上网页 412，但这个接口
+    带设备指纹正常（见 §7.3.2 的 baseline/hardened 对照）。`/api/parse` 走它，
+    就不必让 yt-dlp 去抓网页。
+    """
     with httpx.Client(follow_redirects=True) as client:
         data = _get_json(client, f"{VIEW_API}?bvid={bvid}")
+
     cid = data.get("cid")
     if not cid:
         raise ValueError(f"view API 未返回 cid（bvid={bvid}）")
-    return int(cid)
+
+    cover = str(data.get("pic") or "")
+    # B站 CDN 支持 https：统一升级，避免 https 站点引用 http 图片被混合内容策略拦截
+    if cover.startswith("http://"):
+        cover = f"https://{cover[len('http://'):]}"
+
+    return VideoMeta(
+        bvid=str(data.get("bvid") or bvid),
+        aid=int(data.get("aid") or 0),
+        cid=int(cid),
+        title=str(data.get("title") or "").strip(),
+        cover=cover,
+        duration=int(data.get("duration") or 0),
+    )
+
+
+def resolve_cid(bvid: str) -> int:
+    """bvid → cid（playurl 必需）。"""
+    return get_video_meta(bvid).cid
 
 
 def get_audio_stream(bvid: str, cid: int | None = None) -> AudioStream:

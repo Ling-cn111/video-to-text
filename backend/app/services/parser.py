@@ -1,7 +1,19 @@
-"""yt-dlp 解析服务：把 B站（后续扩展更多平台）视频页解析为 VideoInfo。
+"""视频解析服务：把 B站视频页解析为 VideoInfo。
+
+## 为什么优先走 view API
+
+云端实测（阿里云 cn-hangzhou 出口）：`www.bilibili.com/video/*` 网页被风控死锁
+（412，即使带设备指纹 + 首页会话 Cookie 也无效），而 `api.bilibili.com` 的 JSON
+接口带指纹正常。yt-dlp 解析元数据要先抓网页，所以在这类机器上必然失败 —— 表现
+为「有个视频能转写成功、有的直接报错」，因为只有命中字幕快路径的才绕过了 parse。
+
+因此解析顺序是：
+  1. B站 view API（纯 JSON，机房 IP 可用）
+  2. yt-dlp（其他平台，或 API 拿不到时的兜底）
 
 安全前提：调用前 URL 已通过 url_guard（http/https + 非保留地址）与平台白名单校验。
 """
+import logging
 import re
 
 import yt_dlp
@@ -12,6 +24,9 @@ from app.schemas import VideoInfo
 from app.services.ytdlp_options import base_options as _base_options
 from app.url_guard import validate_public_http_url
 
+logger = logging.getLogger(__name__)
+
+
 def _ydl_options() -> dict:
     """每次解析时构建：设备指纹是动态的，不能在模块导入时固化。"""
     return {
@@ -19,7 +34,10 @@ def _ydl_options() -> dict:
         "skip_download": True,
         # 只取元数据，不解析分片下载地址，速度更快
         "extract_flat": False,
-    }# yt-dlp 报错里的技术性前缀，如 "ERROR: [BiliBili] BV1xxx: "
+    }
+
+
+# yt-dlp 报错里的技术性前缀，如 "ERROR: [BiliBili] BV1xxx: "
 _YDL_ERROR_PREFIX = re.compile(r"^ERROR:\s*\[[^\]]+\]\s*[^:]*:\s*", re.IGNORECASE)
 
 
@@ -37,7 +55,7 @@ def friendly_parse_error(raw_message: str) -> ParseFailedError:
 
 
 def parse_video_url(raw_url: str) -> VideoInfo:
-    """入口：校验 → 平台识别 → yt-dlp 提取 → 契约模型。"""
+    """入口：校验 → 平台识别 → API/yt-dlp 提取 → 契约模型。"""
     if not raw_url or not raw_url.strip():
         raise InvalidUrlError("请输入视频链接")
 
@@ -50,6 +68,13 @@ def parse_video_url(raw_url: str) -> VideoInfo:
 
     url_video_id = extract_video_id(parsed.path, meta)
 
+    # 第 1 级：B站 view API。机房 IP 上网页会 412，JSON API 不会。
+    if meta.id == "bilibili" and url_video_id and url_video_id.upper().startswith("BV"):
+        info = _parse_via_api(url_video_id)
+        if info is not None:
+            return info
+
+    # 第 2 级：yt-dlp（其他平台，或 API 不可用时的兜底）
     try:
         with yt_dlp.YoutubeDL(_ydl_options()) as ydl:
             info = ydl.extract_info(raw_url.strip(), download=False)
@@ -77,4 +102,30 @@ def parse_video_url(raw_url: str) -> VideoInfo:
         duration=int(info.get("duration") or 0),
         platform=meta.id,
         videoId=str(info.get("id") or url_video_id or ""),
+    )
+
+
+def _parse_via_api(bvid: str) -> VideoInfo | None:
+    """B站 view API 取元数据；任何失败返回 None 交给 yt-dlp 兜底。
+
+    不抛异常是刻意的：这是「优化路径」，API 临时不可用（风控升级、接口变更）
+    时不应让用户看到报错，回退 yt-dlp 至少在其他网络环境下还能用。
+    """
+    from app.services import bili_playurl
+
+    try:
+        data = bili_playurl.get_video_meta(bvid)
+    except Exception:
+        logger.info("view API 解析失败，回退 yt-dlp（bvid=%s）", bvid, exc_info=True)
+        return None
+
+    if not data.title:
+        return None
+
+    return VideoInfo(
+        title=data.title,
+        cover=data.cover,
+        duration=data.duration,
+        platform="bilibili",
+        videoId=data.bvid,
     )
