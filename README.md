@@ -139,13 +139,55 @@ pnpm start    # 生产模式（注册 Service Worker，可验证 PWA）
 pnpm node scripts/generate-icons.mjs   # 修改 scripts/generate-icons.mjs 后重新生成 public/icons/
 ```
 
+## 桌面端（Tauri）
+
+前端可打包成 Windows 安装包（`.msi` / `.exe`）。桌面版把静态资源装进本地，不依赖域名可达性，
+适合国内网络环境。
+
+### 一次性准备（仅构建者需要，最终用户只要安装包）
+
+| 依赖 | 说明 |
+| --- | --- |
+| Rust（`stable-x86_64-pc-windows-msvc`） | `rustup` 安装，Tauri 编译必需 |
+| MSVC C++ 生成工具 + Windows SDK | VS 2022 Build Tools，勾选「C++ 生成工具」工作负载 |
+| WebView2 Runtime | Win11 / 较新 Win10 已内置；老系统需单独装 |
+
+### 构建
+
+```powershell
+$env:DESKTOP_API_BASE = "https://<你的后端域名>"   # 省略则回退 .env.local 里的 BACKEND_ORIGIN
+pnpm tauri build
+```
+
+产物：
+
+- `src-tauri/target/release/bundle/msi/*.msi`：WiX，适合企业分发 / 静默安装
+- `src-tauri/target/release/bundle/nsis/*-setup.exe`：NSIS，普通用户双击安装
+
+### 与 Web 版的差异（为什么路由改了）
+
+Web 版靠 Next 服务端把 `/backend-api/*` 代理到后端；桌面端是纯静态文件（没有 Node 服务端），
+两处形态差异由 `scripts/build-desktop.mjs` 自动处理：
+
+| | Web（Vercel / 本地） | 桌面端（静态导出） |
+| --- | --- | --- |
+| 后端地址 | 同源 `/backend-api/*` → rewrites 代理 | `NEXT_PUBLIC_API_BASE` + `/api/*`，跨域直连 |
+| 任务页路由 | `/result/<taskId>`（308 跳到新形式） | `/result?id=<taskId>` |
+| Mock 路由 `src/app/api/*` | 保留 | 构建期临时移出（静态导出不支持 POST） |
+
+所以**页面内跳转一律用 `src/lib/routes.ts` 的 `resultHref()` / `processingHref()`**，
+不要在组件里手拼 `/result/${id}`——那在桌面端会 404。旧链接在 Web 端由
+`next.config.mjs` 的 `redirects` 301 到新形式，已有书签不会失效。
+
+开发调试：`pnpm tauri dev` 会自动起 `pnpm dev`（3000 端口）并指向它，支持热更新。
+
 ## 项目结构
 
 ```
 backend/                # FastAPI + yt-dlp 真实解析服务（详见 backend/README.md）
 └── app/                # parse 路由 / url_guard(SSRF守卫) / platforms(平台注册表) / services/parser(yt-dlp)
 src/
-├── app/                  # 路由与 API（/、/processing/[taskId]、/result/[taskId]、/api/*）
+├── app/                  # 路由与 API（/、/processing?id=、/result?id=、/api/*）
 ├── components/           # home / processing / result / shared / layout / pwa / ui(shadcn)
 ├── lib/                  # types(契约) api(出口) real-api(真实后端) http(共享请求层)
 │                         # mock-api(无状态Mock) mock-data(假数据)

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  简体中文 WiX 本地化文件。
+
+  为什么必须自定义：Tauri 默认 locale 是 en-us，代码页 1252（西欧），
+  当 productName 含中文时 light.exe 会报 LGHT0311（字符不在 1252 里）。
+  这里把语言设为 2052（zh-CN）、代码页设为 936（GBK，MSI 数据库可承载中文），
+  并且**不引用产品名**，避免产品名再次进入本地化字符串。
+
+  被 src-tauri/tauri.conf.json 的 bundle.windows.wix.language 引用。
+-->
+<WixLocalization Culture="zh-CN" Language="2052" Codepage="936"
+  xmlns="http://schemas.microsoft.com/wix/2006/localization">
+  <String Id="TauriLanguage">2052</String>
+  <String Id="TauriCodepage">936</String>
+  <String Id="LaunchApp">启动应用</String>
+  <String Id="DowngradeErrorMessage">已安装更新版本，请先卸载后再安装当前版本。</String>
+  <String Id="PathEnvVarFeature">将程序安装目录加入 PATH 系统环境变量，使应用可在任意位置通过命令行启动。</String>
+  <String Id="InstallAppFeature">安装应用程序。</String>
+</WixLocalization>

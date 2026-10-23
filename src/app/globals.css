@@ -57,3 +57,20 @@
     @apply bg-background text-foreground antialiased;
   }
 }
+
+/*
+ * 移动端 PWA 安全区（配合 layout.tsx 的 viewportFit: "cover"）。
+ * 安装到主屏后 iOS/Android 会去掉浏览器地址栏，内容会顶到刘海与 Home 指示条下方；
+ * 用 env() 补内边距。max() 兜底不支持 env() 的旧浏览器（回退 0px，不影响桌面端）。
+ */
+@supports (padding: max(0px)) {
+  body {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+
+  /* 只有底部需要额外留白：避免固定底栏被 Home 指示条遮挡 */
+  body {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}

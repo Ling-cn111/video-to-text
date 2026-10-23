@@ -3,6 +3,7 @@
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTaskStore } from '@/stores/task-store'
+import { resultHref } from '@/lib/routes'
 
 const POLL_INTERVAL_MS = 800
 
@@ -26,7 +27,7 @@ export function useTaskPolling(taskId: string) {
 
   useEffect(() => {
     if (phase === 'done') {
-      router.replace(`/result/${taskId}`)
+      router.replace(resultHref(taskId))
     }
   }, [phase, taskId, router])
 }

@@ -13,6 +13,11 @@
 /.next/
 /out/
 
+# 桌面端构建：Mock 路由的临时暂存目录（scripts/build-desktop.mjs 用后即删）
+/.desktop-build/
+
+# Tauri / Rust 编译产物（src-tauri/.gitignore 已含 /target、/gen/schemas）
+
 # production
 /build
 

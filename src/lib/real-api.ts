@@ -1,3 +1,4 @@
+import { apiUrl } from '@/lib/api-base'
 import { JSON_HEADERS, toJson, throwNetworkError, type ApiClient } from '@/lib/http'
 import type {
   Capabilities,
@@ -13,16 +14,17 @@ import type {
 /**
  * 真实后端客户端（FastAPI + yt-dlp + faster-whisper + LLM 总结，代码见 backend/）。
  *
- * 解析 / 转写 / AI 总结均走真实后端；请求走同源相对路径 /backend-api/*，
- * 由 Next.js rewrites 服务端代理到 BACKEND_ORIGIN 指向的后端（见 next.config.mjs），
- * 浏览器不直接跨域访问后端。切换：NEXT_PUBLIC_USE_MOCK=false 时由 lib/api.ts 选用本客户端。
+ * 解析 / 转写 / AI 总结均走真实后端。地址由 lib/api-base.ts 的 apiUrl() 决定：
+ * - web：同源 /backend-api/*，由 Next rewrites 服务端代理到 BACKEND_ORIGIN
+ * - 桌面端：NEXT_PUBLIC_API_BASE + /api/*，跨域直连后端
+ * 切换：NEXT_PUBLIC_USE_MOCK=false 时由 lib/api.ts 选用本客户端。
  */
 
 export const realApi: ApiClient = {
-  /** POST /backend-api/parse → 代理到后端 POST /api/parse（yt-dlp 解析） */
+  /** POST /parse（web: /backend-api/parse → 后端 /api/parse） */
   parseVideo: (url: string): Promise<VideoInfo> =>
     toJson(
-      fetch('/backend-api/parse', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ url }) }).catch(
+      fetch(apiUrl('/parse'), { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ url }) }).catch(
         throwNetworkError,
       ),
     ),
@@ -34,7 +36,7 @@ export const realApi: ApiClient = {
     engine?: TranscribeEngine,
   ): Promise<StartTaskResponse> =>
     toJson(
-      fetch('/backend-api/transcribe', {
+      fetch(apiUrl('/transcribe'), {
         method: 'POST',
         headers: JSON_HEADERS,
         body: JSON.stringify({ videoId, video, url, engine }),
@@ -42,12 +44,12 @@ export const realApi: ApiClient = {
     ),
 
   getTask: (taskId: string): Promise<GetTaskResponse> =>
-    toJson(fetch(`/backend-api/transcribe/${encodeURIComponent(taskId)}`).catch(throwNetworkError)),
+    toJson(fetch(apiUrl(`/transcribe/${encodeURIComponent(taskId)}`)).catch(throwNetworkError)),
 
-  /** POST /backend-api/summarize：真实 LLM 总结（无状态：直接传文字稿与元数据，taskId 仅 Mock 用） */
+  /** POST /summarize：真实 LLM 总结（无状态：直接传文字稿与元数据，taskId 仅 Mock 用） */
   summarize: (request: SummarizeRequest): Promise<Summary> =>
     toJson(
-      fetch('/backend-api/summarize', {
+      fetch(apiUrl('/summarize'), {
         method: 'POST',
         headers: JSON_HEADERS,
         body: JSON.stringify({
@@ -57,10 +59,10 @@ export const realApi: ApiClient = {
         }),
       }).catch(throwNetworkError),
     ),
-  /** GET /backend-api/capabilities：只读配置状态（布尔），用于前端禁用/提示 */
+  /** GET /capabilities：只读配置状态（布尔），用于前端禁用/提示 */
   getCapabilities: (): Promise<Capabilities> =>
-    toJson(fetch('/backend-api/capabilities').catch(throwNetworkError)),
-  /** GET /backend-api/health → 代理到后端 GET /api/health（仅 {status}，无配置信息） */
+    toJson(fetch(apiUrl('/capabilities')).catch(throwNetworkError)),
+  /** GET /health → 后端 GET /api/health（仅 {status}，无配置信息） */
   healthCheck: (signal?: AbortSignal): Promise<HealthResponse> =>
-    toJson(fetch('/backend-api/health', { signal }).catch(throwNetworkError)),
+    toJson(fetch(apiUrl('/health'), { signal }).catch(throwNetworkError)),
 } as const

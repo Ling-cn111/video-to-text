@@ -33,10 +33,14 @@ export const metadata: Metadata = {
   icons: {
     apple: "/icons/apple-touch-icon.png",
   },
+  // iOS Safari 会把疑似电话号码的字符串（如长串数字 ID）渲染成可拨号链接
+  formatDetection: { telephone: false },
 };
 
 export const viewport: Viewport = {
   themeColor: "#7c3aed",
+  // 配合 globals.css 的 env(safe-area-inset-*)：刘海屏全屏时内容延伸到安全区外
+  viewportFit: "cover",
 };
 
 export default function RootLayout({

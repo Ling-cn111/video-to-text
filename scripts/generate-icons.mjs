@@ -77,4 +77,7 @@ await render(roundedIconSvg(192), 'icon-192.png')
 await render(roundedIconSvg(512), 'icon-512.png')
 await render(maskableIconSvg(512), 'icon-maskable-512.png')
 await render(appleIconSvg(180), 'apple-touch-icon.png')
+// 桌面端（Tauri）图标的唯一源：npx tauri icon public/icons/icon-1024.png 由此生成
+// src-tauri/icons/ 下的全套 PNG / ICO / ICNS。PWA 侧不使用 1024（manifest 只要 192/512）。
+await render(appleIconSvg(1024), 'icon-1024.png')
 console.log('done')
