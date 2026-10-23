@@ -53,6 +53,18 @@ CORS_ORIGIN_REGEX: str = os.getenv("CORS_ORIGIN_REGEX", r"https://.*\.vercel\.ap
 # yt-dlp 提取信息的最长等待（秒），避免请求悬挂
 EXTRACT_TIMEOUT_SECONDS: int = int(os.getenv("EXTRACT_TIMEOUT_SECONDS", "30"))
 
+# ---- 平台风控绕过（B站 412）----
+
+# 阿里云等机房 IP 是 B 站风控的重点对象，常报 HTTP 412 Precondition Failed。
+# 缓解手段：带上与真实浏览器一致的请求头（Referer / Accept-Language），
+# 必要时再配 BILI_COOKIE（浏览器登录后的 Cookie 串）。
+# 空字符串表示不额外注入，行为与以前一致（本地开发通常不需要）。
+BILI_USER_AGENT: str = os.getenv("BILI_USER_AGENT", "").strip()
+
+# 浏览器里复制的整条 Cookie（形如 "SESSDATA=xxx; bili_jct=yyy; buvid3=zzz"）。
+# 含账号凭证：只经部署机环境变量注入，绝不写进仓库。
+BILI_COOKIE: str = os.getenv("BILI_COOKIE", "").strip()
+
 # ---- 转写（M2 阶段一）----
 
 # 音频大小上限（MB，S1-B）：音频全程内存化处理，超过即拒绝（AUDIO_TOO_LARGE），

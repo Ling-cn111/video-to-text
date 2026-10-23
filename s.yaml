@@ -134,6 +134,11 @@ resources:
         RATE_LIMIT_PER_MINUTE: "10"
         MAX_AUDIO_SIZE_MB: "100"
         EXTRACT_TIMEOUT_SECONDS: "30"
+        # ---- 平台风控（B站 412）----
+        # 机房出口 IP 是 B站风控重点，缺 Referer/UA 时易报 412。
+        # 留空则沿用 yt-dlp 默认值；Cookie 是账号凭证，只经部署机注入。
+        BILI_USER_AGENT: ${env('BILI_USER_AGENT', '')}
+        BILI_COOKIE: ${env('BILI_COOKIE', '')}
         # ---- S2-P3：异步分发 ----
         ENQUEUE_MODE: fc
         # worker 函数的 HTTP 触发器地址（s info 里取），首次部署可留空
@@ -233,6 +238,9 @@ resources:
         ASR_ENGINE_FALLBACK: ""
         MAX_AUDIO_SIZE_MB: "100"
         EXTRACT_TIMEOUT_SECONDS: "30"
+        # worker 才是真正下载音频、调 yt-dlp 的一方，风控参数必须两边一致
+        BILI_USER_AGENT: ${env('BILI_USER_AGENT', '')}
+        BILI_COOKIE: ${env('BILI_COOKIE', '')}
         # Worker 不再分发，保持 inline（且不 import dispatcher 的投递路径）
         ENQUEUE_MODE: inline
         WORKER_TOKEN: ${env('WORKER_TOKEN', '')}

@@ -21,6 +21,7 @@ import yt_dlp
 
 from app.config import MAX_AUDIO_SIZE_MB
 from app.errors import AudioTooLargeError, ParseFailedError
+from app.services.ytdlp_options import base_options as _base_options
 
 _CHUNK_SIZE = 64 * 1024
 _DOWNLOAD_TIMEOUT = 300.0
@@ -39,10 +40,9 @@ def download_audio(url: str) -> io.BytesIO:
     """下载视频最佳音轨到内存（BytesIO），不落工作目录。"""
     limit = _size_limit_bytes()
     options = {
+        # 公共项（no_color / Referer / socket_timeout 等）见 ytdlp_options.py
+        **_base_options(),
         "format": "bestaudio/best",
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
     }
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
@@ -95,11 +95,10 @@ def _download_via_tempdir(url: str, limit: int) -> io.BytesIO:
     """回退路径：yt-dlp 下载到系统临时目录 → 读入内存 → 目录自动删除。"""
     with tempfile.TemporaryDirectory(prefix="vtt-audio-") as tmp:
         options = {
+            # 公共项（no_color / Referer / socket_timeout 等）见 ytdlp_options.py
+            **_base_options(),
             "format": "bestaudio/best",
             "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
         }
         try:
             with yt_dlp.YoutubeDL(options) as ydl:

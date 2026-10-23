@@ -539,6 +539,11 @@ resources:
         RATE_LIMIT_PER_MINUTE: "10"
         MAX_AUDIO_SIZE_MB: "100"
         EXTRACT_TIMEOUT_SECONDS: "30"
+        # ---- 平台风控（B站 412）----
+        # 机房出口 IP 是 B站风控重点，缺 Referer/UA 时易报 412。
+        # 留空则沿用 yt-dlp 默认值；Cookie 是账号凭证，只经部署机注入。
+        BILI_USER_AGENT: ${env('BILI_USER_AGENT', '')}
+        BILI_COOKIE: ${env('BILI_COOKIE', '')}
         # ---- S2-P3：异步分发 ----
         ENQUEUE_MODE: fc
         # worker 函数的 HTTP 触发器地址（s info 里取），首次部署可留空
@@ -638,6 +643,9 @@ resources:
         ASR_ENGINE_FALLBACK: ""
         MAX_AUDIO_SIZE_MB: "100"
         EXTRACT_TIMEOUT_SECONDS: "30"
+        # worker 才是真正下载音频、调 yt-dlp 的一方，风控参数必须两边一致
+        BILI_USER_AGENT: ${env('BILI_USER_AGENT', '')}
+        BILI_COOKIE: ${env('BILI_COOKIE', '')}
         # Worker 不再分发，保持 inline（且不 import dispatcher 的投递路径）
         ENQUEUE_MODE: inline
         WORKER_TOKEN: ${env('WORKER_TOKEN', '')}
@@ -815,13 +823,15 @@ s deploy -t s.yaml
 | `TASK_LOCK_SECONDS` | `3600` | Worker 执行锁 TTL（`SET NX EX`），执行期间按心跳续期；崩溃后到期自动释放 |
 | `REAPER_LOCK_SECONDS` | `120` | Reaper 互斥锁 TTL（S2-P4）：只需覆盖单次扫描耗时，与执行锁无关 |
 | `WORKER_TOKEN` | 空 | Worker 端点鉴权；非空时要求 `X-Worker-Token` 或 `Authorization: Bearer <token>` 一致 |
+| `BILI_USER_AGENT` | 空 / 真实浏览器 UA | B站风控用。留空沿用 yt-dlp 自带 UA；机房 IP 报 412 时填一个真实浏览器 UA（与 Cookie 的浏览器一致） |
+| `BILI_COOKIE` | 空 / 浏览器整条 Cookie | B站风控兜底。含账号凭证，只经部署机环境变量注入，绝不提交仓库 |
 | `CLOUD_ASR_BASE_URL` / `CLOUD_ASR_MODEL` | 见 `.env.example` | 换服务商/模型时覆盖 |
 
 > **⚠️ 环境变量键名不能以 `FC_` 开头。** 阿里云把 `FC_*` 保留给系统环境变量（`FC_FUNC_CODE_PATH`、`FC_HANDLER`、`FC_RUNTIME_API` 等），在函数上设置该前缀的自定义变量会被平台直接拒绝，表现为 **`s deploy` 阶段失败**（不是运行期报错，因此很难和业务代码联系起来）。所以 worker 地址/路径/超时用的是 `WORKER_URL` / `WORKER_PATH` / `ASYNC_TIMEOUT_SECONDS`。
 >
 > 注意区分两类变量：`FC_VPC_ID` / `FC_VSWITCH_ID` / `FC_SECURITY_GROUP_ID` / `FC_ROLE_ARN` 是**部署机**变量，只在 `${env('...')}` 里被求值、不会写进函数环境变量，因此不受保留字规则约束。
 
-`TASK_DB_PATH`、`WHISPER_*`、`ENABLE_VOCAL_SEPARATION`、`BILI_COOKIE` 在 FC 上都不需要（`BILI_COOKIE` 为预留能力，当前未实现）。
+`TASK_DB_PATH`、`WHISPER_*`、`ENABLE_VOCAL_SEPARATION` 在 FC 上都不需要。
 
 > **不需要** `FC_ACCOUNT_ID` / `FC_REGION` / `FC_WORKER_FUNC_NAME` / `ALIBABA_CLOUD_ACCESS_KEY_*`：这些只在走 OpenAPI `InvokeFunction`（需 ACS3 签名）时才需要。P3 走 HTTP 触发器 + `X-Fc-Invocation-Type: Async`，不签名、不常驻 AK/SK。
 
@@ -1082,6 +1092,8 @@ NEXT_PUBLIC_USE_MOCK=false        # 构建期常量，改完必须重新构建
 | 静态 FFmpeg 为 GPLv3 | 对外分发镜像需遵守 GPL | 保留许可声明；如不可接受，改用 apt 版 FFmpeg（镜像约 +400MB） |
 | 无本地 ASR | `ASR_ENGINE=local` 不可用 | 固定 `cloud`，`ASR_ENGINE_FALLBACK` 留空 |
 | B站风控 / yt-dlp 失效 | 解析或字幕失败 | 定期重建镜像升级 `yt-dlp`；关注 `EXTRACT_TIMEOUT_SECONDS` |
+| 任务在 `extract_audio` 阶段失败，`error.message` 含 `HTTP Error 412: Precondition Failed` | **机房出口 IP 被 B站风控**（与代码无关：同一镜像在本地家庭宽带可正常解析） | 代码已固定注入 `Referer` + `Accept-Language`。仍 412 时按顺序加：`BILI_USER_AGENT`（真实浏览器 UA）→ `BILI_COOKIE`（浏览器整条 Cookie，含账号凭证，只放部署机） |
+| `error.message` 里出现 `\u001b[0;31m` 之类乱码 | yt-dlp / ffmpeg 的终端颜色码被拼进消息 | 已修：`ytdlp_options.base_options()` 统一 `no_color=True`，`AppException` 出口再 `strip_ansi` 兜底。若再出现，检查是否有新的 `yt_dlp.YoutubeDL` 调用点没走公共选项 |
 | Redis 任务无 TTL | 任务记录无限增长 | **S2-P0 已修**：`TASK_TTL_SECONDS`（默认 7 天，滑动续期）；0 = 永久保留 |
 | 冷启动即改写任务状态 | 多实例下误杀在途任务 | **S2-P0 已修**：只把「陈旧」（`TASK_STALE_SECONDS` 内无心跳）的 `processing` 判为 `interrupted`；Worker 侧设 `TASK_INIT_MODE=none` |
 | 异步调用 Body ≤ 128 KB | 事件体过大会被 FC 拒收 | `TranscribeJob.to_dict()` 仅几百字节；**不要往事件体里塞文字稿**（P1 只传入参的设计已保证） |

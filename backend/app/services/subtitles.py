@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 import httpx
 import yt_dlp
 
+from app.services.ytdlp_options import base_options as _base_options
 from app.url_guard import is_blocked_host
 
 logger = logging.getLogger(__name__)
@@ -148,7 +149,11 @@ def try_extract_subtitle_transcript(
     """
     # 层 1：yt-dlp 未登录拿 UP 主手传 CC 字幕
     try:
-        options = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True}
+        options = {
+            # 公共项见 ytdlp_options.py
+            **_base_options(),
+            "skip_download": True,
+        }
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=False)
         cc_tracks = [t for t in list_subtitle_tracks(info or {}) if t.from_cc]

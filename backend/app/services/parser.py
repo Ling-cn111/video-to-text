@@ -9,13 +9,13 @@ import yt_dlp
 from app.errors import InvalidUrlError, ParseFailedError, UnsupportedPlatformError
 from app.platforms import PlatformMeta, detect_platform, extract_video_id
 from app.schemas import VideoInfo
+from app.services.ytdlp_options import base_options as _base_options
 from app.url_guard import validate_public_http_url
 
 _YDL_OPTIONS = {
-    "quiet": True,
-    "no_warnings": True,
+    # 公共项（no_color / Referer / socket_timeout 等）见 ytdlp_options.py
+    **_base_options(),
     "skip_download": True,
-    "noplaylist": True,
     # 只取元数据，不解析分片下载地址，速度更快
     "extract_flat": False,
 }

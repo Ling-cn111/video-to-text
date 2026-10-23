@@ -1,4 +1,16 @@
 """共享异常：由 main.py 的 exception_handler 统一转成 { error: { code, message } }。"""
+import re
+
+# ANSI 转义序列（SGR 颜色码等）：yt-dlp / ffmpeg 往 stderr 写日志时会带，
+# 若原样拼进 message，前端界面上会显示成 "\u001b[0;31mERROR:\u001b[0m ..." 乱码。
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def strip_ansi(text: str) -> str:
+    """剥掉 ANSI 转义序列；非字符串原样返回（容忍 None）。"""
+    if not isinstance(text, str):
+        return text
+    return _ANSI_RE.sub("", text)
 
 
 class AppException(Exception):
@@ -6,9 +18,10 @@ class AppException(Exception):
 
     def __init__(self, code: str, message: str, status_code: int = 500):
         self.code = code
-        self.message = message
+        # 统一在出口清洗：任何子类、任何来源的 message 都不会把终端颜色码带给前端
+        self.message = strip_ansi(message)
         self.status_code = status_code
-        super().__init__(message)
+        super().__init__(self.message)
 
 
 class InvalidUrlError(AppException):
