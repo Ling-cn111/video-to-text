@@ -307,7 +307,7 @@ def test_rejects_html_error_page_instead_of_using_it_as_audio(monkeypatch):
         _FakeMediaResponse([b"<html>403</html>"], {"content-type": "text/html"}),
     )
 
-    # 所有地址都不是媒体 → ValueError → 回退 yt-dlp；让 yt-dlp 也失败，
+    # 所有地址都是 HTML → ValueError → 回退 yt-dlp；让 yt-dlp 也失败，
     # 从而确认「HTML 错误页没有被当成功」
     monkeypatch.setattr(
         audio_module.yt_dlp,
@@ -322,6 +322,57 @@ def test_rejects_html_error_page_instead_of_using_it_as_audio(monkeypatch):
 
     # 走的是 yt-dlp 的失败路径，而不是把 "<html>403</html>" 当音频返回
     assert "视频" in str(excinfo.value) or "音频" in str(excinfo.value)
+
+
+def test_accepts_octet_stream_as_media(monkeypatch):
+    """回归：云端 CDN 把 mp4 报成 application/octet-stream（本地是 video/mp4）。
+
+    早期实现只认 audio/* 与 video/*，在云端把合法音频误判成「错误页」，
+    于是白白回退到 yt-dlp —— 而 yt-dlp 因网页 412 必然失败，最终用户看到
+    的是误导性的 412。这个差异只在云端出现，本地复现不了。
+    """
+    _stub_playurl(
+        monkeypatch,
+        bili_playurl.AudioStream(
+            url="https://cdn/audio.m4a", backup_urls=(), mime_type="", bandwidth=1
+        ),
+    )
+    _stub_stream(
+        monkeypatch,
+        _FakeMediaResponse(
+            [b"\x00\x00\x00\x18ftypmp42"],
+            {"content-type": "application/octet-stream", "content-length": "12"},
+        ),
+    )
+
+    def _no_ytdlp(*args, **kwargs):
+        raise AssertionError("octet-stream 是合法媒体类型，不该回退 yt-dlp")
+
+    monkeypatch.setattr(audio_module.yt_dlp, "YoutubeDL", _no_ytdlp)
+
+    buffer = audio_module.download_audio("https://www.bilibili.com/video/BV1GJ411x7h7")
+    assert buffer.read().startswith(b"\x00\x00\x00\x18ftyp")
+
+
+def test_accepts_empty_content_type(monkeypatch):
+    """有些 CDN 节点干脆不给 content-type，同样不能判成错误页。"""
+    _stub_playurl(
+        monkeypatch,
+        bili_playurl.AudioStream(
+            url="https://cdn/audio.m4a", backup_urls=(), mime_type="", bandwidth=1
+        ),
+    )
+    _stub_stream(monkeypatch, _FakeMediaResponse([b"audio-bytes"], {}))
+
+    def _no_ytdlp(*args, **kwargs):
+        raise AssertionError("缺 content-type 不该判成错误页")
+
+    monkeypatch.setattr(audio_module.yt_dlp, "YoutubeDL", _no_ytdlp)
+
+    assert (
+        audio_module.download_audio("https://www.bilibili.com/video/BV1GJ411x7h7").read()
+        == b"audio-bytes"
+    )
 
 
 def test_skips_api_for_non_bilibili_url(monkeypatch):

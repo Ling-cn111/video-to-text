@@ -146,8 +146,10 @@ def _fetch_direct(
 ) -> io.BytesIO:
     """httpx 流式拉取直链到 BytesIO；超限即中断（不整块读入）。
 
-    expect_media=True 时要求返回的是音视频而非 HTML：CDN 缺请求头会返回
-    403 + text/html，若不校验就会把错误页当成音频喂给 FFmpeg/ASR。
+    expect_media=True 时只拒绝「明确的 HTML/文本错误页」：B站 CDN 在不同网络
+    路径下会把 mp4 报成 `video/mp4` 或 `application/octet-stream`（云端实测
+    拿到的是后者），所以不能只认 audio/* / video/*，否则会把合法音频误判成
+    错误页、白白回退到必然失败的 yt-dlp。
     """
     buffer = io.BytesIO()
     total = 0
@@ -159,10 +161,8 @@ def _fetch_direct(
         # HLS/DASH 清单（非单一音频文件）无法直接当音频用：抛 ValueError 触发临时目录回退
         if "mpegurl" in content_type or "dash+xml" in content_type:
             raise ValueError("直链为流媒体清单，回退 yt-dlp 下载")
-        if expect_media and not (
-            content_type.startswith("audio/") or content_type.startswith("video/")
-        ):
-            raise ValueError(f"直链返回的不是媒体文件（content-type={content_type or '空'}）")
+        if expect_media and _looks_like_error_page(content_type):
+            raise ValueError(f"直链返回的是错误页（content-type={content_type}）")
         length = response.headers.get("content-length")
         if length and length.isdigit() and int(length) > limit:
             raise AudioTooLargeError()
@@ -175,6 +175,15 @@ def _fetch_direct(
         raise ParseFailedError("音频下载失败：未获取到音频数据")
     buffer.seek(0)
     return buffer
+
+
+# CDN 缺请求头时会返回 403 + text/html（实测 150 字节）。只拉黑明确的
+# 文本类型；`application/octet-stream` 是合法媒体类型（B站 CDN 常见），必须放行。
+_ERROR_CONTENT_TYPES = ("text/", "application/json", "application/xml")
+
+
+def _looks_like_error_page(content_type: str) -> bool:
+    return content_type.startswith(_ERROR_CONTENT_TYPES)
 
 
 def _download_via_tempdir(url: str, limit: int) -> io.BytesIO:
