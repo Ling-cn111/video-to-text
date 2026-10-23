@@ -510,6 +510,36 @@ def test_invoke_routes_timer_event_to_reaper(isolated_store):
     assert asyncio.run(isolated_store.get(task_id)).status == "failed"
 
 
+def test_timer_event_passes_even_when_worker_token_configured(monkeypatch, isolated_store):
+    """回归：配置了 WORKER_TOKEN 后，定时触发器仍必须能触发 reaper。
+
+    线上真实踩过的坑：`/invoke` 原本先校验 token 再解析事件体，而 FC 的定时
+    触发器请求**不带** `X-Worker-Token`，于是每 5 分钟的 reapTimer 全部返回
+    401，僵尸任务清理从未生效（日志里每分钟一条 POST /invoke 401）。
+
+    这条用例把「token 已配置」这个前提显式钉住——之前所有 timer 用例都在
+    token 为空时跑，所以没能拦住这个 bug。
+    """
+    monkeypatch.setattr("app.worker_app.WORKER_TOKEN", "s3cret")
+    task_id = _stale_task(isolated_store)
+
+    response = client.post(INVOKE_PATH, content=_timer_event())
+
+    assert response.status_code == 200, "定时触发器不该要求 X-Worker-Token"
+    assert response.json()["reaped"] == 1
+    assert asyncio.run(isolated_store.get(task_id)).status == "failed"
+
+
+def test_non_timer_invoke_still_requires_token(monkeypatch, isolated_store):
+    """但普通作业投递（非定时事件）在配置 token 后仍必须鉴权，不能一并放开。"""
+    monkeypatch.setattr("app.worker_app.WORKER_TOKEN", "s3cret")
+    body = json.dumps(_job("unknown")).encode()
+
+    assert client.post(INVOKE_PATH, content=body).status_code == 401
+    assert client.post(INVOKE_PATH, content=body, headers={"X-Worker-Token": "nope"}).status_code == 401
+    assert client.post(INVOKE_PATH, content=body, headers={"X-Worker-Token": "s3cret"}).status_code == 200
+
+
 def test_invoke_timer_routing_ignores_payload_content(isolated_store):
     """payload 是用户自定义字符串，不参与路由（忘配 payload 不能让 reaper 静默失效）。"""
     task_id = _stale_task(isolated_store)

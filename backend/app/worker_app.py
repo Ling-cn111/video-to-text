@@ -44,6 +44,7 @@ import logging
 import secrets
 from typing import Any, Callable
 
+import httpx
 from fastapi import Body, FastAPI, Header, HTTPException, Request
 
 from app.config import TASK_LOCK_SECONDS, WORKER_TOKEN
@@ -317,9 +318,13 @@ async def run_invoke_entry(
     FC 固定把 event 作为 body POST 到 `/invoke`（octet-stream），因此这里直接读原始
     字节，不依赖 FastAPI 的 JSON 解析。分流顺序见模块 docstring：Timer 优先，
     其次是转写作业。
+
+    鉴权顺序很重要：**先解析出事件体判断是不是定时触发器，再决定要不要校验 token**。
+    定时触发器由 FC 自己发起，请求里不会带 `X-Worker-Token`——若先校验 token，
+    每 5 分钟一次的 `reapTimer` 会被 401 挡住，僵尸任务清理永远不生效
+    （线上实测：日志里每分钟一条 `POST /invoke 401 Unauthorized`）。
     """
     await _ensure_initialized()
-    _verify_token(x_worker_token, authorization)
 
     raw = await request.body()
     try:
@@ -328,9 +333,13 @@ async def run_invoke_entry(
         raise HTTPException(status_code=422, detail=f"事件体无法解析：{exc}") from exc
 
     if _looks_like_timer_event(payload):
+        # 定时触发器事件带 FC 注入的 triggerTime/triggerName，外部无法伪造；
+        # 且 reap_once 自身有互斥锁 + CAS 幂等，重复执行不会写坏状态。
         logger.info("收到定时触发器事件，执行僵尸任务清理")
         return (await reaper.reap_once()).to_dict()
 
+    # 非定时事件（转写作业）仍必须带 token
+    _verify_token(x_worker_token, authorization)
     return await _run_job(_parse_job(payload))
 
 
@@ -347,6 +356,67 @@ async def reap_stale_tasks(
     await _ensure_initialized()
     _verify_token(x_worker_token, authorization)
     return (await reaper.reap_once()).to_dict()
+
+
+DIAG_PATH = "/internal/worker/diagnose"
+
+
+@app.post(DIAG_PATH)
+async def diagnose_upstream(
+    x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> dict:
+    """出口连通性诊断（运维用，需 WORKER_TOKEN）。
+
+    为什么需要它：B站风控（HTTP 412）只在**云端机房出口**出现，本地家庭宽带
+    复现不了。改配置后如果只能靠「发一个转写任务等 10 分钟看失败」来验证，
+    排查成本极高。这里一次性测完关键上游，返回每个目标的真实状态码。
+
+    只做只读探测、不写入任何数据；不返回 Cookie 值，只说明是否已配置。
+    """
+    _verify_token(x_worker_token, authorization)
+
+    from app import config
+    from app.services import bili_player_api
+
+    probe_ua = config.BILI_USER_AGENT or (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    )
+    headers = {"User-Agent": probe_ua, "Referer": "https://www.bilibili.com/"}
+    if config.BILI_COOKIE:
+        headers["Cookie"] = config.BILI_COOKIE
+
+    bvid = "BV1GJ411x7h7"
+    targets = {
+        "view_api": f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}",
+        "video_page": f"https://www.bilibili.com/video/{bvid}",
+        "finger_spi": "https://api.bilibili.com/x/frontend/finger/spi",
+    }
+
+    results: dict[str, Any] = {}
+    for name, url in targets.items():
+        try:
+            response = httpx.get(url, headers=headers, timeout=15, follow_redirects=True)
+            entry: dict[str, Any] = {"status": response.status_code}
+            if name.endswith("_api") and response.status_code == 200:
+                try:
+                    entry["code"] = response.json().get("code")
+                except ValueError:
+                    entry["code"] = None
+            results[name] = entry
+        except Exception as exc:  # 网络异常也要如实报告
+            results[name] = {"error": f"{type(exc).__name__}: {exc}"}
+
+    return {
+        "egress": {
+            "bili_cookie_configured": bool(config.BILI_COOKIE),
+            "bili_user_agent_configured": bool(config.BILI_USER_AGENT),
+        },
+        "upstream": results,
+        # 顺带看一眼 dm/view 层级是否还能用（字幕快路径依赖它）
+        "subtitle_tracks": len(bili_player_api.get_subtitle_tracks(bvid)),
+    }
 
 
 @app.get("/api/health")
