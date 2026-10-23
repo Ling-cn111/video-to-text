@@ -363,6 +363,7 @@ DIAG_PATH = "/internal/worker/diagnose"
 
 @app.post(DIAG_PATH)
 async def diagnose_upstream(
+    bvid: str = "BV1GJ411x7h7",
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> dict:
@@ -393,10 +394,10 @@ async def diagnose_upstream(
     baseline_headers = {"User-Agent": probe_ua, "Referer": "https://www.bilibili.com/"}
     hardened_headers = {**baseline_headers, **ytdlp_options.base_options()["http_headers"]}
 
-    bvid = "BV1GJ411x7h7"
+    target_bvid = bvid
     targets = {
-        "view_api": f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}",
-        "video_page": f"https://www.bilibili.com/video/{bvid}",
+        "view_api": f"https://api.bilibili.com/x/web-interface/view?bvid={target_bvid}",
+        "video_page": f"https://www.bilibili.com/video/{target_bvid}",
         "finger_spi": "https://api.bilibili.com/x/frontend/finger/spi",
     }
 
@@ -418,6 +419,7 @@ async def diagnose_upstream(
 
     cookie = ytdlp_options.cookie_header()
     return {
+        "bvid": target_bvid,
         "egress": {
             "bili_cookie_configured": bool(config.BILI_COOKIE),
             "bili_user_agent_configured": bool(config.BILI_USER_AGENT),
@@ -430,9 +432,42 @@ async def diagnose_upstream(
         "hardened": probe(hardened_headers),
         # 网页路径专项：yt-dlp 抓的是 html，比 API 更容易被拦
         "video_page_variants": _probe_video_page_variants(bvid, probe_ua, cookie),
+        # 音频路径专项：生产实际依赖 playurl API 绕开网页，这里直接验一次
+        "audio_path": _probe_audio_path(bvid),
         # 顺带看一眼 dm/view 层级是否还能用（字幕快路径依赖它）
         "subtitle_tracks": len(bili_player_api.get_subtitle_tracks(bvid)),
     }
+
+
+def _probe_audio_path(bvid: str) -> dict[str, Any]:
+    """验证 playurl API 这条路在生产环境真的能取到音频流。
+
+    `download_audio` 现在的顺序是 playurl → yt-dlp。如果 playurl 在云端失败，
+    就会静默回退到 yt-dlp，而 yt-dlp 因网页 412 必然失败——最终用户只看到
+    412，完全不知道真正的失败点在 playurl。这个探针把中间步骤暴露出来。
+    """
+    from app.services import bili_playurl
+
+    try:
+        stream = bili_playurl.get_audio_stream(bvid)
+        result: dict[str, Any] = {
+            "ok": True,
+            "bandwidth": stream.bandwidth,
+            "mime_type": stream.mime_type,
+            "backup_urls": len(stream.backup_urls),
+        }
+        # 真去碰一下 CDN，确认请求头组合在云端也成立（缺一个就 403）
+        try:
+            with httpx.stream(
+                "GET", stream.url, headers=bili_playurl._headers(), timeout=20
+            ) as response:
+                result["cdn_status"] = response.status_code
+                result["cdn_content_type"] = response.headers.get("content-type")
+        except Exception as exc:
+            result["cdn_error"] = f"{type(exc).__name__}: {exc}"
+        return result
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
 def _probe_video_page_variants(bvid: str, ua: str, cookie: str) -> dict[str, Any]:
