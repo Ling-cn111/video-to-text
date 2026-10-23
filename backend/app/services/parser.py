@@ -12,15 +12,14 @@ from app.schemas import VideoInfo
 from app.services.ytdlp_options import base_options as _base_options
 from app.url_guard import validate_public_http_url
 
-_YDL_OPTIONS = {
-    # 公共项（no_color / Referer / socket_timeout 等）见 ytdlp_options.py
-    **_base_options(),
-    "skip_download": True,
-    # 只取元数据，不解析分片下载地址，速度更快
-    "extract_flat": False,
-}
-
-# yt-dlp 报错里的技术性前缀，如 "ERROR: [BiliBili] BV1xxx: "
+def _ydl_options() -> dict:
+    """每次解析时构建：设备指纹是动态的，不能在模块导入时固化。"""
+    return {
+        **_base_options(),
+        "skip_download": True,
+        # 只取元数据，不解析分片下载地址，速度更快
+        "extract_flat": False,
+    }# yt-dlp 报错里的技术性前缀，如 "ERROR: [BiliBili] BV1xxx: "
 _YDL_ERROR_PREFIX = re.compile(r"^ERROR:\s*\[[^\]]+\]\s*[^:]*:\s*", re.IGNORECASE)
 
 
@@ -52,7 +51,7 @@ def parse_video_url(raw_url: str) -> VideoInfo:
     url_video_id = extract_video_id(parsed.path, meta)
 
     try:
-        with yt_dlp.YoutubeDL(_YDL_OPTIONS) as ydl:
+        with yt_dlp.YoutubeDL(_ydl_options()) as ydl:
             info = ydl.extract_info(raw_url.strip(), download=False)
     except yt_dlp.utils.DownloadError as exc:
         raise friendly_parse_error(str(exc)) from exc

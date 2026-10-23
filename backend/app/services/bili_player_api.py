@@ -39,6 +39,25 @@ _throttle_lock = threading.Lock()
 _last_request_at = 0.0
 
 
+def _headers() -> dict[str, str]:
+    """请求头（每次调用时构建）。
+
+    不能固化成模块级常量：设备指纹是运行时从 finger/spi 取的，且可能被
+    BILI_USER_AGENT / BILI_COOKIE 覆盖。云端实测：不带 buvid 的请求在
+    机房 IP 上会被 412 拦掉，连 view API 都拿不到数据。
+    """
+    from app import config
+    from app.services import ytdlp_options
+
+    headers = dict(_HEADERS)
+    if config.BILI_USER_AGENT:
+        headers["User-Agent"] = config.BILI_USER_AGENT
+    cookie = ytdlp_options.cookie_header()
+    if cookie:
+        headers["Cookie"] = cookie
+    return headers
+
+
 def _throttle() -> None:
     """跨线程请求节流：距上次请求不足 REQUEST_INTERVAL 则等待。"""
     global _last_request_at
@@ -61,7 +80,7 @@ class BiliSubtitleTrack:
 def _get_json(client: httpx.Client, url: str) -> dict | None:
     _throttle()
     try:
-        response = client.get(url, headers=_HEADERS, timeout=20)
+        response = client.get(url, headers=_headers(), timeout=20)
         payload = response.json()
         return payload if isinstance(payload, dict) else None
     except Exception:

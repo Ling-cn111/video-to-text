@@ -372,20 +372,26 @@ async def diagnose_upstream(
     复现不了。改配置后如果只能靠「发一个转写任务等 10 分钟看失败」来验证，
     排查成本极高。这里一次性测完关键上游，返回每个目标的真实状态码。
 
+    设计成**对照组**：同一批 URL 分别用「裸请求头」和「生产实际用的请求头」
+    各测一遍。这样一次调用就能回答「加了指纹/UA/Cookie 到底有没有用」，
+    不必改一次配置部署一次。云端实测结论：裸请求三路全 412，
+    带设备指纹后转写链路恢复。
+
     只做只读探测、不写入任何数据；不返回 Cookie 值，只说明是否已配置。
     """
     _verify_token(x_worker_token, authorization)
 
+    import os
+
     from app import config
-    from app.services import bili_player_api
+    from app.services import bili_player_api, ytdlp_options
 
     probe_ua = config.BILI_USER_AGENT or (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     )
-    headers = {"User-Agent": probe_ua, "Referer": "https://www.bilibili.com/"}
-    if config.BILI_COOKIE:
-        headers["Cookie"] = config.BILI_COOKIE
+    baseline_headers = {"User-Agent": probe_ua, "Referer": "https://www.bilibili.com/"}
+    hardened_headers = {**baseline_headers, **ytdlp_options.base_options()["http_headers"]}
 
     bvid = "BV1GJ411x7h7"
     targets = {
@@ -394,26 +400,34 @@ async def diagnose_upstream(
         "finger_spi": "https://api.bilibili.com/x/frontend/finger/spi",
     }
 
-    results: dict[str, Any] = {}
-    for name, url in targets.items():
-        try:
-            response = httpx.get(url, headers=headers, timeout=15, follow_redirects=True)
-            entry: dict[str, Any] = {"status": response.status_code}
-            if name.endswith("_api") and response.status_code == 200:
-                try:
-                    entry["code"] = response.json().get("code")
-                except ValueError:
-                    entry["code"] = None
-            results[name] = entry
-        except Exception as exc:  # 网络异常也要如实报告
-            results[name] = {"error": f"{type(exc).__name__}: {exc}"}
+    def probe(headers: dict[str, str]) -> dict[str, Any]:
+        results: dict[str, Any] = {}
+        for name, url in targets.items():
+            try:
+                response = httpx.get(url, headers=headers, timeout=15, follow_redirects=True)
+                entry: dict[str, Any] = {"status": response.status_code}
+                if name.endswith("_api") and response.status_code == 200:
+                    try:
+                        entry["code"] = response.json().get("code")
+                    except ValueError:
+                        entry["code"] = None
+                results[name] = entry
+            except Exception as exc:  # 网络异常也要如实报告
+                results[name] = {"error": f"{type(exc).__name__}: {exc}"}
+        return results
 
+    cookie = ytdlp_options.cookie_header()
     return {
         "egress": {
             "bili_cookie_configured": bool(config.BILI_COOKIE),
             "bili_user_agent_configured": bool(config.BILI_USER_AGENT),
+            # 只报「有没有指纹」，不回显指纹值本身（避免日志泄露可用于冒用的标识）
+            "device_fingerprint_present": "buvid3=" in cookie,
+            "container_index": os.getenv("FC_INSTANCE_ID", ""),
         },
-        "upstream": results,
+        # 同一出口 IP、同一批 URL，只有请求头不同 → 差异即结论
+        "baseline": probe(baseline_headers),
+        "hardened": probe(hardened_headers),
         # 顺带看一眼 dm/view 层级是否还能用（字幕快路径依赖它）
         "subtitle_tracks": len(bili_player_api.get_subtitle_tracks(bvid)),
     }

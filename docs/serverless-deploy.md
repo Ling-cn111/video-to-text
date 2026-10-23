@@ -540,8 +540,8 @@ resources:
         MAX_AUDIO_SIZE_MB: "100"
         EXTRACT_TIMEOUT_SECONDS: "30"
         # ---- 平台风控（B站 412）----
-        # 机房出口 IP 是 B站风控重点，缺 Referer/UA 时易报 412。
-        # 留空则沿用 yt-dlp 默认值；Cookie 是账号凭证，只经部署机注入。
+        # 设备指纹（buvid3/buvid4）在运行时自动获取并缓存，无需配置。
+        # 下面两个是覆盖项：留空即用默认行为；Cookie 是账号凭证，只经部署机注入。
         BILI_USER_AGENT: ${env('BILI_USER_AGENT', '')}
         BILI_COOKIE: ${env('BILI_COOKIE', '')}
         # ---- S2-P3：异步分发 ----
@@ -823,7 +823,7 @@ s deploy -t s.yaml
 | `TASK_LOCK_SECONDS` | `3600` | Worker 执行锁 TTL（`SET NX EX`），执行期间按心跳续期；崩溃后到期自动释放 |
 | `REAPER_LOCK_SECONDS` | `120` | Reaper 互斥锁 TTL（S2-P4）：只需覆盖单次扫描耗时，与执行锁无关 |
 | `WORKER_TOKEN` | 空 | Worker 端点鉴权；非空时要求 `X-Worker-Token` 或 `Authorization: Bearer <token>` 一致 |
-| `BILI_USER_AGENT` | 空 / 真实浏览器 UA | B站风控用。留空沿用 yt-dlp 自带 UA；机房 IP 报 412 时填一个真实浏览器 UA（与 Cookie 的浏览器一致） |
+| `BILI_USER_AGENT` | 空 / 真实浏览器 UA | B站风控覆盖项。留空沿用 yt-dlp 自带 UA；机房 IP 仍 412 时填一个真实浏览器 UA |
 | `BILI_COOKIE` | 空 / 浏览器整条 Cookie | B站风控兜底。含账号凭证，只经部署机环境变量注入，绝不提交仓库 |
 | `CLOUD_ASR_BASE_URL` / `CLOUD_ASR_MODEL` | 见 `.env.example` | 换服务商/模型时覆盖 |
 
@@ -1049,6 +1049,57 @@ LUA
 
 > **不要**把 `WORKER_PATH` 配成 `/internal/worker/reap`——那是人工入口，定时触发器永远打不到自定义路径。
 
+### 7.3.2 B站 412 诊断（设备指纹）
+
+机房出口 IP 访问 B站会被风控，典型表现是任务停在 `extract_audio`、`error.message` 含
+`HTTP Error 412: Precondition Failed`。**注意这与代码和视频都无关**：同一份镜像在本地
+家庭宽带下能正常解析。
+
+#### 先确认是哪一类 412
+
+worker 上有诊断端点（需 `WORKER_TOKEN`）：
+
+```bash
+curl -X POST https://<worker-域名>/internal/worker/diagnose \
+  -H "X-Worker-Token: <WORKER_TOKEN>"
+```
+
+返回是**对照组**：同一出口 IP、同一批 URL，只有请求头不同。
+
+```json
+{
+  "egress": {"bili_cookie_configured": false, "bili_user_agent_configured": false,
+             "device_fingerprint_present": true},
+  "baseline": {"view_api": {"status": 412}, "video_page": {"status": 412},
+               "finger_spi": {"status": 200}},
+  "hardened": {"view_api": {"status": 200, "code": 0}, "video_page": {"status": 200},
+               "finger_spi": {"status": 200}},
+  "subtitle_tracks": 1
+}
+```
+
+判读方式：
+
+| 现象 | 结论 | 处理 |
+| --- | --- | --- |
+| `baseline` 全 412，`finger_spi` 200 | B站没封机器，封的是「没带 buvid 的请求」 | 默认配置即可，代码已自动取指纹 |
+| `hardened` 也 412 | 该出口 IP 被更严格地风控 | 配 `BILI_USER_AGENT`（真实浏览器 UA），仍不行再配 `BILI_COOKIE` |
+| `finger_spi` 也 412/超时 | 出口 IP 被整体拉黑 | 只能换出口（NAT 网关 / 换地域），或配 `BILI_COOKIE` |
+| `hardened` 200 但任务仍失败 | 不是 412 问题 | 看 §9 排错表其他条目 |
+
+#### 设备指纹的作用
+
+浏览器首次访问 B站时会被下发 `buvid3` / `buvid4`（存在 Cookie 里，有效期很长），
+之后所有请求都带着它。未登录也能拿到：`GET /x/frontend/finger/spi` 返回 `b_3` / `b_4`。
+
+代码里的实现（`backend/app/services/bili_fingerprint.py`）：
+
+- 进程内缓存 12 小时，避免频繁请求（频繁取指纹本身就是可疑行为）；
+- 取失败**静默降级为空**并冷却 5 分钟——指纹是缓解手段，绝不能反过来把转写打挂；
+- 配了 `BILI_COOKIE` 就不再取指纹（登录 Cookie 自带 buvid3，混入另一设备指纹反而可疑）。
+
+> 指纹值只在内存里，不写日志、不出现在诊断响应中（只回 `device_fingerprint_present: true/false`）。
+
 ### 7.4 日志
 
 ```bash
@@ -1093,7 +1144,7 @@ NEXT_PUBLIC_USE_MOCK=false        # 构建期常量，改完必须重新构建
 | 静态 FFmpeg 为 GPLv3 | 对外分发镜像需遵守 GPL | 保留许可声明；如不可接受，改用 apt 版 FFmpeg（镜像约 +400MB） |
 | 无本地 ASR | `ASR_ENGINE=local` 不可用 | 固定 `cloud`，`ASR_ENGINE_FALLBACK` 留空 |
 | B站风控 / yt-dlp 失效 | 解析或字幕失败 | 定期重建镜像升级 `yt-dlp`；关注 `EXTRACT_TIMEOUT_SECONDS` |
-| 任务在 `extract_audio` 阶段失败，`error.message` 含 `HTTP Error 412: Precondition Failed` | **机房出口 IP 被 B站风控**（与代码无关：同一镜像在本地家庭宽带可正常解析） | 代码已固定注入 `Referer` + `Accept-Language`。仍 412 时按顺序加：`BILI_USER_AGENT`（真实浏览器 UA）→ `BILI_COOKIE`（浏览器整条 Cookie，含账号凭证，只放部署机） |
+| 任务在 `extract_audio` 阶段失败，`error.message` 含 `HTTP Error 412: Precondition Failed` | **B站要求设备指纹**：没带 `buvid3` 的请求在机房 IP 上会被拦（同 IP 的 `finger/spi` 接口却是 200） | **已修**：`bili_fingerprint` 运行时从 `/x/frontend/finger/spi` 取 `buvid3`/`buvid4`，进程内缓存 12h，注入所有 yt-dlp 与 B站 API 请求；取失败自动降级为空、冷却 5 分钟。仍 412 时按顺序加：`BILI_USER_AGENT` → `BILI_COOKIE` |
 | `error.message` 里出现 `\u001b[0;31m` 之类乱码 | yt-dlp / ffmpeg 的终端颜色码被拼进消息 | 已修：`ytdlp_options.base_options()` 统一 `no_color=True`，`AppException` 出口再 `strip_ansi` 兜底。若再出现，检查是否有新的 `yt_dlp.YoutubeDL` 调用点没走公共选项 |
 | Redis 任务无 TTL | 任务记录无限增长 | **S2-P0 已修**：`TASK_TTL_SECONDS`（默认 7 天，滑动续期）；0 = 永久保留 |
 | 冷启动即改写任务状态 | 多实例下误杀在途任务 | **S2-P0 已修**：只把「陈旧」（`TASK_STALE_SECONDS` 内无心跳）的 `processing` 判为 `interrupted`；Worker 侧设 `TASK_INIT_MODE=none` |
@@ -1177,7 +1228,7 @@ uvicorn app.worker_app:app --host 0.0.0.0 --port 9000
 | 日志出现 Redis 降级警告 | `REDIS_URL` 不可达 / 密码错 / 未配 VPC | 用 VPC 内网地址 + 安全组放行；确认 `redis` 包在镜像内（`requirements-cloud.txt` 已含） |
 | `AUDIO_TOO_LARGE` | 超过 `MAX_AUDIO_SIZE_MB` | 调大上限并同步调大内存，或降低上限优雅拒绝 |
 | CORS 报错（仅直连调试时） | `CORS_ORIGINS` 未含来源 | 加域名；生产走 Next 代理时通常不会触发 |
-| 解析 403 / 412 | B站风控、Cookie/UA 变化 | 升级 yt-dlp（重建镜像）；必要时配置 Cookie 兜底（预留能力） |
+| 解析 403 / 412 | B站风控（设备指纹 / Cookie / UA 变化） | 已内置设备指纹自动获取；仍失败时先 `POST /internal/worker/diagnose` 看 `baseline` vs `hardened` 对比，再决定配置 `BILI_USER_AGENT` / `BILI_COOKIE` |
 
 ---
 
