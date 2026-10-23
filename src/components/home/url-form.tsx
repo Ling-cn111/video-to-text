@@ -7,6 +7,7 @@ import { Link2, Loader2, Wand2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useTaskStore } from '@/stores/task-store'
+import { processingHref } from '@/lib/routes'
 import { resolveVideoUrl } from '@/lib/platform'
 
 interface UrlFormProps {
@@ -47,7 +48,7 @@ export function UrlForm({ url, onUrlChange }: UrlFormProps) {
     setSubmitting(false)
 
     if (taskId) {
-      router.push(`/processing/${taskId}`)
+      router.push(processingHref(taskId))
       return
     }
     const error = useTaskStore.getState().error

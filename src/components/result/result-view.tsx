@@ -231,7 +231,7 @@ function TranscriptTabButton({ active, onClick, icon: Icon, children }: Transcri
   )
 }
 
-function ResultSkeleton() {
+export function ResultSkeleton() {
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:py-10">
       <div className="flex flex-col gap-2">

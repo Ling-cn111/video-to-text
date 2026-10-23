@@ -9,6 +9,7 @@ import { StageSteps } from '@/components/processing/stage-steps'
 import { ProgressOverview } from '@/components/processing/progress-overview'
 import { ErrorAlert } from '@/components/shared/error-alert'
 import { useTaskPolling } from '@/hooks/use-task-polling'
+import { processingHref } from '@/lib/routes'
 import { useTaskStore } from '@/stores/task-store'
 
 interface ProcessingViewProps {
@@ -40,7 +41,7 @@ export function ProcessingView({ taskId }: ProcessingViewProps) {
     setRetrying(true)
     const newTaskId = await retry()
     setRetrying(false)
-    if (newTaskId) router.replace(`/processing/${newTaskId}`)
+    if (newTaskId) router.replace(processingHref(newTaskId))
   }
 
   const handleBack = () => {
@@ -92,7 +93,7 @@ export function ProcessingView({ taskId }: ProcessingViewProps) {
   )
 }
 
-function ProcessingSkeleton() {
+export function ProcessingSkeleton() {
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-8 sm:py-12">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">

@@ -19,6 +19,10 @@ export function RegisterSw() {
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return
 
+    // 桌面端（Tauri）不注册：tauri:// / http://tauri.localhost 下 SW 无意义，
+    // 资源本就来自本地安装目录，缓存只会拖慢更新。构建期常量，便于 tree-shaking。
+    if (process.env.NEXT_PUBLIC_DESKTOP === 'true') return
+
     if (process.env.NODE_ENV !== 'production') {
       void cleanupLeftoverServiceWorker()
       return
@@ -41,8 +45,7 @@ export function RegisterSw() {
   return null
 }
 
-/** 注销本应用的 SW 注册并删除本应用的外壳缓存（只清理自己的，不动同源其它缓存） */
-async function cleanupLeftoverServiceWorker(): Promise<void> {
+/** 注销本应用的 SW 注册并删除本应用的外壳缓存（只清理自己的，不动同源其它缓存） */async function cleanupLeftoverServiceWorker(): Promise<void> {
   try {
     const registrations = await navigator.serviceWorker.getRegistrations()
     const ours = registrations.filter((registration) =>

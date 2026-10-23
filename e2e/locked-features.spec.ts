@@ -21,7 +21,7 @@ const TIMESTAMP_PATTERN = /\d{1,2}:\d{2}(?::\d{2})?/;
 
 test.describe("前端功能锁定协议", () => {
   test("锁定 1：结果页默认全文阅读，正文零时间戳，可切换时间戳定位", async ({ page }) => {
-    await page.goto(`/result/${mockTaskId()}`);
+    await page.goto(`/result?id=${mockTaskId()}`);
 
     // 默认激活「全文阅读」Tab，正文区域可见
     const articleTab = page.getByRole("tab", { name: "全文阅读" });
@@ -44,7 +44,7 @@ test.describe("前端功能锁定协议", () => {
   });
 
   test("锁定 2：导出 TXT 零时间戳且包含标题", async ({ page }) => {
-    await page.goto(`/result/${mockTaskId()}`);
+    await page.goto(`/result?id=${mockTaskId()}`);
     const article = page.getByTestId("fulltext-article");
     await expect(article).toBeVisible();
 
@@ -60,7 +60,7 @@ test.describe("前端功能锁定协议", () => {
   });
 
   test("锁定 3：导出 MD 含 ## 正文 结构且零时间戳", async ({ page }) => {
-    await page.goto(`/result/${mockTaskId()}`);
+    await page.goto(`/result?id=${mockTaskId()}`);
     const article = page.getByTestId("fulltext-article");
     await expect(article).toBeVisible();
 
@@ -102,24 +102,24 @@ test.describe("前端功能锁定协议", () => {
   test("锁定 5：来源 Badge 按 transcriptSource 显示（字幕 / 语音识别 / 缺省不显示）", async ({ page }) => {
     // 字幕来源 → 「来源：B站字幕」
     const subtitlePayload = { v: "BV1GJ411x7h7", p: "bilibili", s: Date.now() - 11_000, src: "subtitle_ai" };
-    await page.goto(`/result/${Buffer.from(JSON.stringify(subtitlePayload)).toString("base64url")}`);
+    await page.goto(`/result?id=${Buffer.from(JSON.stringify(subtitlePayload)).toString("base64url")}`);
     await expect(page.getByTestId("fulltext-article")).toBeVisible();
     await expect(page.getByTestId("source-badge")).toHaveText(/来源：B站字幕/);
 
     // ASR 来源 → 「来源：语音识别」（用户可据此区分字幕快路径与否）
     const asrPayload = { v: "BV1GJ411x7h7", p: "bilibili", s: Date.now() - 11_000, src: "asr" };
-    await page.goto(`/result/${Buffer.from(JSON.stringify(asrPayload)).toString("base64url")}`);
+    await page.goto(`/result?id=${Buffer.from(JSON.stringify(asrPayload)).toString("base64url")}`);
     await expect(page.getByTestId("fulltext-article")).toBeVisible();
     await expect(page.getByTestId("source-badge")).toHaveText(/来源：语音识别/);
 
     // 缺省（无来源信息）→ 不显示 Badge
-    await page.goto(`/result/${mockTaskId()}`);
+    await page.goto(`/result?id=${mockTaskId()}`);
     await expect(page.getByTestId("fulltext-article")).toBeVisible();
     await expect(page.getByTestId("source-badge")).toHaveCount(0);
   });
 
   test("锁定 6：AI 总结面板渲染带时间戳的 keyPoints 与带时间区间的章节", async ({ page }) => {
-    await page.goto(`/result/${mockTaskId()}`);
+    await page.goto(`/result?id=${mockTaskId()}`);
     await expect(page.getByTestId("fulltext-article")).toBeVisible();
 
     // 核心要点：至少一条带时间戳徽章（keyPoints.time 指向原 transcript）
@@ -157,7 +157,7 @@ test.describe("前端功能锁定协议", () => {
     // 注入总结失败的 Mock 任务（sumFail 标记 → /api/summarize 返回错误）
     const failPayload = { v: "BV1GJ411x7h7", p: "bilibili", s: Date.now() - 11_000, sumFail: 1 };
     const failTaskId = Buffer.from(JSON.stringify(failPayload)).toString("base64url");
-    await page.goto(`/result/${failTaskId}`);
+    await page.goto(`/result?id=${failTaskId}`);
 
     // 文字稿照常渲染（默认全文阅读 Tab、零时间戳）——总结失败不得拖垮主体
     const article = page.getByTestId("fulltext-article");
@@ -197,8 +197,8 @@ test.describe("前端功能锁定协议", () => {
     // 进度页路径（pollTask 降级，用户主路径）：从 /processing 自然流转，同样降级不整页报错
     const pollPayload = { v: "BV1GJ411x7h7", p: "bilibili", s: Date.now() - 9_000, sumFail: 1 };
     const pollTaskId = Buffer.from(JSON.stringify(pollPayload)).toString("base64url");
-    await page.goto(`/processing/${pollTaskId}`);
-    await page.waitForURL(/\/result\//, { timeout: 20_000 });
+    await page.goto(`/processing?id=${pollTaskId}`);
+    await page.waitForURL(/\/result\?id=/, { timeout: 20_000 });
     await expect(page.getByTestId("fulltext-article")).toBeVisible();
     await expect(page.getByTestId("summary-error")).toBeVisible();
     await expect(page.getByRole("button", { name: "重试总结" })).toBeVisible();
@@ -264,7 +264,7 @@ test.describe("前端功能锁定协议", () => {
     // 关闭状态下解析一个 Mock 任务：转写完成即进结果页，但不自动总结
     await page.getByLabel("视频链接").fill("https://www.bilibili.com/video/BV1GJ411x7h7");
     await page.getByRole("button", { name: "解析", exact: true }).click();
-    await page.waitForURL(/\/result\//, { timeout: 30_000 });
+    await page.waitForURL(/\/result\?id=/, { timeout: 30_000 });
     await expect(page.getByTestId("fulltext-article")).toBeVisible();
     await expect(page.getByTestId("key-points")).toHaveCount(0); // 没有自动总结
     expect(summarizeRequests).toHaveLength(0); // 也没有发过 summarize 请求
@@ -293,7 +293,7 @@ test.describe("前端功能锁定协议", () => {
   test("锁定 11：复制全文按钮——内容与全文阅读逐段一致、零时间戳、有成功/失败反馈", async ({ page, context }) => {
     // 读回剪贴板内容需要授权（localhost 属安全上下文，Mock 构建下可用）
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-    await page.goto(`/result/${mockTaskId()}`);
+    await page.goto(`/result?id=${mockTaskId()}`);
 
     // 按钮存在于结果页头部，与「导出」并列
     const copyButton = page.getByTestId("copy-fulltext-button");
