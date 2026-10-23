@@ -428,9 +428,60 @@ async def diagnose_upstream(
         # 同一出口 IP、同一批 URL，只有请求头不同 → 差异即结论
         "baseline": probe(baseline_headers),
         "hardened": probe(hardened_headers),
+        # 网页路径专项：yt-dlp 抓的是 html，比 API 更容易被拦
+        "video_page_variants": _probe_video_page_variants(bvid, probe_ua, cookie),
         # 顺带看一眼 dm/view 层级是否还能用（字幕快路径依赖它）
         "subtitle_tracks": len(bili_player_api.get_subtitle_tracks(bvid)),
     }
+
+
+def _probe_video_page_variants(bvid: str, ua: str, cookie: str) -> dict[str, Any]:
+    """对比「只有指纹」与「先访问首页拿全 Cookie 会话」两条网页路径。
+
+    背景：云端实测 hardened 的 view_api 已 200，但 video_page 仍 412。
+    yt-dlp 抓的正是视频页 html，所以没有 CC 字幕、必须下载音频的视频仍会失败。
+
+    B站对 html 的校验比 JSON API 严，除了 buvid3 还看 `b_nut`（首页下发的
+    首次访问时间戳）。这里用真实 Client 会话（自动收 Set-Cookie）验证：
+    先 GET 首页、再 GET 视频页，能否让 412 变成 200。
+    """
+    url = f"https://www.bilibili.com/video/{bvid}"
+    results: dict[str, Any] = {}
+
+    # 变体 1：只有指纹（= 当前生产行为）
+    try:
+        with httpx.Client(timeout=20, follow_redirects=True) as client:
+            response = client.get(
+                url,
+                headers={
+                    "User-Agent": ua,
+                    "Referer": "https://www.bilibili.com/",
+                    **({"Cookie": cookie} if cookie else {}),
+                },
+            )
+            results["cookie_only"] = {
+                "status": response.status_code,
+                "bytes": len(response.content),
+            }
+    except Exception as exc:
+        results["cookie_only"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+    # 变体 2：先访问首页建立会话，再抓视频页
+    try:
+        with httpx.Client(timeout=20, follow_redirects=True) as client:
+            client.headers.update({"User-Agent": ua})
+            home = client.get("https://www.bilibili.com/")
+            page = client.get(url, headers={"Referer": "https://www.bilibili.com/"})
+            results["warm_session"] = {
+                "status": page.status_code,
+                "bytes": len(page.content),
+                "home_status": home.status_code,
+                "cookie_names": sorted(client.cookies.keys()),
+            }
+    except Exception as exc:
+        results["warm_session"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+    return results
 
 
 @app.get("/api/health")
