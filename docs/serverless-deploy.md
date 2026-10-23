@@ -1044,6 +1044,7 @@ LUA
 | A 返回 `401` | `WORKER_TOKEN` 不匹配 |
 | C 等 5 分钟仍无日志 | 定时触发器没建成功（`s info` 查 `reapTimer`），或 `enable: false` |
 | C 有日志但报 `422 事件体无法解析` | `/invoke` 分流没生效——检查 `_looks_like_timer_event` 与 event 字段名 |
+| C 日志里是 `POST /invoke 401 Unauthorized`（每 5 分钟一条） | **`/invoke` 先校验 token 再解析事件体**，而 FC 定时触发器不带 `X-Worker-Token`。**已修**：改为先判定定时事件、是则不校验 token；非定时事件照旧校验。若再次出现，检查是否有人把 `_verify_token` 移回 `request.body()` 之前 |
 | 任务变 `failed` 但前端显示「出了点问题」 | `error-alert.tsx` 的 `errorTitle` 缺 `TASK_TIMEOUT` 分支 |
 
 > **不要**把 `WORKER_PATH` 配成 `/internal/worker/reap`——那是人工入口，定时触发器永远打不到自定义路径。
