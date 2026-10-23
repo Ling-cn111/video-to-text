@@ -1,0 +1,51 @@
+# Vercel 上传排除清单。
+#
+# 不加这个文件时，`vercel deploy` 会把整个工作目录打包上传，
+# 而 src-tauri/target 是 Rust 编译产物（1.5GB+），直接触发
+# "File size limit exceeded (100 MB)" 部署失败。
+#
+# 由 Git 集成触发的部署只上传 commit 内容（这些目录本就被 .gitignore 排除），
+# 所以只在手动 `vercel deploy` 时需要。
+
+# Rust / Tauri 编译产物与打包中间文件
+src-tauri/target/
+src-tauri/gen/
+
+# 桌面端安装包
+dist/
+out/
+
+# 后端（Python 服务独立部署到函数计算，不参与前端构建）
+backend/
+
+# 本地构建缓存与依赖
+.next/
+node_modules/
+
+# 测试产物
+test-results/
+playwright-report/
+coverage/
+logs/
+
+# 本地工具与编辑器
+.mimosa/
+.zcode/
+.vscode/
+.idea/
+
+# 部署脚本（内含真实密钥）
+deploy.ps1
+
+# 桌面端构建时的临时暂存目录
+.desktop-build/
+
+# 文档与测试（不参与前端运行时）
+docs/
+e2e/
+scripts/
+
+# 各类说明文件
+*.md
+!README.md
+LICENSE
