@@ -67,3 +67,9 @@ logs/
 # 部署脚本：deploy.ps1 里要填真实密钥（Redis 密码 / ASR Key / Worker Token），
 # 绝不能入库
 deploy.ps1
+
+# Vercel CLI 会往 .env.local 追加 OIDC token：.env*.local 已在上面忽略，
+# 这里补上 CLI 可能生成的环境文件。注意不要写成 `.env*` —— 那会把入库的
+# .env.example 也一起忽略，后续新增配置模板时容易漏提交。
+.vercel
+.env.vercel

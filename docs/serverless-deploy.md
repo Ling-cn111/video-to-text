@@ -11,7 +11,7 @@
 
 | 能力 | FC 上是否可用 | 说明 |
 | --- | --- | --- |
-| `POST /api/parse`（yt-dlp 解析） | ✅ | 同步接口，1-2 秒返回 |
+| `POST /api/parse`（view API / yt-dlp 解析） | ✅ | 同步接口，1-2 秒返回。B站走 `view` API，不碰网页 |
 | `POST /api/summarize`（DeepSeek 总结） | ✅ | 同步接口，30-70 秒，需把函数超时调到 ≥ 90 秒 |
 | 字幕快路径转写（B站 CC / AI 字幕，5-7 秒） | ✅ | 走 worker 函数异步执行（P3） |
 | 云端 ASR 转写（19-43 秒 / 150 秒音频） | ✅ | 走 worker 函数异步执行（P3），`timeout: 1800` |
@@ -1150,15 +1150,65 @@ s logs -t s.yaml --function-name video-to-text-worker --tail
 
 优先看：容器启动日志（uvicorn 是否 listen 成功）、`redis` 降级警告、`已投递到 FC（task_id=..., request_id=...）`。
 
-### 7.5 前端切换
+### 7.5 前端切换（Vercel）
 
 ```bash
-# Vercel 环境变量
-BACKEND_ORIGIN=https://video-to-text-api.<随机串>.cn-hangzhou.fcapp.run
+# Vercel 环境变量（Production + Preview 都要配）
+BACKEND_ORIGIN=https://video-ttext-api-thuxmkmghu.cn-hangzhou.fcapp.run
 NEXT_PUBLIC_USE_MOCK=false        # 构建期常量，改完必须重新构建
 ```
 
-然后在 Vercel 重新部署，打开首页确认后端可达横幅消失、解析/字幕/长转写流程正常。
+**变量必须在部署前配好**：`NEXT_PUBLIC_USE_MOCK` 在 `next build` 时被内联进客户端包，
+`BACKEND_ORIGIN` 在构建时固化成 `rewrites` 的 target（写进 `.next/routes-manifest.json`）。
+事后改环境变量必须重新部署才生效。
+
+CLI 参考：
+
+```bash
+vercel link --yes
+vercel env add NEXT_PUBLIC_USE_MOCK production   # 输入 false
+vercel env add BACKEND_ORIGIN production         # 输入后端地址
+vercel --prod --yes
+```
+
+#### 验证构建产物真的带上了变量
+
+环境变量在 Vercel 上是加密存储的，`vercel env ls` 只显示 `Hidden`。想确认值被正确带进构建，
+用 `vercel pull` + 本地构建，然后看固化的 rewrite 目标：
+
+```powershell
+vercel pull --yes --environment production
+vercel build --yes --environment production
+(Get-Content .next\routes-manifest.json -Raw | ConvertFrom-Json).rewrites[0].destination
+# 期望：https://<api-域名>/api/:path*
+```
+
+> 在 Windows 上 `vercel build` 末尾可能因 symlink 报 `EPERM`（生成 `.vercel/output` 失败），
+> 但 `.next/` 已经编译完成，上面的检查依然有效。查完记得 `Remove-Item .vercel\output`，
+> 并重新 `pnpm build`（`vercel build` 会用生产变量覆盖 `.next`）。
+
+#### 两个默认开启的坑
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| 打开域名要求登录 Vercel | 项目默认开了 **Deployment Protection**（`ssoProtection.deploymentType = all_except_custom_domains`），所有 `*.vercel.app` 都要登录 | 关掉：项目 Settings → Deployment Protection → Vercel Authentication → Disable；或 `PATCH /v9/projects/<name> {"ssoProtection":null}` |
+| 国内本机打不开 `*.vercel.app` | `*.vercel.app` 在国内被 **DNS 污染 + TLS SNI 阻断**（解析到 `173.236.212.42` 等黑洞 IP，直连 `76.76.21.21` 也被 reset） | 不是部署问题。换网络/加代理验证；`vercel.com`、`api.vercel.com` 是通的，CLI 可以正常用 |
+
+#### CORS 不需要额外配置
+
+前端所有请求都是相对路径 `/backend-api/*`（见 `src/lib/real-api.ts`），由 Next 的
+`rewrites` 在**服务端**转发到 `BACKEND_ORIGIN`。浏览器只与 Vercel 同源通信，
+**不产生跨域请求**，因此 FC 的 `CORS_ORIGINS` 填不填都不影响前端。
+
+只有在「浏览器直连 FC 地址」时（比如直接用 `curl` 或另一个域名的手写 fetch）才需要它。
+当前函数已放行 `*`（`deploy.ps1` 里 `CORS_ORIGINS='*'`），预检实测：
+
+```bash
+curl -X OPTIONS https://<api-域名>/api/transcribe \
+  -H "Origin: https://xxx.vercel.app" \
+  -H "Access-Control-Request-Method: POST"
+# access-control-allow-origin: *
+```
 
 ---
 
