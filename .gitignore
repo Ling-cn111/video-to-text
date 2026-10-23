@@ -63,3 +63,7 @@ backend/data/
 # 任务 J：启动脚本运行产物
 logs/
 .vtt-pids/
+
+# 部署脚本：deploy.ps1 里要填真实密钥（Redis 密码 / ASR Key / Worker Token），
+# 绝不能入库
+deploy.ps1

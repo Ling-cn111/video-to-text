@@ -236,9 +236,9 @@ API 函数不再受请求生命周期约束。
 - **为什么不用 OpenAPI `InvokeFunction`**：那条路必须做 ACS3-HMAC-SHA256 签名并常驻 AK/SK；
   而 FC 官方文档三处明确 HTTP 触发器支持请求级异步（见 `docs/s2-async-recon.md` §8）。
   改走触发器后**不需要签名、不需要 AK/SK、不需要 SDK**，凭据面最小。
-- **必配** `FC_WORKER_URL`（worker 触发器的 `*.fcapp.run` 地址）。漏配不会阻断启动，
+- **必配** `WORKER_URL`（worker 触发器的 `*.fcapp.run` 地址）。漏配不会阻断启动，
   但每次分发都会抛 `DispatchError` → 任务 `failed` + 500（明确失败，不静默丢任务）。
-- **可选** `FC_WORKER_PATH`（默认 `/internal/worker/transcribe`）、`FC_ASYNC_TIMEOUT_SECONDS`（默认 5s）。
+- **可选** `WORKER_PATH`（默认 `/internal/worker/transcribe`）、`ASYNC_TIMEOUT_SECONDS`（默认 5s）。
 - **失败不重试**：FC 自身已默认重试 3 次，应用层再重试会叠加放大重复计费；直接抛给路由层标 `failed`。
 - **本地验证**（不联网、不需要 FC）：`pytest tests/test_dispatcher.py tests/test_worker_app.py -q`，
   其中 `test_fc_dispatcher_delivers_body_worker_accepts` 把 `FcDispatcher` 的请求体直接喂给真实 worker 应用。

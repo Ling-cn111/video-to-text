@@ -48,8 +48,9 @@ Vercel（Next.js 前端，rewrites 代理）
 
 | 项 | 要求 | 备注 |
 | --- | --- | --- |
-| 镜像架构 | **linux/amd64** | FC 不支持 arm64；详见 §3 |
-| 镜像仓库 | 阿里云 ACR（个人版或企业版） | 与 FC 同地域延迟最低 |
+| 镜像架构 | **linux/amd64** | FC 不支持 arm64；云端构建天然满足，详见 §3 |
+| 镜像仓库 | 阿里云 ACR（个人版或企业版） | **必须与 FC 同地域**；§4.1 |
+| 本地 Docker | **非必需** | 用 §3.1 控制台代码源构建时完全不需要 |
 | 任务存储 | `TASK_STORE=redis` + `REDIS_URL` | 多实例必需；SQLite 在 FC 上不可用 |
 | Redis | 阿里云 Redis（或兼容服务） | 放在 VPC 内网，FC 需配 `vpcConfig`（§4.2） |
 | VPC / 交换机 / 安全组 | 与 Redis 同 VPC；交换机在 FC 支持的可用区 | 见 §4.2，三个 ID 通过环境变量注入 |
@@ -59,9 +60,151 @@ Vercel（Next.js 前端，rewrites 代理）
 
 ---
 
-## 3. 构建镜像（linux/amd64）
+## 3. 构建镜像（云端构建，本地不需要 Docker）
 
-构建上下文是 `backend/`，不是仓库根目录（`backend/.dockerignore` 已排除 `.env.local`、`tests/`、`data/`）。
+构建上下文是 `backend/`，不是仓库根目录。
+
+### 3.0 先搞清一件事：`s deploy` 会自己 push 镜像
+
+这是本项目最容易卡住的地方，先说结论：
+
+**fc3 组件遇到 `custom-container` 函数时，`s deploy` 默认会在本机执行**
+
+```bash
+echo <临时token> | docker login <registry> --username <临时用户> --password-stdin
+docker push <image>
+```
+
+（源码位置：组件 `subCommands/deploy/impl/function.ts` → `resources/acr/index.ts` 的 `pushAcr()`。）
+
+也就是说：**只要 `s.yaml` 里的镜像地址是 ACR 域名，`s deploy` 就一定会在本地跑
+docker push。** 本地 Docker 登不上 ACR 时，这一步必然失败——和你的代码、
+`s.yaml` 内容都无关，报错只会说 push 失败。
+
+所以本地 Docker 不可用时，**必须加 `--skip-push`**：
+
+```bash
+s deploy -y -t s.yaml --skip-push
+```
+
+`--skip-push` 会同时跳过「ACR 里镜像是否存在的检查」和「docker push」，
+s deploy 只负责把镜像地址写进函数配置。前提是：**镜像必须已经在 ACR 里**。
+镜像怎么进去见 §3.1；如果本地 Docker 可用，也可以走 §3.3。
+
+> `deploy.ps1` 已经默认带 `--skip-push`。只有确实想在本地 build + push 时，
+> 才加 `-PushImage` 开关。
+
+### 3.1 方式 A：ACR 控制台「代码源构建」（推荐，完全不碰本地 Docker）
+
+个人版 ACR 自带构建功能：把 GitHub 仓库绑上去，让阿里云那边构建并推进仓库。
+全程不需要本地 Docker，也不需要本地能登录 ACR。这也是最稳的路子——构建发生在
+阿里云机房，天然是 linux/amd64。
+
+**前置**：仓库已推到 GitHub（本项目为 `Ling-cn111/video-to-text`）。
+
+**Step 1 绑定代码源**
+
+1. 打开 [容器镜像服务控制台](https://cr.console.aliyun.com)，顶部地域选 **华东1（杭州）**
+2. 左侧「实例列表」→ 点开**个人版**实例
+3. 左侧「仓库管理」→「代码源」→ GitHub 那一行点「绑定账号」
+4. 按提示跳转 GitHub 授权（只需一次）
+
+**Step 2 创建镜像仓库并配构建规则**
+
+1. 「仓库管理」→「镜像仓库」→「创建镜像仓库」
+2. 命名空间选/建 `vtt-space1`，仓库名 `vtt-backend`，仓库类型选**私有**
+3. 「下一步」进入**代码源**配置：
+   - 代码源：GitHub → 选中 `video-to-text` 仓库
+   - 构建设置：
+     - **代码变更时自动构建镜像**：按需开启（开了以后 push main 就自动构建）
+     - **海外机器构建**：**先保持关闭**；如果日志里出现
+       `dial tcp ...:443: i/o timeout` / `failed to resolve source metadata for
+       docker.io/...`（拉不到 Docker Hub 基础镜像），就**打开它**再构建一次。
+       国内构建机没有 Docker Hub 出海网络，会在第一条 `FROM` 就超时失败，
+       与你的 Dockerfile 无关。反过来，海外构建下载 `johnvansickle.com` 的
+       ffmpeg 和推回杭州会慢一些，但能跑通，比直接失败好。
+     - **不使用缓存**：关闭（开了每次都要重下 ffmpeg，慢很多）
+4. 「创建镜像仓库」
+
+**Step 3 构建规则（关键，填错就构不出来）**
+
+仓库详情页 → 左侧「构建」→「添加规则」：
+
+| 字段 | 填什么 | 为什么 |
+| --- | --- | --- |
+| 类型 | `Branch` | 跟分支走 |
+| Branch/Tag | `main` | 你的主分支 |
+| **构建上下文目录** | `backend` | ⚠️ **最容易填错的一格** |
+| Dockerfile 文件名 | `Dockerfile` | 位于 `backend/Dockerfile` |
+| 镜像版本 | `v1` | 必须与 `s.yaml` 的 `vars.tag` 一致 |
+
+> **为什么是 `backend`**：`backend/Dockerfile` 里写的是
+> `COPY app ./app`、`COPY requirements-cloud.txt ./`，这些路径都相对
+> `backend/`。上下文目录填成根目录 `./` 会找不到 `app/`，构建报
+> `COPY failed: no source files were specified`。
+
+**Step 4 立即构建**
+
+规则那一行点「立即构建」，然后点「日志」看进度。
+
+个人版构建**超时上限 30 分钟**，本项目首次构建（下 ffmpeg ≈78MB + 装 Python
+依赖）大约 5–10 分钟，够用。如果超时：开了「海外机器构建」的把它关掉试试，
+没开的看是否是卡在拉基础镜像（见 Step 2 的说明）。
+
+构建成功后：「镜像版本」页能看到 `v1`。
+
+**Step 5 部署**
+
+```bash
+s deploy -y -t s.yaml --skip-push
+```
+
+镜像已经在 ACR 里，`--skip-push` 让 s deploy 不去碰本地 Docker。
+
+### 3.2 ⚠️ 不要用 `s build --cloud-build-config`（实测结论）
+
+fc3 v3 确实提供了 `--cloud-build-config`，官方文档也写着「云端构建」。
+但**它不读你的 Dockerfile**，本项目用它只会得到一个大而全、且跑不起来的镜像。
+
+实测（2026-10，fc3 组件 v3 + docker-image-builder）：
+
+```
+setup task started        setupScript=/code/cloud-build-setup.sh
+docker-build-push task started
+开始打包并推送镜像          image=registry.cn-hangzhou.aliyuncs.com/vtt-space/video-to-text:v1
+pushing image ...
+```
+
+从 `docker-build-push` 到 `pushing image` 只用了 **1.3 秒**。多阶段 Dockerfile 构建
+（拉 `python:3.12-slim` + 下 78MB 静态 ffmpeg + pip 装依赖）不可能这么快。
+
+在远端 worker 里跑探针，结果很直观：
+
+| 探测项 | 实际结果 |
+| --- | --- |
+| `which docker` | 无（`no docker in PATH`） |
+| `/var/run/docker.sock` | 不存在 |
+| `which buildctl kaniko` | 无（只有 `buildah`） |
+| `which ffmpeg` | 无 |
+| 基础系统 | `Ubuntu 24.04.4 LTS` |
+
+它的真实语义是：用 `baseContainerConfig.image`（一个叫
+`docker-image-builder-worker` 的 Ubuntu 24.04 构建镜像）起一个容器 → 把代码解到
+`/code` → 跑 `setup.sh` → **把整个容器文件系统打成镜像推走**。
+
+所以产出物是「Ubuntu 24.04 构建机 + 你的代码在 `/code`」：没有 `/app`、
+没有 `/opt/venv`、没有 ffmpeg，`s.yaml` 里 `entrypoint: [uvicorn]` 也找不到可执行文件。
+
+要让这条路能用，就得把 `backend/Dockerfile` 的全部内容改写成一个 `setup.sh`
+（apt 装 ffmpeg、建 venv、装依赖、把代码放到 `/app`），等于维护两套会漂移的构建逻辑，
+而且镜像会从 406MB 涨到 GB 级、还会带上 Go/Node 等构建工具链。**不划算，别走这条路。**
+
+> 结论：本地没有 Docker 时，用 **§3.1 的 ACR 控制台代码源构建**。它是真正
+> `docker build`，读的就是 `backend/Dockerfile`。
+
+### 3.3 方式 B：本地 Docker（本地能登录 ACR 时才用）
+
+本地 Docker 正常时最直接，也方便调试镜像本身。
 
 ```bash
 cd backend
@@ -69,33 +212,37 @@ cd backend
 # 确认 buildx 可用（Docker Desktop 默认自带）
 docker buildx version
 
-# 方式 A：经典 docker build（BuildKit 默认开启时 --platform 生效）
-docker build --platform linux/amd64 \
-  -t video-to-text-backend:v0.1.0 .
-
-# 方式 B（推荐，尤其在 Apple Silicon / 老版本 Docker 上）：
-# buildx 显式指定平台，--load 把结果导回本地镜像列表
+# 构建（务必指定 amd64，FC 不支持 arm64）
 docker buildx build --platform linux/amd64 \
-  -t video-to-text-backend:v0.1.0 --load .
-
-# 可选：校验静态 FFmpeg 包的 sha256（留空则跳过校验）
-docker buildx build --platform linux/amd64 \
-  --build-arg FFMPEG_SHA256=<sha256> \
-  -t video-to-text-backend:v0.1.0 --load .
+  -t crpi-z9t50bxmh0sf6wux.cn-hangzhou.personal.cr.aliyuncs.com/vtt-space1/vtt-backend:v1 --load .
 ```
 
 **必须校验架构**，否则会得到一个能 push、但在 FC 上起不来的镜像：
 
 ```bash
-docker image inspect --format '{{.Os}}/{{.Architecture}}' video-to-text-backend:v0.1.0
+docker image inspect --format '{{.Os}}/{{.Architecture}}' \
+  crpi-z9t50bxmh0sf6wux.cn-hangzhou.personal.cr.aliyuncs.com/vtt-space1/vtt-backend:v1
 # 期望输出：linux/amd64
 ```
 
 常见坑：
 
-- Apple Silicon 上不加 `--platform` 会构建出 `linux/arm64`，FC 启动时报 `exec format error`。
+- Apple Silicon 上不加 `--platform` 会构建出 `linux/arm64`，FC 启动时报
+  `exec format error`。
 - 老版本 Docker 的经典构建器会**忽略** `--platform` 并打印警告，务必用 `buildx`。
-- 镜像实测约 **406MB**（S1-D 记录）。首次冷启动会受镜像拉取时间影响，生产建议开 ACR 镜像加速或使用企业版。
+- 镜像实测约 **406MB**。首次冷启动受镜像拉取时间影响。
+
+推送有两种选择：
+
+```bash
+# 选择 1：手动 push，然后部署时带 --skip-push
+docker login --username=<阿里云账号> crpi-z9t50bxmh0sf6wux.cn-hangzhou.personal.cr.aliyuncs.com
+docker push crpi-z9t50bxmh0sf6wux.cn-hangzhou.personal.cr.aliyuncs.com/vtt-space1/vtt-backend:v1
+s deploy -y -t s.yaml --skip-push
+
+# 选择 2：交给 s deploy 自动 push（不要加 --skip-push）
+s deploy -y -t s.yaml
+```
 
 本地自检（镜像默认监听 8000，`docker run` 里映射到 8000）：
 
@@ -107,11 +254,19 @@ docker run --rm -p 8000:8000 \
   -e TASK_STORE=redis \
   -e REDIS_URL=redis://host:6379/0 \
   -e DEEPSEEK_API_KEY=sk-xxxx \
-  video-to-text-backend:v0.1.0
+  crpi-z9t50bxmh0sf6wux.cn-hangzhou.personal.cr.aliyuncs.com/vtt-space1/vtt-backend:v1
 
 curl -s localhost:8000/api/health        # {"status":"ok"}
 curl -s localhost:8000/api/capabilities  # {"cloudAsrConfigured":true,"summarizeConfigured":true}
 ```
+
+### 3.4 三种方式怎么选
+
+| 场景 | 用哪种 | 部署命令 |
+| --- | --- | --- |
+| **本地 Docker 登不上 ACR（本项目当前情况）** | **方式 A：ACR 控制台代码源构建** | `s deploy -y -t s.yaml --skip-push` |
+| 本地 Docker 正常，要调镜像 | 方式 B：本地 buildx | `s deploy -y -t s.yaml` |
+| 命令行一键出镜像、不动 GitHub | ❌ 无可用方式（见 §3.2） | — |
 
 ---
 
@@ -119,32 +274,50 @@ curl -s localhost:8000/api/capabilities  # {"cloudAsrConfigured":true,"summarize
 
 部署前需要备好三类资源。§4.1 是镜像，§4.2 是「能连上 Redis」的前提，§4.3 是可选的函数角色。
 
-### 4.1 推送镜像到 ACR
+### 4.1 ACR 仓库与镜像地址
 
-先在 **容器镜像服务控制台** 创建命名空间与镜像仓库（个人版免费；生产建议企业版，支持 VPC 域名与更稳定的拉取带宽）。
+先在 **容器镜像服务控制台** 创建命名空间与镜像仓库（个人版免费；生产建议企业版，支持 VPC 域名与更稳定的拉取带宽）。**镜像怎么构建推送，见 §3**——本地登不上 ACR 时用 §3.1，不需要本地 Docker。
 
-```bash
-# 1) 登录（用户名是阿里云账号全名，不是 RAM 子账号名时也可用子账号 + 固定密码）
-docker login --username=<阿里云账号> registry.cn-hangzhou.aliyuncs.com
+个人版仓库的**完整地址**形如（本项目的实际值）：
 
-# 2) 打标签：<registry>/<namespace>/<repo>:<tag>
-docker tag video-to-text-backend:v0.1.0 \
-  registry.cn-hangzhou.aliyuncs.com/<namespace>/video-to-text-backend:v0.1.0
-
-# 3) 推送
-docker push registry.cn-hangzhou.aliyuncs.com/<namespace>/video-to-text-backend:v0.1.0
 ```
+crpi-z9t50bxmh0sf6wux.cn-hangzhou.personal.cr.aliyuncs.com/vtt-space1/vtt-backend:v1
+└────────────────── 域名 ──────────────────────────┘ └── ns ──┘ └──── repo ────┘└tag┘
+```
+
+**`s.yaml` 里只填域名部分**（`vars.acr`），namespace/repo/tag 由 `vars.image` 自己拼：
+
+```yaml
+vars:
+  acr: crpi-z9t50bxmh0sf6wux.cn-hangzhou.personal.cr.aliyuncs.com   # ← 只有域名
+  namespace: vtt-space1
+  repo: vtt-backend
+  tag: v1
+  image: ${vars.acr}/${vars.namespace}/${vars.repo}:${vars.tag}
+```
+
+> ⚠️ 把完整镜像地址填进 `vars.acr` 会拼出
+> `crpi-.../vtt-space1/vtt-backend:v1/vtt-space1/vtt-backend:v1` 这种废地址，
+> 报错却说「镜像不存在」，很难反推。
+> `test_acr_var_is_a_registry_host_only` 会拦住这种写法。
+
+**旧域名和新域名是两个不同入口**，这是最容易踩的一脚：在新版个人版实例下填
+`registry.cn-hangzhou.aliyuncs.com`，FC 会去那个（你账号里并不存在的）旧入口找仓库，
+报 `REPO_NOT_EXIST`，而你的仓库其实好好的。判断方法：ACR 仓库详情页的「公网地址」
+域名是什么，`vars.acr` 就必须是什么。
 
 镜像地址按 ACR 版本不同：
 
 | 版本 | 公网地址 | 内网（VPC）地址 |
 | --- | --- | --- |
-| 个人版 | `registry.<region>.aliyuncs.com/<ns>/<repo>:<tag>` | 同左（个人版无独立 VPC 域名） |
+| 个人版（旧） | `registry.<region>.aliyuncs.com/<ns>/<repo>:<tag>` | 同左（旧个人版无独立 VPC 域名） |
+| 个人版（新） | `crpi-xxxxxxxx.<region>.personal.cr.aliyuncs.com/<ns>/<repo>:<tag>` | `crpi-xxxxxxxx-vpc.<region>.personal.cr.aliyuncs.com/...` |
 | 企业版 | `<instance>-registry.<region>.cr.aliyuncs.com/<ns>/<repo>:<tag>` | `<instance>-registry-vpc.<region>.cr.aliyuncs.com/...` |
 
 建议：
 
-- **同地域**：FC 与 ACR 选同一 region（如都用 `cn-hangzhou`），跨地域拉取更慢且可能失败。
+- **同地域是硬要求**：FC 只拉「同账号 + 同地域」的 ACR 镜像。自 **2026-02-01** 起 FC 已**不支持跨地域拉取 ACR 个人版镜像**；新版个人版实例（`crpi-` 开头）更是绑定创建时的地域、不能改。`test_acr_region_matches_function_region` 会校验域名里的地域与 `vars.region` 一致。
+- **一个账号只有一个 ACR 个人版实例**，且旧版实例不支持删除重建换地域——所以实例在哪个地域，函数就必须部署在哪个地域。
 - FC 支持「ACR 镜像免密拉取」，可避免在 s.yaml 里写镜像仓库密码；若用私有仓库且不免密，需在 `customContainerConfig.registryConfig.authConfig` 配置账号密码（**不要提交明文到 git**）。
 - 用**企业版 VPC 域名**（`<instance>-registry-vpc.<region>.cr.aliyuncs.com`）时，FC 拉镜像走的是「函数所在 VPC」，因此必须给函数配 `vpcConfig`（§4.2）；若函数不在该 VPC，则要改用 `customContainerConfig.registryConfig.networkConfig` 单独指定拉取用的 VPC/交换机/安全组。同账号用公网域名 + 免密拉取时两者都不用配。
 
@@ -235,16 +408,22 @@ role: ${env('FC_ROLE_ARN', '')}
 # 部署：s deploy -t s.yaml
 # 查看：s info -t s.yaml      # 记录两个 HTTP 触发器地址
 #
-# 首次部署是「两段式」，因为 API 函数需要 worker 的触发器地址（FC_WORKER_URL）：
-#   1) 先 s deploy 建出两个函数（FC_WORKER_URL 留空不阻断启动，只是分发会失败）
+# 首次部署是「两段式」，因为 API 函数需要 worker 的触发器地址（WORKER_URL）：
+#   1) 先 s deploy 建出两个函数（WORKER_URL 留空不阻断启动，只是分发会失败）
 #   2) 从 s info 取 worker 的 https://...fcapp.run 地址，写入部署机环境变量
-#      FC_WORKER_URL 后，再 s deploy 一次让 API 函数拿到它
+#      WORKER_URL 后，再 s deploy 一次让 API 函数拿到它
+#
+# 注意：函数 environmentVariables 里**不能**出现 FC_ 开头的键——阿里云把该前缀
+# 保留给系统变量（FC_FUNC_CODE_PATH / FC_HANDLER …），设置即被平台拒绝。
+# 部署机变量用 FC_VPC_ID / FC_VSWITCH_ID / FC_SECURITY_GROUP_ID 是安全的，
+# 它们只被 ${env(...)} 求值，不会进入容器。
 #
 # 所有账号相关取值都用 ${env('NAME')} 引用部署机环境变量，仓库里不含明文、也不含
 # 账号内的资源 ID（注意必须带引号，写成 ${env(NAME)} 会被当成 JS 变量而报
 # NAME is not defined）：
+#   $env:REDIS_URL="..."            # PowerShell（见根目录 deploy.ps1）
 #   export REDIS_URL=... CLOUD_ASR_API_KEY=... DEEPSEEK_API_KEY=... \
-#          WORKER_TOKEN=... FC_WORKER_URL=... CORS_ORIGINS=... \
+#          WORKER_TOKEN=... WORKER_URL=... CORS_ORIGINS=... \
 #          FC_VPC_ID=... FC_VSWITCH_ID=... FC_SECURITY_GROUP_ID=...
 # 可选的 FC_ROLE_ARN 留空即使用 FC 服务关联角色（详见 docs/serverless-deploy.md §4.3）。
 #
@@ -256,10 +435,17 @@ access: default
 
 vars:
   region: cn-hangzhou
-  acr: registry.cn-hangzhou.aliyuncs.com
-  namespace: your-namespace
-  repo: video-to-text-backend
-  tag: v0.1.0
+  # acr 只填**仓库域名**，不要带 namespace/repo:tag —— 下面的 image 会自己拼。
+  # 填成完整镜像地址会拼出 registry/...:v1/vtt-space1/vtt-backend:v1 这种废地址。
+  # 取值：ACR 控制台 → 实例列表 → 目标实例 → 仓库管理 → 镜像仓库 → 仓库详情页
+  # 顶部的「公网地址」去掉 /<namespace>/<repo> 部分。两种形态都要与 region 同地域：
+  #   旧个人版 registry.<region>.aliyuncs.com
+  #   新个人版 crpi-xxxxxxxx.<region>.personal.cr.aliyuncs.com   ← 本项目用这个
+  # 两者是**不同入口**，填错会报 REPO_NOT_EXIST（FC 去旧域名下找你的仓库，永远找不到）。
+  acr: crpi-z9t50bxmh0sf6wux.cn-hangzhou.personal.cr.aliyuncs.com
+  namespace: vtt-space1
+  repo: vtt-backend
+  tag: v1
   image: ${vars.acr}/${vars.namespace}/${vars.repo}:${vars.tag}
 
 resources:
@@ -302,6 +488,9 @@ resources:
       cpu: 1
       memorySize: 2048
       # 同步总结最长 30-70s，留余量；异步分发只等 202，不受此限
+      # fc3 的 Disk 是必填项（缺了报 Disk is required but not provided），
+      # 512MB 是允许的最小值；音频流在内存里，磁盘只放临时文件
+      diskSize: 512
       timeout: 120
       # 允许单实例处理多个并发请求，降低冷启动影响
       instanceConcurrency: 10
@@ -353,9 +542,9 @@ resources:
         # ---- S2-P3：异步分发 ----
         ENQUEUE_MODE: fc
         # worker 函数的 HTTP 触发器地址（s info 里取），首次部署可留空
-        FC_WORKER_URL: ${env('FC_WORKER_URL', '')}
-        FC_WORKER_PATH: /internal/worker/transcribe
-        FC_ASYNC_TIMEOUT_SECONDS: "5"
+        WORKER_URL: ${env('WORKER_URL', '')}
+        WORKER_PATH: /internal/worker/transcribe
+        ASYNC_TIMEOUT_SECONDS: "5"
         # 与 worker 函数保持一致，Worker 端点用它校验投递来源
         WORKER_TOKEN: ${env('WORKER_TOKEN', '')}
 
@@ -411,6 +600,9 @@ resources:
       cpu: 2
       memorySize: 4096
       # 长视频转写；请对照当前地域配额确认上限，超限需在配额中心申请
+      # fc3 必填项，512MB 为最小值；16kHz WAV 会落 /tmp，接近 100MB 上限的
+      # 超长音频如遇「磁盘写满」，先调大这里再排查
+      diskSize: 512
       timeout: 1800
       # 一实例一作业：内存模型最简单，避免多作业并发把内存打满
       instanceConcurrency: 1
@@ -498,7 +690,7 @@ resources:
 
 ### 5.2 两段式部署（重要）
 
-API 函数需要 worker 的触发器地址（`FC_WORKER_URL`），而该地址要等 worker 创建后才有，且 `fcapp.run` 子域含随机串、无法由 region + 函数名推导。因此：
+API 函数需要 worker 的触发器地址（`WORKER_URL`），而该地址要等 worker 创建后才有，且 `fcapp.run` 子域含随机串、无法由 region + 函数名推导。因此：
 
 ```bash
 # ---- 第 0 步：把账号相关取值全部导出（缺一个都会让 s deploy 报错）----
@@ -514,8 +706,10 @@ export FC_SECURITY_GROUP_ID=sg-bp1xxxxxxxxxxxx
 # 可选：自定义函数角色 ARN，留空则用 FC 服务关联角色（§4.3）
 # export FC_ROLE_ARN=acs:ram::<账号ID>:role/<角色名>
 
-# ---- 第一段：先建出两个函数（FC_WORKER_URL 留空不阻断启动，只是分发会失败）----
-s deploy -t s.yaml
+# ---- 第一段：先建出两个函数（WORKER_URL 留空不阻断启动，只是分发会失败）----
+# --skip-push：镜像已在 ACR 里（§3.1 构建），禁止 s deploy 在本地
+#   docker login / docker push。本地 Docker 登不上 ACR 时这个开关是必需的。
+s deploy -t s.yaml --skip-push
 
 # ---- 取 worker 的 HTTP 触发器地址 ----
 s info -t s.yaml
@@ -523,8 +717,8 @@ s info -t s.yaml
 #   https://video-to-text-worker.abc123def.cn-hangzhou.fcapp.run
 
 # ---- 第二段：把该地址写进部署机环境变量后重新部署 ----
-export FC_WORKER_URL=https://video-to-text-worker.abc123def.cn-hangzhou.fcapp.run
-s deploy -t s.yaml
+export WORKER_URL=https://video-to-text-worker.abc123def.cn-hangzhou.fcapp.run
+s deploy -t s.yaml --skip-push
 
 # ---- 确认 VPC / 角色真的落到了函数上（别只看部署成功的绿字）----
 s info -t s.yaml
@@ -532,7 +726,7 @@ s info -t s.yaml
 #       与 role（空 = 服务关联角色）
 ```
 
-> `FC_WORKER_URL` 漏配时应用**仍能启动**（不阻断引导），但每次 `POST /api/transcribe` 都会明确失败：任务被标 `failed`（`TRANSCRIBE_FAILED`「任务分发失败，请重试」）+ 返回 500。这是刻意设计——宁可明确报错，也不静默丢任务。
+> `WORKER_URL` 漏配时应用**仍能启动**（不阻断引导），但每次 `POST /api/transcribe` 都会明确失败：任务被标 `failed`（`TRANSCRIBE_FAILED`「任务分发失败，请重试」）+ 返回 500。这是刻意设计——宁可明确报错，也不静默丢任务。
 >
 > `FC_VPC_ID` / `FC_VSWITCH_ID` / `FC_SECURITY_GROUP_ID` 则**故意不给默认值**：留空会导致「部署成功、运行期连不上 Redis」，比部署时直接报 `FC_VPC_ID is not defined` 难查得多。
 
@@ -562,7 +756,7 @@ export CLOUD_ASR_API_KEY=sk-xxxx
 export DEEPSEEK_API_KEY=sk-xxxx
 export WORKER_TOKEN=$(openssl rand -hex 24)
 export CORS_ORIGINS=https://your-frontend.vercel.app
-export FC_WORKER_URL=https://video-to-text-worker.abc123def.cn-hangzhou.fcapp.run
+export WORKER_URL=https://video-to-text-worker.abc123def.cn-hangzhou.fcapp.run
 # 网络（§4.2）与可选角色（§4.3）
 export FC_VPC_ID=vpc-bp1xxxxxxxxxxxx
 export FC_VSWITCH_ID=vsw-bp1xxxxxxxxxxxx
@@ -571,7 +765,7 @@ export FC_SECURITY_GROUP_ID=sg-bp1xxxxxxxxxxxx
 s deploy -t s.yaml
 ```
 
-> **语法必须带引号**：Serverless Devs 的魔法变量是 `${env('NAME')}` / `${env('NAME', '默认值')}`（内部按 JS 表达式求值）。写成 `${env(NAME)}` 会抛 `NAME is not defined`，`s deploy` 直接失败。模板里 `FC_WORKER_URL` / `WORKER_TOKEN` / `CORS_ORIGINS` / `FC_ROLE_ARN` 都带了默认值，缺省不会报错；`FC_VPC_ID` / `FC_VSWITCH_ID` / `FC_SECURITY_GROUP_ID` **故意没有默认值**，缺了会在部署时就失败（比运行期连不上 Redis 好查）。
+> **语法必须带引号**：Serverless Devs 的魔法变量是 `${env('NAME')}` / `${env('NAME', '默认值')}`（内部按 JS 表达式求值）。写成 `${env(NAME)}` 会抛 `NAME is not defined`，`s deploy` 直接失败。模板里 `WORKER_URL` / `WORKER_TOKEN` / `CORS_ORIGINS` / `FC_ROLE_ARN` 都带了默认值，缺省不会报错；`FC_VPC_ID` / `FC_VSWITCH_ID` / `FC_SECURITY_GROUP_ID` **故意没有默认值**，缺了会在部署时就失败（比运行期连不上 Redis 好查）。
 
 > **别把这三个 ID 写进仓库**：它们是账号内资源标识。想少敲几次可以放在一个不被提交的 `deploy.env` 里，`set -a; . ./deploy.env; set +a` 后再 `s deploy`。
 
@@ -598,7 +792,7 @@ s deploy -t s.yaml
 | `REDIS_URL` | `redis://:password@r-xxxx.redis.rds.aliyuncs.com:6379/0` | 必须。任务状态 + 限流共享计数。未配置会**静默降级** memory 并打警告 |
 | `CLOUD_ASR_API_KEY` | `sk-xxxx` | 必须。未配置时提交云端转写直接报 `CLOUD_NOT_CONFIGURED` |
 | `DEEPSEEK_API_KEY` | `sk-xxxx` | 必须（总结）。未配置时 `/api/summarize` 报 `SUMMARIZE_NOT_CONFIGURED` |
-| `FC_WORKER_URL` | worker 的 `*.fcapp.run` 地址 | **仅 API 函数、仅 `ENQUEUE_MODE=fc` 时必填**（见 §6.2） |
+| `WORKER_URL` | worker 的 `*.fcapp.run` 地址 | **仅 API 函数、仅 `ENQUEUE_MODE=fc` 时必填**（见 §6.2） |
 
 ### 6.2 建议配置
 
@@ -615,13 +809,17 @@ s deploy -t s.yaml
 | `TASK_STALE_SECONDS` | `600` | 超过该时长无心跳写入才判为遗留任务；须明显大于心跳间隔 |
 | `TASK_HEARTBEAT_SECONDS` | `30` | 长阻塞步骤（下载 / FFmpeg / ASR）靠心跳保活；0 = 关闭 |
 | `ENQUEUE_MODE` | `fc`（API）/ `inline`（Worker） | 任务分发模式。`inline` = 同进程 BackgroundTasks；`fc` = 投递到 worker 触发器（异步）；`mns`/`redis` 为后续实现位，当前显式报错 |
-| `FC_WORKER_URL` | worker 的 `*.fcapp.run` 地址 | **`ENQUEUE_MODE=fc` 时必填**。`s info -t s.yaml` 里取；无法由 region + 函数名推导 |
-| `FC_WORKER_PATH` | `/internal/worker/transcribe` | worker 上的作业路由，须与 `WORKER_PATH` 一致 |
-| `FC_ASYNC_TIMEOUT_SECONDS` | `5` | 异步投递超时：只等 FC 回 202，不等作业跑完 |
+| `WORKER_URL` | worker 的 `*.fcapp.run` 地址 | **`ENQUEUE_MODE=fc` 时必填**。`s info -t s.yaml` 里取；无法由 region + 函数名推导 |
+| `WORKER_PATH` | `/internal/worker/transcribe` | worker 上的作业路由，须与 `WORKER_PATH` 一致 |
+| `ASYNC_TIMEOUT_SECONDS` | `5` | 异步投递超时：只等 FC 回 202，不等作业跑完 |
 | `TASK_LOCK_SECONDS` | `3600` | Worker 执行锁 TTL（`SET NX EX`），执行期间按心跳续期；崩溃后到期自动释放 |
 | `REAPER_LOCK_SECONDS` | `120` | Reaper 互斥锁 TTL（S2-P4）：只需覆盖单次扫描耗时，与执行锁无关 |
 | `WORKER_TOKEN` | 空 | Worker 端点鉴权；非空时要求 `X-Worker-Token` 或 `Authorization: Bearer <token>` 一致 |
 | `CLOUD_ASR_BASE_URL` / `CLOUD_ASR_MODEL` | 见 `.env.example` | 换服务商/模型时覆盖 |
+
+> **⚠️ 环境变量键名不能以 `FC_` 开头。** 阿里云把 `FC_*` 保留给系统环境变量（`FC_FUNC_CODE_PATH`、`FC_HANDLER`、`FC_RUNTIME_API` 等），在函数上设置该前缀的自定义变量会被平台直接拒绝，表现为 **`s deploy` 阶段失败**（不是运行期报错，因此很难和业务代码联系起来）。所以 worker 地址/路径/超时用的是 `WORKER_URL` / `WORKER_PATH` / `ASYNC_TIMEOUT_SECONDS`。
+>
+> 注意区分两类变量：`FC_VPC_ID` / `FC_VSWITCH_ID` / `FC_SECURITY_GROUP_ID` / `FC_ROLE_ARN` 是**部署机**变量，只在 `${env('...')}` 里被求值、不会写进函数环境变量，因此不受保留字规则约束。
 
 `TASK_DB_PATH`、`WHISPER_*`、`ENABLE_VOCAL_SEPARATION`、`BILI_COOKIE` 在 FC 上都不需要（`BILI_COOKIE` 为预留能力，当前未实现）。
 
@@ -687,7 +885,7 @@ API_URL=https://video-to-text-api.<随机串>.cn-hangzhou.fcapp.run
 - 若当前控制台版本的测试面板不支持自定义请求方法与请求体（各版本文案不同：`测试函数` / `在线测试`），直接用 §7.3 的 `curl`——两者等价，验证目标一致。
 - 返回 `404`：路径写错（注意不要带 `/backend-api` 前缀，那是 Vercel 侧的代理前缀）。
 - 返回 `422`：请求体字段不对（`videoId` 是必填）。
-- 返回 `500` + `{"error":{"code":"TRANSCRIBE_FAILED","message":"任务分发失败，请重试"}}`：API 侧投递失败，查 §5.2 的 `FC_WORKER_URL`。
+- 返回 `500` + `{"error":{"code":"TRANSCRIBE_FAILED","message":"任务分发失败，请重试"}}`：API 侧投递失败，查 §5.2 的 `WORKER_URL`。
 
 #### 步骤 3：在 Worker 函数日志里确认作业被异步执行
 
@@ -787,13 +985,13 @@ done
 | 现象 | 定位 |
 | --- | --- |
 | 第 1 步返回 `202` + `X-Fc-Request-Id` | 触发器与异步头都正确，事件已入队 |
-| 第 1 步返回 `404` | 异步调用**没有透传 path**（见 §8.4 R1），需把 `FC_WORKER_PATH` 改成实际收到的路径 |
+| 第 1 步返回 `404` | 异步调用**没有透传 path**（见 §8.4 R1），需把 `WORKER_PATH` 改成实际收到的路径 |
 | 第 1 步返回 `401` | api/worker 两侧 `WORKER_TOKEN` 不一致 |
 | 第 1 步返回 `403` / `access denied` | 触发器认证方式不是 `anonymous` |
 | 第 2 步一直 `processing` 且 `attempts` 不增 | api 侧投递失败，查 api 日志的 `FC 投递被拒` / `FC 投递失败` |
 | 第 2 步 `attempts` 增长但 `stage` 不动 | worker 侧问题，查 worker 日志 |
 | 第 2 步变 `completed` 且 `transcriptSource` 为 `subtitle_cc` / `subtitle_ai` / `asr` | 全链路打通 |
-| 任务 `failed`（「任务分发失败，请重试」） | `FC_WORKER_URL` 漏配或写错，见 §5.2 |
+| 任务 `failed`（「任务分发失败，请重试」） | `WORKER_URL` 漏配或写错，见 §5.2 |
 
 > `attempts` 字段在 `GET /api/transcribe/{taskId}` 的响应里不返回（前端契约未变），需查 Redis `task:{taskId}` 的 JSON。
 
@@ -838,7 +1036,7 @@ LUA
 | C 有日志但报 `422 事件体无法解析` | `/invoke` 分流没生效——检查 `_looks_like_timer_event` 与 event 字段名 |
 | 任务变 `failed` 但前端显示「出了点问题」 | `error-alert.tsx` 的 `errorTitle` 缺 `TASK_TIMEOUT` 分支 |
 
-> **不要**把 `FC_WORKER_PATH` 配成 `/internal/worker/reap`——那是人工入口，定时触发器永远打不到自定义路径。
+> **不要**把 `WORKER_PATH` 配成 `/internal/worker/reap`——那是人工入口，定时触发器永远打不到自定义路径。
 
 ### 7.4 日志
 
@@ -891,7 +1089,7 @@ NEXT_PUBLIC_USE_MOCK=false        # 构建期常量，改完必须重新构建
 | 未配 `vpcConfig` | 连不上 VPC 内网 Redis，**静默降级 memory** | 多实例各持一份任务，表现为「任务永远 `processing`」；接口看起来却正常。必须给两个函数配同一套 `vpcConfig`（§4.2） |
 | 配了 `vpcConfig` 但关掉 `internetAccess` | B站下载 / 云端 ASR / DeepSeek 全部失败 | FC 支持「访问 VPC + 访问公网」并存，两个开关都要开（§4.2） |
 | 误以为 `role` 管 ACR 拉取 / VPC 通路 | 白建角色、甚至配错导致日志丢失 | 这两件事由 FC 服务关联角色 `AliyunServiceRoleForFC` 负责；`role` 只用于「函数代码访问其他云服务」（§4.3） |
-| 内置 `*.fcapp.run` 域名仅用于测试 | 生产稳定性无保障 | 官方明确建议绑已备案自定义域名；上线前替换 `FC_WORKER_URL` 与前端 `BACKEND_ORIGIN` |
+| 内置 `*.fcapp.run` 域名仅用于测试 | 生产稳定性无保障 | 官方明确建议绑已备案自定义域名；上线前替换 `WORKER_URL` 与前端 `BACKEND_ORIGIN` |
 
 ### 8.3 S2 改造方向：独立函数触发
 
@@ -927,11 +1125,11 @@ uvicorn app.worker_app:app --host 0.0.0.0 --port 9000
 
 环境变量差异：worker 函数设 `TASK_INIT_MODE=none`（双保险，代码已显式传 `False`）、
 `TASK_LOCK_SECONDS`（默认 3600）、`WORKER_TOKEN`；`api` 函数保持 `TASK_INIT_MODE=recover`、
-`ENQUEUE_MODE=fc`、`FC_WORKER_URL`。完整对照见 §6.2 与仓库根目录 `s.yaml`。
+`ENQUEUE_MODE=fc`、`WORKER_URL`。完整对照见 §6.2 与仓库根目录 `s.yaml`。
 
 ### 8.4 P3 遗留与真机待验证项
 
-- **R1（待真机确认）异步调用是否原样透传 path**：官方只写明「将请求持久化保存，然后立即返回响应」，没有一句明确说异步重放时 path 保持不变。同步透传模式是明确的，异步极可能一致。§7.3 第 1 步的 `curl` 就是专门验证这一点——若返回 404，把 `FC_WORKER_PATH` 改成实际收到的路径即可（代码侧零改动）。
+- **R1（待真机确认）异步调用是否原样透传 path**：官方只写明「将请求持久化保存，然后立即返回响应」，没有一句明确说异步重放时 path 保持不变。同步透传模式是明确的，异步极可能一致。§7.3 第 1 步的 `curl` 就是专门验证这一点——若返回 404，把 `WORKER_PATH` 改成实际收到的路径即可（代码侧零改动）。
 - **R2（已确认）异步 Body 上限 128 KB**：`TranscribeJob.to_dict()` 仅几百字节，余量充足。**不要往事件体里塞文字稿**——P1 只传作业入参的设计已规避。
 - **R3（已由 P4 关闭）崩溃恢复**：worker 被 OOM/超时杀掉后，FC 的 3 次重试（间隔 0.5/1/2 秒）都会撞上 `TASK_LOCK_SECONDS=3600` 的锁并返回 `skipped`。现在由 worker 函数上的定时触发器（`reapTimer`，每 5 分钟）兜底：扫描 `status=processing` 且 `now - updated_at > TASK_STALE_SECONDS`（默认 600s）的任务，标 `failed` + `TASK_TIMEOUT`（「任务处理超时，可能因服务器资源受限中断，请重试」）。验收见 §7.3.1。
 - **R7（P4 新增，已知行为）误杀后任务可能「复活」**：如果 worker 其实活着但心跳连续断了 20 次（>600s，概率极低），任务会被判 `failed`，随后 worker 跑完时 `_finish` 会无条件写回 `completed`。这是可接受的——用户最多先看到一次错误提示，实际结果仍会落库。
@@ -945,15 +1143,18 @@ uvicorn app.worker_app:app --host 0.0.0.0 --port 9000
 
 | 现象 | 常见原因 | 处理 |
 | --- | --- | --- |
+| ACR 构建失败：`failed to resolve source metadata for docker.io/library/python` / `dial tcp 31.13.71.19:443: i/o timeout`（`[build failed, takes 30s]`） | 国内构建机连不上 Docker Hub，拉不到 `FROM` 的基础镜像。**与你的 Dockerfile 无关**（同一份 Dockerfile 本地构建可通过） | ACR 构建规则里**打开「海外机器构建」**再构建一次 |
+| ACR 构建日志末尾的镜像路径与 `s.yaml` 不一致（如 `.../vtt-space1/vtt-backend:v1` vs 期望值） | 构建规则加在了另一个仓库上，或 `namespace` / `repo` 拼错 | 让构建目标的 `<命名空间>/<仓库名>` 与 `s.yaml` 的 `vars.namespace` / `vars.repo` 逐字符一致。**构建成功不代表部署能找到镜像** |
+| `REPO_NOT_EXIST` / `Image not stored in ACR is not supported yet` | ACR 里还没有这个仓库或没有这个 tag（`--skip-push` 跳过了存在性检查，所以直到 `s deploy` 末尾才暴露） | 先确认 `s.yaml` 的 `vars.acr` 与 ACR 仓库页的「公网地址」域名一致（老版个人版是 `registry.<region>.aliyuncs.com`，新版是 `crpi-<id>.<region>.personal.cr.aliyuncs.com`）；再按 §3.1 建仓库并「立即构建」出该 tag。注意 `构建上下文目录` 填 `backend` |
 | 启动失败：`exec format error` | 镜像不是 amd64 | 重新用 `--platform linux/amd64` 构建并校验 `docker image inspect` |
 | 拉取镜像失败 / `ImagePullBackOff` | ACR 地址错、无权限、跨地域、VPC 未打通 | 检查镜像地址与 tag；配置免密拉取或 `registryConfig`；企业版 VPC 地址需配 `vpcConfig` |
 | 请求 502 / 健康检查失败 | 端口不一致；uvicorn 未监听 `0.0.0.0`；启动即崩 | 对齐 `port` 与 `--port`；看启动日志；本地 `docker run` 复现 |
 | 请求超时 / 504 | `timeout` 太小（总结 30-70s） | 调到 120s 以上 |
 | 任务一直 `processing` | `ENQUEUE_MODE=inline` 下 BackgroundTasks 被冻结；或 `fc` 模式投递失败 | 云端切 `ENQUEUE_MODE=fc`（§5、§7.3）；查 api 日志的 `FC 投递被拒` / `FC 投递失败` |
-| api 日志 `FC 投递被拒（HTTP 404）` | `FC_WORKER_URL` 少了路径，或异步未透传 path | 检查 `FC_WORKER_URL` + `FC_WORKER_PATH`；参考 §8.4 R1 |
+| api 日志 `FC 投递被拒（HTTP 404）` | `WORKER_URL` 少了路径，或异步未透传 path | 检查 `WORKER_URL` + `WORKER_PATH`；参考 §8.4 R1 |
 | api 日志 `FC 投递被拒（HTTP 401）` | `WORKER_TOKEN` 两侧不一致 | 让 api 与 worker 用同一个 `WORKER_TOKEN` |
 | api 日志 `FC 投递被拒（HTTP 403）` | 触发器认证方式不是 `anonymous` | 改触发器认证方式，或改用 Bearer/签名 |
-| 任务 `failed`（「任务分发失败，请重试」） | `FC_WORKER_URL` 漏配 / 写错 / FC 拒收 | 见 §5.2 两段式部署 |
+| 任务 `failed`（「任务分发失败，请重试」） | `WORKER_URL` 漏配 / 写错 / FC 拒收 | 见 §5.2 两段式部署 |
 | 任务一直 `processing`，超过 15 分钟仍未变 `failed` | 定时触发器没生效（S2-P4） | `s info` 查 worker 的 `reapTimer`；手工 `curl /internal/worker/reap` 验逻辑；见 §7.3.1 |
 | worker 日志 `收到定时触发器事件` 但随后 422 | `/invoke` 分流未命中 | 确认 event 含 `triggerTime` + `triggerName`；见 §7.3.1 判读表 |
 | 任务 `failed`（「任务处理超时…」） | reaper 判定心跳超时（正常行为） | 用户点重试即可；若频繁出现说明实例被 OOM/超时杀，查 worker 规格与 `timeout` |

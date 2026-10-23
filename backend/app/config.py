@@ -114,14 +114,21 @@ REAPER_LOCK_SECONDS: int = int(os.getenv("REAPER_LOCK_SECONDS", "120"))
 # 必须显式配置：fcapp.run 的子域含随机串，无法由 region + 函数名推导。
 # 为空时 ENQUEUE_MODE=fc 仍可正常启动（不阻断应用引导），但每次分发都会抛
 # DispatchError，由路由层把任务标 failed 并返回 500。
-FC_WORKER_URL: str = os.getenv("FC_WORKER_URL", "").strip()
+#
+# 变量名故意不带 FC_ 前缀：阿里云函数计算把 FC_* 保留给系统环境变量
+# （FC_FUNC_CODE_PATH / FC_HANDLER / FC_RUNTIME_API …），在控制台或 s.yaml 里
+# 设置以 FC_ 开头的自定义变量会被直接拒绝，部署阶段就失败。
+WORKER_URL: str = os.getenv("WORKER_URL", "").strip()
 
 # worker 函数上的作业路由，必须与 app/worker_app.py 的 WORKER_PATH 一致。
-FC_WORKER_PATH: str = os.getenv("FC_WORKER_PATH", "/internal/worker/transcribe").strip()
+WORKER_PATH: str = os.getenv("WORKER_PATH", "/internal/worker/transcribe").strip()
 
 # 异步投递超时（秒）：异步调用只等 FC 回 202，不需要等作业真正跑完，
 # 因此可以远小于 pipeline 的超时。
-FC_ASYNC_TIMEOUT_SECONDS: float = float(os.getenv("FC_ASYNC_TIMEOUT_SECONDS", "5"))
+# 旧名 FC_ASYNC_TIMEOUT_SECONDS 同样违反 FC_ 保留前缀，仅作本地兼容回退读取。
+ASYNC_TIMEOUT_SECONDS: float = float(
+    os.getenv("ASYNC_TIMEOUT_SECONDS") or os.getenv("FC_ASYNC_TIMEOUT_SECONDS") or "5"
+)
 
 # 请求限流（令牌桶，任务 H）：每 IP 每分钟 POST 请求数上限；0 = 禁用
 RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "10"))

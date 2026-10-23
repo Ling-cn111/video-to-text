@@ -9,10 +9,12 @@
 
 - 两个函数都在、镜像/启动命令对得上
 - api 走 fc、worker 走 inline 且 `TASK_INIT_MODE=none`
-- `FC_WORKER_PATH` 与 `worker_app.WORKER_PATH` 一致（否则 404）
+- `WORKER_PATH` 与 `worker_app.WORKER_PATH` 一致（否则 404）
 - 触发器只放行必要方法、认证方式与 `WORKER_TOKEN` 兜底一致
 - 异步重试/存活时间在 FC 允许区间内
 - 仓库里不含明文密钥（全部 `${env('NAME')}` 占位）
+- **FC 保留字**：函数环境变量不得以 `FC_` 开头（阿里云保留给系统变量，部署直接失败）
+- **部署前置**：地域支持容器镜像、每个函数显式给出 `diskSize`
 - **网络与角色（S2-Deploy）**：两函数都有完整 `vpcConfig`（否则连不上 VPC 内网 Redis）、
   同一套网络、`internetAccess` 保持开启、`role` 默认留空走服务关联角色
 - **文档模板与 `s.yaml` 一致**（按 YAML 解析比对 `docs/serverless-deploy.md` §5.1 的模板块）
@@ -119,14 +121,14 @@ def test_api_dispatches_to_fc_and_worker_does_not(api, worker):
 
 
 def test_worker_path_matches_worker_app_constant(api):
-    """`FC_WORKER_PATH` 与 worker 实际挂载点不一致 → 异步调用直接 404。"""
-    assert _env(api)["FC_WORKER_PATH"] == WORKER_PATH
+    """`WORKER_PATH` 与 worker 实际挂载点不一致 → 异步调用直接 404。"""
+    assert _env(api)["WORKER_PATH"] == WORKER_PATH
 
 
 def test_invoke_alias_is_documented_as_fallback(api):
     """`/invoke` 是 InvokeFunction 与事件源触发器的固定落点，不能被误配成主路径。"""
-    assert _env(api)["FC_WORKER_PATH"] != INVOKE_PATH
-    assert _env(api)["FC_WORKER_PATH"] != REAP_PATH
+    assert _env(api)["WORKER_PATH"] != INVOKE_PATH
+    assert _env(api)["WORKER_PATH"] != REAP_PATH
 
 
 def test_api_worker_token_is_shared(api, worker):
@@ -136,8 +138,8 @@ def test_api_worker_token_is_shared(api, worker):
 
 def test_api_worker_url_is_placeholder_so_first_deploy_succeeds(api):
     """首轮部署时 worker 地址还不存在：必须能渲染成空串，不能抛错。"""
-    match = _ENV_MAGIC.match(_env(api)["FC_WORKER_URL"])
-    assert match, "FC_WORKER_URL 必须是 ${env('NAME', '默认值')} 形式"
+    match = _ENV_MAGIC.match(_env(api)["WORKER_URL"])
+    assert match, "WORKER_URL 必须是 ${env('NAME', '默认值')} 形式"
     assert match.group(2) == ""
 
 
@@ -254,6 +256,69 @@ def test_async_event_age_matches_task_ttl(api, worker):
     ]
 
 
+# ---- 镜像地址组装 ----
+#
+# `vars.acr` 只允许是**仓库域名**，`vars.image` 会再拼 `/<namespace>/<repo>:<tag>`。
+# 把完整镜像地址填进 acr 会拼出 `registry/...:v1/vtt-space/video-to-text:v1`
+# 这种废地址——镜像拉不到，报错却指向「镜像不存在」，很难反推到是拼接问题。
+
+def test_acr_var_is_a_registry_host_only(manifest):
+    """`vars.acr` 只能填域名：不能带 /namespace、不能带 :tag。"""
+    acr = manifest["vars"]["acr"]
+
+    assert "://" not in acr, f"acr 不要带协议前缀，实际 {acr!r}"
+    assert "/" not in acr, (
+        f"vars.acr 只能是仓库域名（不含 namespace/repo），实际 {acr!r}；"
+        "完整镜像地址应交给 vars.image 拼接"
+    )
+    assert ":" not in acr, (
+        f"vars.acr 不能带端口或 tag，实际 {acr!r}；tag 由 vars.tag 提供"
+    )
+
+
+def test_rendered_image_is_a_well_formed_reference(manifest):
+    """按 vars 拼出来的镜像地址必须形如 <registry>/<ns>/<repo>:<tag>，恰好三段路径。"""
+    v = manifest["vars"]
+    rendered = f"{v['acr']}/{v['namespace']}/{v['repo']}:{v['tag']}"
+
+    assert v["image"] == "${vars.acr}/${vars.namespace}/${vars.repo}:${vars.tag}", (
+        f"vars.image 应为固定拼接模板，实际 {v['image']!r}"
+    )
+
+    # 恰好三段：registry / namespace / repo:tag。多于三段说明 acr 里混进了路径。
+    parts = rendered.split("/")
+    assert len(parts) == 3, (
+        f"镜像地址路径段数应为 3（registry/ns/repo:tag），实际 {len(parts)} 段：{rendered!r}"
+    )
+
+    registry, namespace, repo_tag = parts
+    assert registry.endswith(".aliyuncs.com") or "." in registry, (
+        f"第一段应是仓库域名，实际 {registry!r}"
+    )
+    assert ":" in repo_tag, f"最后一段应含 tag，实际 {repo_tag!r}"
+    assert repo_tag.count(":") == 1, f"tag 只能有一个冒号，实际 {repo_tag!r}"
+    assert namespace, "namespace 不能为空"
+
+
+def test_acr_region_matches_function_region(manifest):
+    """ACR 域名里带的地域必须与函数地域一致。
+
+    FC 的自定义容器只拉「同账号 + 同地域」的 ACR 镜像；新版个人版实例
+    （crpi-*.personal.cr.aliyuncs.com）更是绑死创建时的地域。
+    """
+    v = manifest["vars"]
+    region = v["region"]
+    acr = v["acr"]
+
+    # 个人版域名都含地域；旧版 registry.cn-hangzhou.aliyuncs.com 亦然
+    match = re.search(r"(cn-[a-z]+|ap-[a-z]+-\d+|eu-[a-z]+-\d+|us-[a-z]+-\d+)", acr)
+    assert match, f"acr 域名里应包含地域标识，实际 {acr!r}"
+    assert match.group(1) == region, (
+        f"ACR 地域 {match.group(1)!r} 与函数地域 {region!r} 不一致——"
+        "FC 只能拉同地域镜像，会导致镜像拉取失败"
+    )
+
+
 # ---- 密钥与规格 ----
 
 def test_no_plaintext_secrets_in_manifest(manifest):
@@ -263,7 +328,7 @@ def test_no_plaintext_secrets_in_manifest(manifest):
         "CLOUD_ASR_API_KEY",
         "DEEPSEEK_API_KEY",
         "WORKER_TOKEN",
-        "FC_WORKER_URL",
+        "WORKER_URL",
         "CORS_ORIGINS",
         "DASHSCOPE_API_KEY",
     }
@@ -293,6 +358,54 @@ def test_worker_is_sized_for_oom_not_cost(worker):
     assert worker["cpu"] >= 2
     assert worker["timeout"] >= 600
     assert worker["instanceConcurrency"] == 1
+
+
+# ---- 地域 / 磁盘 / FC 保留字（部署期失败的三类硬约束）----
+#
+# 这三条都是「s deploy 直接失败、代码一行没错」的问题，只能靠清单断言兜住：
+#   - 容器镜像 runtime 只在部分地域提供（cn-guangzhou 不支持 FC 3.0 容器）
+#   - fc3 的 diskSize 是必填项，漏了报 Disk is required but not provided
+#   - FC_* 是阿里云保留的系统环境变量前缀，设置即被拒
+
+
+def test_region_supports_custom_container(manifest):
+    """容器镜像只能部署在支持 custom-container 的地域。"""
+    region = manifest["vars"]["region"]
+    assert region == "cn-hangzhou", f"容器部署地域应为 cn-hangzhou，实际 {region!r}"
+
+    for name in ("api", "worker"):
+        assert manifest["resources"][name]["props"]["region"] == "${vars.region}", (
+            f"{name} 的 region 应引用 vars.region，避免两处硬编码不一致"
+        )
+
+
+@pytest.mark.parametrize("props_name", ["api", "worker"])
+def test_disk_size_is_explicitly_configured(manifest, props_name):
+    """fc3 的 Disk 是必填项：漏写在部署阶段就报 Disk is required but not provided。"""
+    props = manifest["resources"][props_name]["props"]
+
+    assert "diskSize" in props, f"{props_name} 缺 diskSize：s deploy 会直接失败"
+    disk = props["diskSize"]
+    assert isinstance(disk, int) and not isinstance(disk, bool)
+    assert disk >= 512, f"FC 允许的最小磁盘为 512MB，实际 {disk!r}"
+    assert disk <= 10240, f"FC 单函数磁盘上限 10240MB，实际 {disk!r}"
+
+
+@pytest.mark.parametrize("props_name", ["api", "worker"])
+def test_no_reserved_fc_prefixed_env_vars(manifest, props_name):
+    """阿里云把 FC_* 保留给系统环境变量（FC_FUNC_CODE_PATH / FC_HANDLER …）。
+
+    自定义变量用这个前缀会被平台拒绝，表现为部署失败而非运行期错误，因此在这里
+    拦死。`FC_VPC_ID` / `FC_ROLE_ARN` 这类**部署机**变量不受影响——它们只在
+    `${env(...)}` 里被求值，不会写进函数的 environmentVariables。
+    """
+    env = _env(manifest["resources"][props_name]["props"])
+    offenders = [key for key in env if key.upper().startswith("FC_")]
+
+    assert not offenders, (
+        f"{props_name} 的环境变量 {offenders} 使用了阿里云保留前缀 FC_，"
+        "部署会被拒绝（例如 FC_WORKER_URL → WORKER_URL）"
+    )
 
 
 # ---- 网络与角色（S2-Deploy）----

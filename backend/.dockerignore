@@ -1,12 +1,19 @@
 # Docker 构建上下文排除（backend/）
-# 注意：构建上下文是 backend/ 目录，故 .env.local（含真实 Key）必须排除，
-# 容器配置一律经环境变量注入（见 Dockerfile 顶部说明）。
+#
+# 谁在用：本地 `docker build .` 和 ACR 控制台「代码源构建」——两者都是真正的
+# Docker/BuildKit 语义，规则一致。
+#
+# ⚠️ 通配符要带 **/ 前缀：`*.pyc` 只匹配根目录下的 .pyc，
+#    `app/__pycache__/x.pyc` 会漏过去（实测确认）。同理 `*.md` 要写 `**/*.md`。
+#
+# 这一段被 backend/tests/test_docker_build_context.py 钉住：Dockerfile 里
+# COPY 用到的路径不能被排除，否则构建会报 "COPY failed: no source files"。
 
 # Python 虚拟环境 / 缓存 / 编译产物
 .venv/
-__pycache__/
-*.py[cod]
-*.egg-info/
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -22,13 +29,19 @@ scripts/
 
 # 运行数据（SQLite 任务库等）
 data/
+.audio*/
+.audio-bench/
 
-# 文档与容器自身文件
-*.md
-Dockerfile
-.dockerignore
+# 文档
+**/*.md
+
+# 注意：**绝对不要**在这里写 Dockerfile。
+# Docker 自己总能读到 Dockerfile（它在构建上下文之外单独传入），但把它列进来
+# 会让上下文里没有它，`docker build` 之外的任何工具（包括各种"帮你看构建上下文"
+# 的辅助命令）都会误判。收益为零，风险非零。
 
 # 其它
 .git/
 .gitignore
-.audio*/
+# 本地 AI 工具的运行产物（体积大且与镜像无关）
+.mimosa/

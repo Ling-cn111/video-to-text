@@ -3,16 +3,22 @@
 # 部署：s deploy -t s.yaml
 # 查看：s info -t s.yaml      # 记录两个 HTTP 触发器地址
 #
-# 首次部署是「两段式」，因为 API 函数需要 worker 的触发器地址（FC_WORKER_URL）：
-#   1) 先 s deploy 建出两个函数（FC_WORKER_URL 留空不阻断启动，只是分发会失败）
+# 首次部署是「两段式」，因为 API 函数需要 worker 的触发器地址（WORKER_URL）：
+#   1) 先 s deploy 建出两个函数（WORKER_URL 留空不阻断启动，只是分发会失败）
 #   2) 从 s info 取 worker 的 https://...fcapp.run 地址，写入部署机环境变量
-#      FC_WORKER_URL 后，再 s deploy 一次让 API 函数拿到它
+#      WORKER_URL 后，再 s deploy 一次让 API 函数拿到它
+#
+# 注意：函数 environmentVariables 里**不能**出现 FC_ 开头的键——阿里云把该前缀
+# 保留给系统变量（FC_FUNC_CODE_PATH / FC_HANDLER …），设置即被平台拒绝。
+# 部署机变量用 FC_VPC_ID / FC_VSWITCH_ID / FC_SECURITY_GROUP_ID 是安全的，
+# 它们只被 ${env(...)} 求值，不会进入容器。
 #
 # 所有账号相关取值都用 ${env('NAME')} 引用部署机环境变量，仓库里不含明文、也不含
 # 账号内的资源 ID（注意必须带引号，写成 ${env(NAME)} 会被当成 JS 变量而报
 # NAME is not defined）：
+#   $env:REDIS_URL="..."            # PowerShell（见根目录 deploy.ps1）
 #   export REDIS_URL=... CLOUD_ASR_API_KEY=... DEEPSEEK_API_KEY=... \
-#          WORKER_TOKEN=... FC_WORKER_URL=... CORS_ORIGINS=... \
+#          WORKER_TOKEN=... WORKER_URL=... CORS_ORIGINS=... \
 #          FC_VPC_ID=... FC_VSWITCH_ID=... FC_SECURITY_GROUP_ID=...
 # 可选的 FC_ROLE_ARN 留空即使用 FC 服务关联角色（详见 docs/serverless-deploy.md §4.3）。
 #
@@ -24,10 +30,17 @@ access: default
 
 vars:
   region: cn-hangzhou
-  acr: registry.cn-hangzhou.aliyuncs.com
-  namespace: your-namespace
-  repo: video-to-text-backend
-  tag: v0.1.0
+  # acr 只填**仓库域名**，不要带 namespace/repo:tag —— 下面的 image 会自己拼。
+  # 填成完整镜像地址会拼出 registry/...:v1/vtt-space1/vtt-backend:v1 这种废地址。
+  # 取值：ACR 控制台 → 实例列表 → 目标实例 → 仓库管理 → 镜像仓库 → 仓库详情页
+  # 顶部的「公网地址」去掉 /<namespace>/<repo> 部分。两种形态都要与 region 同地域：
+  #   旧个人版 registry.<region>.aliyuncs.com
+  #   新个人版 crpi-xxxxxxxx.<region>.personal.cr.aliyuncs.com   ← 本项目用这个
+  # 两者是**不同入口**，填错会报 REPO_NOT_EXIST（FC 去旧域名下找你的仓库，永远找不到）。
+  acr: crpi-z9t50bxmh0sf6wux.cn-hangzhou.personal.cr.aliyuncs.com
+  namespace: vtt-space1
+  repo: vtt-backend
+  tag: v1
   image: ${vars.acr}/${vars.namespace}/${vars.repo}:${vars.tag}
 
 resources:
@@ -70,6 +83,9 @@ resources:
       cpu: 1
       memorySize: 2048
       # 同步总结最长 30-70s，留余量；异步分发只等 202，不受此限
+      # fc3 的 Disk 是必填项（缺了报 Disk is required but not provided），
+      # 512MB 是允许的最小值；音频流在内存里，磁盘只放临时文件
+      diskSize: 512
       timeout: 120
       # 允许单实例处理多个并发请求，降低冷启动影响
       instanceConcurrency: 10
@@ -121,9 +137,9 @@ resources:
         # ---- S2-P3：异步分发 ----
         ENQUEUE_MODE: fc
         # worker 函数的 HTTP 触发器地址（s info 里取），首次部署可留空
-        FC_WORKER_URL: ${env('FC_WORKER_URL', '')}
-        FC_WORKER_PATH: /internal/worker/transcribe
-        FC_ASYNC_TIMEOUT_SECONDS: "5"
+        WORKER_URL: ${env('WORKER_URL', '')}
+        WORKER_PATH: /internal/worker/transcribe
+        ASYNC_TIMEOUT_SECONDS: "5"
         # 与 worker 函数保持一致，Worker 端点用它校验投递来源
         WORKER_TOKEN: ${env('WORKER_TOKEN', '')}
 
@@ -179,6 +195,9 @@ resources:
       cpu: 2
       memorySize: 4096
       # 长视频转写；请对照当前地域配额确认上限，超限需在配额中心申请
+      # fc3 必填项，512MB 为最小值；16kHz WAV 会落 /tmp，接近 100MB 上限的
+      # 超长音频如遇「磁盘写满」，先调大这里再排查
+      diskSize: 512
       timeout: 1800
       # 一实例一作业：内存模型最简单，避免多作业并发把内存打满
       instanceConcurrency: 1

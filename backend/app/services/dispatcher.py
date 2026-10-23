@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import httpx
 
-from app.config import ENQUEUE_MODE, FC_ASYNC_TIMEOUT_SECONDS, FC_WORKER_PATH, FC_WORKER_URL, WORKER_TOKEN
+from app.config import ASYNC_TIMEOUT_SECONDS, ENQUEUE_MODE, WORKER_PATH, WORKER_TOKEN, WORKER_URL
 from app.schemas import VideoInfo
 from app.services import transcribe
 
@@ -142,9 +142,9 @@ class FcDispatcher:
     def __init__(
         self,
         url: str,
-        path: str = FC_WORKER_PATH,
+        path: str = WORKER_PATH,
         token: "str | None" = None,
-        timeout: float = FC_ASYNC_TIMEOUT_SECONDS,
+        timeout: float = ASYNC_TIMEOUT_SECONDS,
         transport: "httpx.BaseTransport | None" = None,
     ) -> None:
         self._url = (url or "").strip()
@@ -179,7 +179,7 @@ class FcDispatcher:
 
     def enqueue(self, job: TranscribeJob, background_tasks: "BackgroundTasks | None" = None) -> None:
         if not self._url:
-            raise DispatchError("ENQUEUE_MODE=fc 但未配置 FC_WORKER_URL（worker 函数的 HTTP 触发器地址）")
+            raise DispatchError("ENQUEUE_MODE=fc 但未配置 WORKER_URL（worker 函数的 HTTP 触发器地址）")
 
         # 用 content= 而非 json=：字节与签名哈希一一对应，将来若切 OpenAPI 可直接复用
         body = json.dumps(job.to_dict(), ensure_ascii=False)
@@ -228,7 +228,7 @@ def _build_dispatcher(mode: str) -> Dispatcher:
     if normalized == "inline":
         return InlineDispatcher()
     if normalized == "fc":
-        return FcDispatcher(FC_WORKER_URL)
+        return FcDispatcher(WORKER_URL)
     if normalized == "mns":
         return _UnimplementedDispatcher("mns", "备选方案：MNS 队列触发")
     if normalized == "redis":

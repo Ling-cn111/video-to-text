@@ -192,7 +192,7 @@ def test_post_fc_mode_marks_failed_when_fc_rejects(monkeypatch):
 
 
 def test_post_fc_mode_marks_failed_when_url_missing(monkeypatch):
-    """FC_WORKER_URL 漏配：启动不崩，但请求必须明确失败（不静默丢任务）。"""
+    """WORKER_URL 漏配：启动不崩，但请求必须明确失败（不静默丢任务）。"""
     import httpx
 
     from app.services.dispatcher import FcDispatcher

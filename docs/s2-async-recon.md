@@ -512,7 +512,7 @@ Timer（每 1 分钟）──► Worker 函数
    api 设 10。Redis 连接数与云端 ASR 配额按实际压测再调。
 8. **【新】异步调用是否原样透传 path**：官方只写「将请求持久化保存，然后立即返回响应」，未明确 path
    是否保持。同步透传是明确的，异步极可能一致。**这是 P3 唯一的真机待验证项**：
-   `docs/serverless-deploy.md` §7.3 第 1 步的 curl 专门验它；若返回 404，只改 `FC_WORKER_PATH`，代码零改动。
+   `docs/serverless-deploy.md` §7.3 第 1 步的 curl 专门验它；若返回 404，只改 `WORKER_PATH`，代码零改动。
 9. **【已由 P4 解决】Worker 崩溃后的重试被锁挡住**：FC 重试间隔 0.5/1/2 秒，`TASK_LOCK_SECONDS=3600`，
    3 次重试都会撞锁 `skipped`。任务停在 `processing` 直到 reaper 按 `TASK_STALE_SECONDS` 判定。
    **P4 落地方式**：worker 函数加定时触发器（`reapTimer`，每 5 分钟）→ FC 事件调用 → 容器 `/invoke`
@@ -552,7 +552,7 @@ Timer（每 1 分钟）──► Worker 函数
 | 心跳钩子（锁续期） | `backend/app/services/transcribe.py` `ProgressReporter._fire_hook` |
 | **FC 分发（P3）** | `backend/app/services/dispatcher.py` `FcDispatcher` / `DispatchError` |
 | **FC 双函数模板（P3）** | `s.yaml`（仓库根目录） |
-| **FC 相关环境变量（P3）** | `backend/app/config.py` `FC_WORKER_URL` / `FC_WORKER_PATH` / `FC_ASYNC_TIMEOUT_SECONDS` |
+| **FC 相关环境变量（P3）** | `backend/app/config.py` `WORKER_URL` / `WORKER_PATH` / `ASYNC_TIMEOUT_SECONDS` |
 | **InvokeFunction 兼容入口（P3）** | `backend/app/worker_app.py` `INVOKE_PATH` / `run_invoke_entry` |
 | **分发单测（P3）** | `backend/tests/test_dispatcher.py`（MockTransport）、`test_transcribe_dispatch.py`（HTTP 端到端） |
 | **Reaper 逻辑（P4）** | `backend/app/services/reaper.py` `reap_once` / `ReapResult` |

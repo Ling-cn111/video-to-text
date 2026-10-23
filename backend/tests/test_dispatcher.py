@@ -8,7 +8,7 @@
 fc 模式（P3）用 httpx.MockTransport 验证「发什么请求」，不联网：
 - 端点拼接、异步头、token 头、body 为完整作业体
 - 202/200 视为成功；其余状态码与网络错误抛 DispatchError
-- 未配置 FC_WORKER_URL 时抛 DispatchError（不静默丢任务）
+- 未配置 WORKER_URL 时抛 DispatchError（不静默丢任务）
 """
 import json
 
@@ -337,10 +337,10 @@ def test_fc_raises_dispatch_error_on_non_ascii_token():
 
 
 def test_fc_raises_when_url_missing():
-    """未配置 FC_WORKER_URL：不能静默丢任务，必须显式报错。"""
+    """未配置 WORKER_URL：不能静默丢任务，必须显式报错。"""
     dispatcher = FcDispatcher(url="", transport=httpx.MockTransport(_record([])))
 
-    with pytest.raises(DispatchError, match="FC_WORKER_URL"):
+    with pytest.raises(DispatchError, match="WORKER_URL"):
         dispatcher.enqueue(_job())
 
 
