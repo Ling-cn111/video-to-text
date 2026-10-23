@@ -116,7 +116,13 @@ s deploy 只负责把镜像地址写进函数配置。前提是：**镜像必须
 3. 「下一步」进入**代码源**配置：
    - 代码源：GitHub → 选中 `video-to-text` 仓库
    - 构建设置：
-     - **代码变更时自动构建镜像**：按需开启（开了以后 push main 就自动构建）
+     - **代码变更时自动构建镜像**：⚠️ **建议关闭**。开启后每次 `git push main`
+       都会用云端构建机重新构建并覆盖 `:v1` 标签，**静默覆盖掉你本地
+       `docker push` 的镜像**——表现为「明明推了新镜像、`s deploy` 也成功，
+       但函数行为没变」。排查时用
+       `docker buildx imagetools inspect <image>:<tag>` 看 registry 上的
+       digest，与 `s info` 里的 `resolvedImageUri` 对比即可确认。
+       需要自动构建就换一个独立标签（如 `:ci`），别和手工推送共用 `:v1`。
      - **海外机器构建**：**先保持关闭**；如果日志里出现
        `dial tcp ...:443: i/o timeout` / `failed to resolve source metadata for
        docker.io/...`（拉不到 Docker Hub 基础镜像），就**打开它**再构建一次。
@@ -540,8 +546,8 @@ resources:
         MAX_AUDIO_SIZE_MB: "100"
         EXTRACT_TIMEOUT_SECONDS: "30"
         # ---- 平台风控（B站 412）----
-        # 设备指纹（buvid3/buvid4）在运行时自动获取并缓存，无需配置。
-        # 下面两个是覆盖项：留空即用默认行为；Cookie 是账号凭证，只经部署机注入。
+        # 机房出口 IP 是 B站风控重点，缺 Referer/UA 时易报 412。
+        # 留空则沿用 yt-dlp 默认值；Cookie 是账号凭证，只经部署机注入。
         BILI_USER_AGENT: ${env('BILI_USER_AGENT', '')}
         BILI_COOKIE: ${env('BILI_COOKIE', '')}
         # ---- S2-P3：异步分发 ----
@@ -1221,6 +1227,8 @@ uvicorn app.worker_app:app --host 0.0.0.0 --port 9000
 | 任务 `failed`（「任务分发失败，请重试」） | `WORKER_URL` 漏配 / 写错 / FC 拒收 | 见 §5.2 两段式部署 |
 | 任务一直 `processing`，超过 15 分钟仍未变 `failed` | 定时触发器没生效（S2-P4） | `s info` 查 worker 的 `reapTimer`；手工 `curl /internal/worker/reap` 验逻辑；见 §7.3.1 |
 | worker 日志 `收到定时触发器事件` 但随后 422 | `/invoke` 分流未命中 | 确认 event 含 `triggerTime` + `triggerName`；见 §7.3.1 判读表 |
+| 推送了新镜像、`s deploy` 也成功，但函数行为没变 | **ACR 代码源自动构建覆盖了同一个 tag** | 用 `docker buildx imagetools inspect <image>:<tag>` 看 registry 上的 digest，与 `s info` 的 `resolvedImageUri` 对比。根因见 §3.1（自动构建与手工推送共用 `:v1`）；关掉自动构建，或让自动构建用独立 tag |
+| 定时触发器每 5 分钟一条 `POST /invoke 401` | 定时事件不带 token 却被要求校验 | **已修**（先判定定时事件再校验）；见 §7.3.1 |
 | 任务 `failed`（「任务处理超时…」） | reaper 判定心跳超时（正常行为） | 用户点重试即可；若频繁出现说明实例被 OOM/超时杀，查 worker 规格与 `timeout` |
 | 429 `RATE_LIMITED` | 触发限流 | 调 `RATE_LIMIT_PER_MINUTE`；确认 Redis 生效（否则各实例各自计数） |
 | `CLOUD_NOT_CONFIGURED` | 未注入 `CLOUD_ASR_API_KEY` | 检查环境变量与 `s info` |
