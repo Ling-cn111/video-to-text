@@ -1055,7 +1055,7 @@ LUA
 
 > **不要**把 `WORKER_PATH` 配成 `/internal/worker/reap`——那是人工入口，定时触发器永远打不到自定义路径。
 
-### 7.3.2 B站 412 诊断（设备指纹）
+### 7.3.2 B站 412 诊断（设备指纹 + playurl API）
 
 机房出口 IP 访问 B站会被风控，典型表现是任务停在 `extract_audio`、`error.message` 含
 `HTTP Error 412: Precondition Failed`。**注意这与代码和视频都无关**：同一份镜像在本地
@@ -1063,10 +1063,10 @@ LUA
 
 #### 先确认是哪一类 412
 
-worker 上有诊断端点（需 `WORKER_TOKEN`）：
+worker 上有诊断端点（需 `WORKER_TOKEN`，可用 `?bvid=` 指定视频）：
 
 ```bash
-curl -X POST https://<worker-域名>/internal/worker/diagnose \
+curl -X POST "https://<worker-域名>/internal/worker/diagnose?bvid=BV1uv411q7Mv" \
   -H "X-Worker-Token: <WORKER_TOKEN>"
 ```
 
@@ -1074,24 +1074,59 @@ curl -X POST https://<worker-域名>/internal/worker/diagnose \
 
 ```json
 {
+  "bvid": "BV1uv411q7Mv",
   "egress": {"bili_cookie_configured": false, "bili_user_agent_configured": false,
              "device_fingerprint_present": true},
   "baseline": {"view_api": {"status": 412}, "video_page": {"status": 412},
                "finger_spi": {"status": 200}},
-  "hardened": {"view_api": {"status": 200, "code": 0}, "video_page": {"status": 200},
+  "hardened": {"view_api": {"status": 200, "code": 0}, "video_page": {"status": 412},
                "finger_spi": {"status": 200}},
-  "subtitle_tracks": 1
+  "video_page_variants": {"cookie_only": {"status": 412, "bytes": 3400},
+                          "warm_session": {"status": 412, "bytes": 3400}},
+  "audio_path": {"ok": true, "bandwidth": 315098, "mime_type": "audio/mp4",
+                 "backup_urls": 2, "cdn_status": 200},
+  "subtitle_tracks": 12
 }
 ```
+
+这个输出是**实测结果**，不是示意。关键结论：
+
+- `hardened.view_api` 200 → **JSON API 带指纹能通**
+- `hardened.video_page` 412 → **网页即使带指纹 + 首页会话 Cookie（`b_nut`、
+  `X-BILI-SEC-TOKEN`）依然 412**，返回 3400 字节风控页
+- `audio_path.ok` true → **playurl API 与音频 CDN 都能用**
 
 判读方式：
 
 | 现象 | 结论 | 处理 |
 | --- | --- | --- |
-| `baseline` 全 412，`finger_spi` 200 | B站没封机器，封的是「没带 buvid 的请求」 | 默认配置即可，代码已自动取指纹 |
-| `hardened` 也 412 | 该出口 IP 被更严格地风控 | 配 `BILI_USER_AGENT`（真实浏览器 UA），仍不行再配 `BILI_COOKIE` |
+| `view_api` 412，`finger_spi` 200 | 没带 buvid，B站按爬虫处理 | 默认配置即可，代码已自动取指纹 |
+| `view_api` 200 但 `video_page` 412 | **网页路径被封，这是常态** | 不用管：生产下载走 playurl API，不碰网页（见下） |
+| `audio_path.ok` false | playurl 也失败了 | 看 `error` 原文；配 `BILI_USER_AGENT` → `BILI_COOKIE` |
 | `finger_spi` 也 412/超时 | 出口 IP 被整体拉黑 | 只能换出口（NAT 网关 / 换地域），或配 `BILI_COOKIE` |
-| `hardened` 200 但任务仍失败 | 不是 412 问题 | 看 §9 排错表其他条目 |
+| 以上都正常但任务仍失败 | 不是 412 问题 | 看 §9 排错表其他条目 |
+
+#### 两条路径的分工
+
+**字幕快路径**（有 CC 字幕的视频）：走 yt-dlp CC 或 dm/view API，命中即秒级返回。
+
+**音频下载**（无 CC 字幕的视频）：`download_audio` 三级降级，**第一级就是 playurl API**：
+
+| 级别 | 手段 | 是否碰网页 |
+| --- | --- | --- |
+| 1 | `playurl` API（`/x/player/playurl?fnval=16`）拿 DASH 音频直链 | 否 |
+| 2 | yt-dlp 解析直链 | 是（机房 IP 必 412） |
+| 3 | yt-dlp 下载到临时目录 | 是（同上） |
+
+`backend/app/services/bili_playurl.py` 的实现要点：
+
+- **免 wbi 签名**：`/x/player/playurl` 未登录就返回完整 DASH，不必引入签名依赖
+- `fnval=16` 才返回 `dash.audio[]`；按 `bandwidth` 挑最高档（通常 30280 = 192K）
+- **CDN 必须带 UA + Referer + Cookie**：实测缺任一个都是 403 + text/html
+- 下载侧只拒绝明确的文本类型（`text/*`、`application/json`、`application/xml`），
+  **`application/octet-stream` 必须放行**——云端 CDN 把 mp4 报成 octet-stream，
+  本地报 `video/mp4`。这个差异曾导致云端把合法音频误判成错误页、静默回退到
+  必然 412 的 yt-dlp，表现为「明明 playurl 是通的，任务却报 412」
 
 #### 设备指纹的作用
 
@@ -1150,7 +1185,9 @@ NEXT_PUBLIC_USE_MOCK=false        # 构建期常量，改完必须重新构建
 | 静态 FFmpeg 为 GPLv3 | 对外分发镜像需遵守 GPL | 保留许可声明；如不可接受，改用 apt 版 FFmpeg（镜像约 +400MB） |
 | 无本地 ASR | `ASR_ENGINE=local` 不可用 | 固定 `cloud`，`ASR_ENGINE_FALLBACK` 留空 |
 | B站风控 / yt-dlp 失效 | 解析或字幕失败 | 定期重建镜像升级 `yt-dlp`；关注 `EXTRACT_TIMEOUT_SECONDS` |
-| 任务在 `extract_audio` 阶段失败，`error.message` 含 `HTTP Error 412: Precondition Failed` | **B站要求设备指纹**：没带 `buvid3` 的请求在机房 IP 上会被拦（同 IP 的 `finger/spi` 接口却是 200） | **已修**：`bili_fingerprint` 运行时从 `/x/frontend/finger/spi` 取 `buvid3`/`buvid4`，进程内缓存 12h，注入所有 yt-dlp 与 B站 API 请求；取失败自动降级为空、冷却 5 分钟。仍 412 时按顺序加：`BILI_USER_AGENT` → `BILI_COOKIE` |
+| 任务在 `extract_audio` 阶段失败，`error.message` 含 `HTTP Error 412: Precondition Failed` | **网页路径被封**：`www.bilibili.com/video/*` 在机房 IP 上即使带指纹 + 会话 Cookie 也是 412 | **已修**：`download_audio` 第一级走 `playurl` API 取 DASH 音频直链，完全不碰网页（见 §7.3.2）。仍失败时按顺序加：`BILI_USER_AGENT` → `BILI_COOKIE` |
+| 有 CC 字幕的视频正常，无字幕的必失败 | 同上：字幕路径走 API，音频路径原本走网页 | 已修，同上一行 |
+| 诊断显示 `audio_path.ok: true` 但任务仍报 412 | playurl 通了却静默回退 yt-dlp（通常是下载侧把合法音频误判成错误页） | 已修：只拒绝 `text/*` 等明确文本类型，`application/octet-stream` 放行（云端 CDN 用这个类型） |
 | `error.message` 里出现 `\u001b[0;31m` 之类乱码 | yt-dlp / ffmpeg 的终端颜色码被拼进消息 | 已修：`ytdlp_options.base_options()` 统一 `no_color=True`，`AppException` 出口再 `strip_ansi` 兜底。若再出现，检查是否有新的 `yt_dlp.YoutubeDL` 调用点没走公共选项 |
 | Redis 任务无 TTL | 任务记录无限增长 | **S2-P0 已修**：`TASK_TTL_SECONDS`（默认 7 天，滑动续期）；0 = 永久保留 |
 | 冷启动即改写任务状态 | 多实例下误杀在途任务 | **S2-P0 已修**：只把「陈旧」（`TASK_STALE_SECONDS` 内无心跳）的 `processing` 判为 `interrupted`；Worker 侧设 `TASK_INIT_MODE=none` |
