@@ -63,10 +63,21 @@ def _record_youtubedl_params(monkeypatch):
     静态扫源码很脆弱（选项字典可能是内联、局部变量或模块常量）。这里直接替换
     `YoutubeDL`，让真实调用路径把 params 交出来——新增调用点漏设 no_color 时，
     只要它真的被走到就会暴露。
+
+    同时把 playurl API 路径打桩成失败：它是 B站专用的前置路径（纯 JSON，
+    不经过 yt-dlp），不打桩就会真的发网络请求，既慢又不稳定。
     """
     import yt_dlp
 
+    from app.services import bili_playurl
+
     recorded: list[dict] = []
+
+    monkeypatch.setattr(
+        bili_playurl,
+        "get_audio_stream",
+        lambda *a, **kw: (_ for _ in ()).throw(ValueError("stubbed out")),
+    )
 
     class _Spy:
         def __init__(self, params=None, *args, **kwargs):

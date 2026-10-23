@@ -17,7 +17,22 @@ from pathlib import Path
 import pytest
 
 from app.services import audio as audio_module
-from app.services import separation
+from app.services import bili_playurl, separation
+
+
+@pytest.fixture(autouse=True)
+def _skip_playurl_api(monkeypatch):
+    """这些用例验证的是 yt-dlp 直链/临时目录路径。
+
+    `download_audio` 现在会先尝试 B站 playurl API（纯 JSON，不经过 yt-dlp）。
+    不打桩它就会真的发网络请求：测试变慢、依赖外部服务可达性，且会绕过
+    本文件要测的那两条降级路径。
+    """
+    monkeypatch.setattr(
+        bili_playurl,
+        "get_audio_stream",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("stubbed out")),
+    )
 from app.services.asr import CloudASREngine, Qwen3ASREngine, _materialized_audio
 from app.services.transcribe import run_transcription_pipeline
 
