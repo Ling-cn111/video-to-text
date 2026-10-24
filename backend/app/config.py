@@ -93,6 +93,11 @@ TASK_INIT_MODE: str = os.getenv("TASK_INIT_MODE", "recover").strip().lower()
 # 必须明显大于心跳间隔（TASK_HEARTBEAT_SECONDS），否则会误杀正在下载/转码/ASR 的任务。
 TASK_STALE_SECONDS: int = int(os.getenv("TASK_STALE_SECONDS", "600"))
 
+# 「排队中」任务的陈旧阈值（秒）：started_at 为空说明 Worker 还没领到（实例打满 /
+# 派发积压），此时不能套用 TASK_STALE_SECONDS —— 排队本来就没有心跳写入，
+# 600s 一到就会被 reaper 误杀。实际生效值取 max(TASK_STALE_SECONDS, 本项)。
+REAPER_QUEUED_STALE_SECONDS: int = int(os.getenv("REAPER_QUEUED_STALE_SECONDS", "1800"))
+
 # 进度心跳间隔（秒）：长阻塞步骤（下载/FFmpeg/云端 ASR）期间定时刷新 updated_at，
 # 供 TASK_STALE_SECONDS 判定与后续 reaper（S2-P4）识别僵尸任务；0 = 关闭。
 TASK_HEARTBEAT_SECONDS: float = float(os.getenv("TASK_HEARTBEAT_SECONDS", "30"))
@@ -108,8 +113,9 @@ ENQUEUE_MODE: str = os.getenv("ENQUEUE_MODE", "inline").strip().lower()
 # 必须大于「心跳间隔的若干倍」；Worker 崩溃后锁到期自动释放，重试才能重新领取。
 TASK_LOCK_SECONDS: int = int(os.getenv("TASK_LOCK_SECONDS", "3600"))
 
-# Worker 端点鉴权 token：为空 = 不校验（本地开发 / FC 内部鉴权已覆盖的场景）。
-# 非空时要求请求头 X-Worker-Token 完全一致，否则 401。
+# Worker 端点鉴权 token：**必填**（P0 fail-closed）。为空时 Worker 所有入口返回 503。
+# 非空时要求请求头 X-Worker-Token / Authorization: Bearer 完全一致，否则 401；
+# FC 定时触发器带不了请求头，改为从事件体 payload.token 取（见 s.yaml 的 reapTimer）。
 WORKER_TOKEN: str = os.getenv("WORKER_TOKEN", "")
 
 # ---- 僵尸任务清理 / Reaper（S2-P4）----

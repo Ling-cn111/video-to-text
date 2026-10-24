@@ -398,7 +398,7 @@ role: ${env('FC_ROLE_ARN', '')}
 
 | 函数 | 启动命令 | 职责 | 规格 |
 | --- | --- | --- | --- |
-| `video-to-text-api` | `uvicorn app.main:app` | 解析 / 总结 / 字幕快路径 / **投递异步作业** | 1C2G / 120s / 并发 10 |
+| `video-to-text-api` | `uvicorn app.main:app` | 解析 / 总结 / 字幕快路径 / **投递异步作业** | 1C2G / 300s / 并发 10（实例上限 5） |
 | `video-to-text-worker` | `uvicorn app.worker_app:app` | 下载 + ASR（长任务） | 2C4G / 1800s / 并发 1 |
 
 两者用**同一个镜像**，只在 `customContainerConfig.command` 上区分 ASGI 应用。
@@ -493,13 +493,19 @@ resources:
       # 1C2G：解析 + 总结（同步 30-70s）；音频全程在内存流转（S1-B），512MB 易 OOM
       cpu: 1
       memorySize: 2048
-      # 同步总结最长 30-70s，留余量；异步分发只等 202，不受此限
+      # 同步总结最长 30-70s，长视频（>1 小时）加长文本总结会显著拉长；
+      # 300s 留足余量，避免 504 网关超时。异步分发只等 202，不受此限
       # fc3 的 Disk 是必填项（缺了报 Disk is required but not provided），
       # 512MB 是允许的最小值；音频流在内存里，磁盘只放临时文件
       diskSize: 512
-      timeout: 120
+      timeout: 300
       # 允许单实例处理多个并发请求，降低冷启动影响
       instanceConcurrency: 10
+      # 实例数上限（P2 防刷爆额度）：FC3 没有函数级 maxInstance 字段，
+      # 弹性上限走 concurrencyConfig.reservedConcurrency（预置并发/实例数配额）。
+      # 5 实例 × instanceConcurrency 10 = 最多 50 并发，挡得住刷量与异常重试风暴。
+      concurrencyConfig:
+        reservedConcurrency: 5
       # 需访问 worker 的 fcapp.run、bilibili、云端 ASR、DeepSeek
       internetAccess: true
       # ---- VPC 网络（访问云 Redis 内网地址必需）----
@@ -678,8 +684,9 @@ resources:
 
         # ---- S2-P4：僵尸任务清理（Reaper）----
         # 关键约束：定时触发器是「事件调用」，不能指定 HTTP 路径，FC 固定把 event
-        # POST 到容器的 /invoke。worker_app 的 /invoke 按 triggerTime/triggerName
-        # 特征分流到 reaper，因此这里配的 payload 不参与路由，仅用于日志辨识。
+        # POST 到容器的 /invoke；它也**不能带自定义请求头**，所以凭据放在 payload 里，
+        # 由 worker_app._timer_payload_token 取出后走同一套 _verify_token。
+        # P0-2：/invoke 是公网匿名入口，绝不能再靠 triggerTime/triggerName 免鉴权。
         - triggerName: reapTimer
           triggerType: timer
           triggerConfig:
@@ -687,7 +694,11 @@ resources:
             # 每 5 分钟一轮：远小于 TASK_STALE_SECONDS(600s)，僵尸任务最长滞留约 15 分钟
             cronExpression: "0 */5 * * * *"
             enable: true
-            payload: '{"action":"reap"}'
+            # 凭据放 payload：定时触发器无法带请求头，worker_app._timer_payload_token
+            # 会把它取出来交给 _verify_token（P0-2：不再有免鉴权分支）。
+            # 用 YAML 双引号标量是因为内层 JSON 也需要双引号；${env(...)} 由 s 在
+            # YAML 解析前做文本替换，所以这里必须保持单引号的 env 魔法变量写法。
+            payload: "{\"action\":\"reap\",\"token\":\"${env('WORKER_TOKEN', '')}\"}"
 ```
 <!-- END:s.yaml -->
 
@@ -752,10 +763,12 @@ s info -t s.yaml
 - **`port` 必须等于 uvicorn 实际监听端口**（模板统一用 9000）。端口不一致的典型表现是函数部署成功但请求 502/超时、健康检查一直失败。
 - **`entrypoint` / `command` 语义与 Docker 一致**：`entrypoint` 是可执行文件（`uvicorn`），`command` 是参数。镜像本身 `CMD` 监听 8000，模板通过这两个字段覆盖为 9000。
 - **`instanceConcurrency: 1`（worker）**：一实例一作业，内存模型最简单。100MB 音频全程在内存 + ffmpeg 转码，并发跑多作业容易 OOM。
+- **`concurrencyConfig.reservedConcurrency: 5`（api，P2 防刷爆额度）**：FC3 **没有函数级 `maxInstance` 字段**（`ALIYUN::FC3::Function` 属性全集里没有它，写了会被 schema 拒或被静默忽略）。按量实例上限走独立的弹性配置 API（`PutScalingConfig`），`s.yaml` 侧对应 `concurrencyConfig`。效果：最多 5 个实例 × `instanceConcurrency: 10` = 50 并发封顶，防住「被人刷接口把 ASR/LLM 额度烧穿」。调大前先确认账号的弹性实例配额。
 - **`timeout: 1800`（worker）**：长视频 ASR 需要。请对照当前地域配额确认上限，超限需在配额中心申请。
 - **`TASK_INIT_MODE`**：api = `recover`，worker = **`none`**。Worker 每次冷启动都跑初始化，`recover` 会把其他实例正在跑的任务误判为 `interrupted`（代码里也显式传 `recover_interrupted=False`，双保险）。
 - **`asyncInvokeConfig`**：`maxAsyncRetryAttempts: 3`（FC 默认）、`maxAsyncEventAgeInSeconds: 604800`（与 `TASK_TTL_SECONDS` 7 天对齐）。
 - **`reapTimer`（定时触发器，S2-P4）**：每 5 分钟触发一次僵尸任务清理。**关键约束：定时触发器是「事件调用」，不能指定 HTTP 路径**——FC 固定把 event `POST` 到容器的 `/invoke`（详见[自定义运行时 Web 函数](https://help.aliyun.com/zh/functioncompute/web-functions)）。因此 reaper 不能只挂在 `/internal/worker/reap` 上（那个端点 Timer 打不到，只留给本地脚本与人工 curl），`worker_app` 的 `/invoke` 会按 `triggerTime` + `triggerName` 特征分流到 reaper。cron 为 **6 段**（秒 分 时 日 月 周），最小粒度 1 分钟。
+- **定时触发器的凭据放在 payload 里（P0-2）**：FC 定时触发器**无法自定义请求头**，所以它带不了 `X-Worker-Token`。而 `/invoke` 是 `authType: anonymous` 的公网入口，绝不能「看到 `triggerTime`/`triggerName` 就跳过鉴权」——任何人都能伪造这两个字段触发 reaper。因此 `s.yaml` 的 `reapTimer.payload` 写成 `{"action":"reap","token":"${env('WORKER_TOKEN', '')}"}`，`worker_app._timer_payload_token` 从中取出 token，走与请求头**完全相同**的校验。改 `WORKER_TOKEN` 后必须重新 `s deploy`（payload 在部署时渲染）。
 - **`authType: anonymous` + `WORKER_TOKEN`**：官方文档明确「无需认证时可在业务中校验请求头 `Authorization` 是否合法以自行鉴权」。worker 的触发器只开 `POST`，鉴权由应用层 `WORKER_TOKEN` 兜底。若需更严可改 `authType: function`（签名认证），但会重新引入签名 SDK——这正是 P3 刻意规避的。
 - **内置域名仅用于测试**：官方说明 `*.fcapp.run` 只适合联调，对外服务应绑已备案的自定义域名。上线前请替换。
 - **`code: ./backend`**：自定义容器（`runtime: custom-container`）**只使用镜像**，fc3 在部署前会主动 `unset` 掉 `code`（见 `resources/fc/impl/replace-function-config.ts`），代码目录不会被打进镜像。保留该字段只是为了将来若切回非容器运行时可直接复用，删掉也不影响部署。
@@ -821,6 +834,7 @@ s deploy -t s.yaml
 | `TASK_TTL_SECONDS` | `604800`（7 天） | 任务 JSON 含完整文字稿；0 = 永久保留（不推荐，Redis 会无限增长） |
 | `TASK_INIT_MODE` | `recover`（API）/ `none`（Worker） | Worker 必须 `none`，否则每次冷启动会把其他实例在跑的任务判为中断 |
 | `TASK_STALE_SECONDS` | `600` | 超过该时长无心跳写入才判为遗留任务；须明显大于心跳间隔 |
+| `REAPER_QUEUED_STALE_SECONDS` | `1800` | **排队中**任务（`started_at` 为空，没有心跳）的判定阈值。实际生效取 `max(TASK_STALE_SECONDS, 本项)`——否则队列一堵十几分钟就把还没轮到跑的任务判成超时 |
 | `TASK_HEARTBEAT_SECONDS` | `30` | 长阻塞步骤（下载 / FFmpeg / ASR）靠心跳保活；0 = 关闭 |
 | `ENQUEUE_MODE` | `fc`（API）/ `inline`（Worker） | 任务分发模式。`inline` = 同进程 BackgroundTasks；`fc` = 投递到 worker 触发器（异步）；`mns`/`redis` 为后续实现位，当前显式报错 |
 | `WORKER_URL` | worker 的 `*.fcapp.run` 地址 | **`ENQUEUE_MODE=fc` 时必填**。`s info -t s.yaml` 里取；无法由 region + 函数名推导 |
@@ -828,7 +842,7 @@ s deploy -t s.yaml
 | `ASYNC_TIMEOUT_SECONDS` | `5` | 异步投递超时：只等 FC 回 202，不等作业跑完 |
 | `TASK_LOCK_SECONDS` | `3600` | Worker 执行锁 TTL（`SET NX EX`），执行期间按心跳续期；崩溃后到期自动释放 |
 | `REAPER_LOCK_SECONDS` | `120` | Reaper 互斥锁 TTL（S2-P4）：只需覆盖单次扫描耗时，与执行锁无关 |
-| `WORKER_TOKEN` | 空 | Worker 端点鉴权；非空时要求 `X-Worker-Token` 或 `Authorization: Bearer <token>` 一致 |
+| `WORKER_TOKEN` | 空 | Worker 端点鉴权，**必填**（P0 fail-closed）：为空时 Worker 所有入口返回 503。非空时要求 `X-Worker-Token`、`Authorization: Bearer <token>` 或定时触发器 payload 里的 `token` 三者之一匹配 |
 | `BILI_USER_AGENT` | 空 / 真实浏览器 UA | B站风控覆盖项。留空沿用 yt-dlp 自带 UA；机房 IP 仍 412 时填一个真实浏览器 UA |
 | `BILI_COOKIE` | 空 / 浏览器整条 Cookie | B站风控兜底。含账号凭证，只经部署机环境变量注入，绝不提交仓库 |
 | `CLOUD_ASR_BASE_URL` / `CLOUD_ASR_MODEL` | 见 `.env.example` | 换服务商/模型时覆盖 |
@@ -1030,16 +1044,20 @@ cd backend && python -m scripts.reap             # 真收割
 s logs -t s.yaml --function-name video-to-text-worker --tail
 ```
 
-造一条僵尸任务（把 `updated_at` 回拨 1 小时）：
+造一条僵尸任务（把 `updated_at` 回拨 1 小时，并置上 `started_at` 表示「Worker 已在跑」）：
 
 ```bash
 redis-cli --eval /dev/stdin task:$TASK <<'LUA'
 local raw = redis.call('GET', KEYS[1])
 local t = cjson.decode(raw)
 t.updated_at = t.updated_at - 3600
+t.started_at = t.updated_at   -- 关键：为空表示「还在排队」，会走 1800s 的宽阈值
 redis.call('SET', KEYS[1], cjson.encode(t), 'EX', 604800)
 LUA
 ```
+
+> `started_at` 为空（还在排队）时 reaper 用的是 `max(TASK_STALE_SECONDS, REAPER_QUEUED_STALE_SECONDS)`（默认 1800s）——
+> 回拨 3600s 仍然会被收割，但若只回拨 10 分钟就**不会**，那是预期行为（见 §6 环境变量表）。
 
 **判读表：**
 
@@ -1050,8 +1068,8 @@ LUA
 | A 返回 `401` | `WORKER_TOKEN` 不匹配 |
 | C 等 5 分钟仍无日志 | 定时触发器没建成功（`s info` 查 `reapTimer`），或 `enable: false` |
 | C 有日志但报 `422 事件体无法解析` | `/invoke` 分流没生效——检查 `_looks_like_timer_event` 与 event 字段名 |
-| C 日志里是 `POST /invoke 401 Unauthorized`（每 5 分钟一条） | **`/invoke` 先校验 token 再解析事件体**，而 FC 定时触发器不带 `X-Worker-Token`。**已修**：改为先判定定时事件、是则不校验 token；非定时事件照旧校验。若再次出现，检查是否有人把 `_verify_token` 移回 `request.body()` 之前 |
-| 任务变 `failed` 但前端显示「出了点问题」 | `error-alert.tsx` 的 `errorTitle` 缺 `TASK_TIMEOUT` 分支 |
+| C 日志里是 `POST /invoke 401 Unauthorized`（每 5 分钟一条） | 定时事件被拒。**先查 `reapTimer.payload` 里有没有 token**（`s info` 看触发器配置）——它必须是 `{"action":"reap","token":"<WORKER_TOKEN>"}`。注意 payload 在**部署时**渲染，改过 `WORKER_TOKEN` 却没重新 `s deploy` 就会对不上 |
+| 任务变 `failed` 但前端只显示「出了点问题」 | `error-alert.tsx` 的 `ERROR_TITLES` 缺该错误码。P2 已改成 `Record<ClientErrorCode, string>` 强制穷举，漏一个就编译不过；若仍出现，检查后端是否返回了契约外的码 |
 
 > **不要**把 `WORKER_PATH` 配成 `/internal/worker/reap`——那是人工入口，定时触发器永远打不到自定义路径。
 
@@ -1230,7 +1248,7 @@ curl -X OPTIONS https://<api-域名>/api/transcribe \
 | 无持久磁盘 | SQLite / 本地文件不跨实例、不跨重启 | 必须 `TASK_STORE=redis`；只信 `/tmp` 且即用即删（S1-B 已去磁盘化） |
 | 多实例 | 内存态任务/限流不共享 | 同上，任务与限流都走 Redis |
 | 内存上限 | 音频全程在内存（默认上限 100MB） | api `memorySize` ≥ 2048MB、worker 4096MB；按需调低 `MAX_AUDIO_SIZE_MB` |
-| 函数超时 | 同步总结 30-70 秒；worker 长转写 | api `timeout` ≥ 120 秒；worker `timeout` 1800 秒（超限需申请配额） |
+| 函数超时 | 同步总结 30-70 秒，长视频可到数分钟；worker 长转写 | api `timeout` ≥ 300 秒；worker `timeout` 1800 秒（超限需申请配额） |
 | 冷启动 + 406MB 镜像 | 首个请求慢 | ACR 同地域 / 镜像加速；必要时预留实例 |
 | 静态 FFmpeg 为 GPLv3 | 对外分发镜像需遵守 GPL | 保留许可声明；如不可接受，改用 apt 版 FFmpeg（镜像约 +400MB） |
 | 无本地 ASR | `ASR_ENGINE=local` 不可用 | 固定 `cloud`，`ASR_ENGINE_FALLBACK` 留空 |
@@ -1240,7 +1258,7 @@ curl -X OPTIONS https://<api-域名>/api/transcribe \
 | 诊断显示 `audio_path.ok: true` 但任务仍报 412 | playurl 通了却静默回退 yt-dlp（通常是下载侧把合法音频误判成错误页） | 已修：只拒绝 `text/*` 等明确文本类型，`application/octet-stream` 放行（云端 CDN 用这个类型） |
 | `error.message` 里出现 `\u001b[0;31m` 之类乱码 | yt-dlp / ffmpeg 的终端颜色码被拼进消息 | 已修：`ytdlp_options.base_options()` 统一 `no_color=True`，`AppException` 出口再 `strip_ansi` 兜底。若再出现，检查是否有新的 `yt_dlp.YoutubeDL` 调用点没走公共选项 |
 | Redis 任务无 TTL | 任务记录无限增长 | **S2-P0 已修**：`TASK_TTL_SECONDS`（默认 7 天，滑动续期）；0 = 永久保留 |
-| 冷启动即改写任务状态 | 多实例下误杀在途任务 | **S2-P0 已修**：只把「陈旧」（`TASK_STALE_SECONDS` 内无心跳）的 `processing` 判为 `interrupted`；Worker 侧设 `TASK_INIT_MODE=none` |
+| 冷启动即改写任务状态 | 多实例下误杀在途任务 | **S2-P0 已修**：只把「陈旧」（`TASK_STALE_SECONDS` 内无心跳）的 `processing` 判为 `interrupted`；Worker 侧设 `TASK_INIT_MODE=none`。**P1 补强**：排队中的任务（`started_at` 为空）用 `REAPER_QUEUED_STALE_SECONDS`（1800s）判定 |
 | 异步调用 Body ≤ 128 KB | 事件体过大会被 FC 拒收 | `TranscribeJob.to_dict()` 仅几百字节；**不要往事件体里塞文字稿**（P1 只传入参的设计已保证） |
 | Worker 崩溃后重试被锁挡住 | 任务停在 `processing` | **P4 已修**：worker 函数上的定时触发器（`reapTimer`，每 5 分钟）扫描心跳超时（`TASK_STALE_SECONDS=600`）的 `processing` 任务，标 `failed` + `TASK_TIMEOUT`。见 §7.3.1 |
 | 未配 `vpcConfig` | 连不上 VPC 内网 Redis，**静默降级 memory** | 多实例各持一份任务，表现为「任务永远 `processing`」；接口看起来却正常。必须给两个函数配同一套 `vpcConfig`（§4.2） |
@@ -1289,7 +1307,7 @@ uvicorn app.worker_app:app --host 0.0.0.0 --port 9000
 - **R1（待真机确认）异步调用是否原样透传 path**：官方只写明「将请求持久化保存，然后立即返回响应」，没有一句明确说异步重放时 path 保持不变。同步透传模式是明确的，异步极可能一致。§7.3 第 1 步的 `curl` 就是专门验证这一点——若返回 404，把 `WORKER_PATH` 改成实际收到的路径即可（代码侧零改动）。
 - **R2（已确认）异步 Body 上限 128 KB**：`TranscribeJob.to_dict()` 仅几百字节，余量充足。**不要往事件体里塞文字稿**——P1 只传作业入参的设计已规避。
 - **R3（已由 P4 关闭）崩溃恢复**：worker 被 OOM/超时杀掉后，FC 的 3 次重试（间隔 0.5/1/2 秒）都会撞上 `TASK_LOCK_SECONDS=3600` 的锁并返回 `skipped`。现在由 worker 函数上的定时触发器（`reapTimer`，每 5 分钟）兜底：扫描 `status=processing` 且 `now - updated_at > TASK_STALE_SECONDS`（默认 600s）的任务，标 `failed` + `TASK_TIMEOUT`（「任务处理超时，可能因服务器资源受限中断，请重试」）。验收见 §7.3.1。
-- **R7（P4 新增，已知行为）误杀后任务可能「复活」**：如果 worker 其实活着但心跳连续断了 20 次（>600s，概率极低），任务会被判 `failed`，随后 worker 跑完时 `_finish` 会无条件写回 `completed`。这是可接受的——用户最多先看到一次错误提示，实际结果仍会落库。
+- **R7（P4 新增，已知行为）误杀后任务可能「复活」**：如果 worker 其实活着但心跳连续断了 20 次（>600s，概率极低），任务会被判 `failed`。**P1 已收窄**：心跳的 `update()` 走 WATCH/MULTI CAS，读到 `status != processing` 就放弃写入，不会把 `failed` 覆盖回 `processing`；`_finish` 的终态写入是显式的，仍可能写回 `completed`——这是可接受的，用户最多先看到一次错误提示，实际结果仍会落库。
 - **R8（P4 新增，已知限制）Reaper 是全量扫描**：`status` 存在任务 JSON 体内，Redis 侧无法服务端过滤，每轮 `SCAN task:*` 要反序列化全部未过期任务（7 天 TTL 下可能上千 key）。当前量级完全够用；规模化后建议加 `ZSET task:processing`（score=updated_at）索引。**P4 不主动删 `task:lock:*`**：任务已 `failed`，重投会在 `_run_job` 首个状态检查返回 `skipped`；强删锁会破坏「release 必须带 token」的不变量，若 worker 还活着会导致同一任务被跑第二遍。
 
 在此之前，请不要把 FC 版本用于「无字幕视频」的生产流量——除非已切到 `ENQUEUE_MODE=fc` 并完成 §7.3 验收。
@@ -1306,7 +1324,7 @@ uvicorn app.worker_app:app --host 0.0.0.0 --port 9000
 | 启动失败：`exec format error` | 镜像不是 amd64 | 重新用 `--platform linux/amd64` 构建并校验 `docker image inspect` |
 | 拉取镜像失败 / `ImagePullBackOff` | ACR 地址错、无权限、跨地域、VPC 未打通 | 检查镜像地址与 tag；配置免密拉取或 `registryConfig`；企业版 VPC 地址需配 `vpcConfig` |
 | 请求 502 / 健康检查失败 | 端口不一致；uvicorn 未监听 `0.0.0.0`；启动即崩 | 对齐 `port` 与 `--port`；看启动日志；本地 `docker run` 复现 |
-| 请求超时 / 504 | `timeout` 太小（总结 30-70s） | 调到 120s 以上 |
+| 请求超时 / 504 | `timeout` 太小（长视频总结远超 30-70s） | 调到 300s |
 | 任务一直 `processing` | `ENQUEUE_MODE=inline` 下 BackgroundTasks 被冻结；或 `fc` 模式投递失败 | 云端切 `ENQUEUE_MODE=fc`（§5、§7.3）；查 api 日志的 `FC 投递被拒` / `FC 投递失败` |
 | api 日志 `FC 投递被拒（HTTP 404）` | `WORKER_URL` 少了路径，或异步未透传 path | 检查 `WORKER_URL` + `WORKER_PATH`；参考 §8.4 R1 |
 | api 日志 `FC 投递被拒（HTTP 401）` | `WORKER_TOKEN` 两侧不一致 | 让 api 与 worker 用同一个 `WORKER_TOKEN` |
@@ -1315,7 +1333,7 @@ uvicorn app.worker_app:app --host 0.0.0.0 --port 9000
 | 任务一直 `processing`，超过 15 分钟仍未变 `failed` | 定时触发器没生效（S2-P4） | `s info` 查 worker 的 `reapTimer`；手工 `curl /internal/worker/reap` 验逻辑；见 §7.3.1 |
 | worker 日志 `收到定时触发器事件` 但随后 422 | `/invoke` 分流未命中 | 确认 event 含 `triggerTime` + `triggerName`；见 §7.3.1 判读表 |
 | 推送了新镜像、`s deploy` 也成功，但函数行为没变 | **ACR 代码源自动构建覆盖了同一个 tag** | 用 `docker buildx imagetools inspect <image>:<tag>` 看 registry 上的 digest，与 `s info` 的 `resolvedImageUri` 对比。根因见 §3.1（自动构建与手工推送共用 `:v1`）；关掉自动构建，或让自动构建用独立 tag |
-| 定时触发器每 5 分钟一条 `POST /invoke 401` | 定时事件不带 token 却被要求校验 | **已修**（先判定定时事件再校验）；见 §7.3.1 |
+| 定时触发器每 5 分钟一条 `POST /invoke 401` | `reapTimer.payload` 里的 token 与 `WORKER_TOKEN` 不一致（改过变量但没重新部署，或 payload 漏配 token） | `s info` 查触发器 payload；重新 `s deploy` 让 `${env('WORKER_TOKEN')}` 重新渲染；见 §7.3.1 |
 | 任务 `failed`（「任务处理超时…」） | reaper 判定心跳超时（正常行为） | 用户点重试即可；若频繁出现说明实例被 OOM/超时杀，查 worker 规格与 `timeout` |
 | 429 `RATE_LIMITED` | 触发限流 | 调 `RATE_LIMIT_PER_MINUTE`；确认 Redis 生效（否则各实例各自计数） |
 | `CLOUD_NOT_CONFIGURED` | 未注入 `CLOUD_ASR_API_KEY` | 检查环境变量与 `s info` |

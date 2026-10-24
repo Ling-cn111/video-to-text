@@ -4,9 +4,11 @@
 任务永远停在 processing。而 FC 的 3 次重试（间隔 0.5/1/2 秒）都会撞上
 `TASK_LOCK_SECONDS=3600` 的执行锁返回 skipped，没人能把它推下去。
 
-触发方式（生产）：FC 定时触发器 → 事件调用 → 容器 `/invoke` → 按事件特征分流到这里。
+触发方式（生产）：FC 定时触发器 → 事件调用 → 容器 `/invoke` → 验 token → 分流到这里。
 为什么不是「Timer 直接打 /internal/worker/reap」：定时触发器是**事件调用**，不能指定
 HTTP 路径，FC 固定把 event POST 到 `/invoke`（见 docs/serverless-deploy.md §5.4）。
+定时触发器带不了请求头，凭据放在它的 payload 里（`{"action":"reap","token":"..."}`），
+由 `worker_app._timer_payload_token` 取出后走同一套 `_verify_token`。
 `/internal/worker/reap` 保留给本地脚本与人工 curl。
 
 设计要点：
@@ -21,7 +23,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from app.config import REAPER_LOCK_SECONDS, TASK_STALE_SECONDS
+from app.config import REAPER_LOCK_SECONDS, REAPER_QUEUED_STALE_SECONDS, TASK_STALE_SECONDS
 from app.services import tasks as task_store
 from app.services.tasks import REAPER_LOCK_ID, TaskStore
 
@@ -66,9 +68,16 @@ async def reap_once(
     """扫一遍僵尸任务。幂等：重复执行只会看到已 failed 的任务并跳过。
 
     dry_run=True 只统计不落库（本地排查「到底哪些任务会被判死」用）。
+
+    **两档阈值（P1 修复误杀）**：
+    - `started_at` 有值 → 任务已在执行，用心跳阈值 `stale`（默认 TASK_STALE_SECONDS）；
+    - `started_at` 为空 → 任务还在排队（实例打满 / 派发积压），排队期间本来就没有
+      心跳写入，必须放大到 `queued_stale`（默认 max(stale, REAPER_QUEUED_STALE_SECONDS)），
+      否则高峰期排队中的任务会被当成僵尸全部收割。
     """
     store = store or task_store.get_task_store()
     stale = TASK_STALE_SECONDS if stale_seconds is None else int(stale_seconds)
+    queued_stale = max(stale, REAPER_QUEUED_STALE_SECONDS)
     lock_ttl = REAPER_LOCK_SECONDS if lock_seconds is None else int(lock_seconds)
 
     token = await store.acquire(REAPER_LOCK_ID, lock_ttl)
@@ -83,14 +92,16 @@ async def reap_once(
         now = time.time()
 
         for task in processing:
-            if now - task.updated_at <= stale:
-                continue  # 心跳正常：可能有实例正在处理，绝不能动
+            threshold = stale if task.started_at is not None else queued_stale
+            if now - task.updated_at <= threshold:
+                continue  # 心跳正常 / 仍在排队：绝不能动
             if dry_run:
                 result.reaped += 1
                 result.task_ids.append(task.task_id)
                 continue
-            # 二次校验在存储层内做（扫描到这里之间可能刚被心跳刷新）
-            if await store.fail_if_stale(task.task_id, stale, error):
+            # 二次校验在存储层内做（扫描到这里之间可能刚被心跳刷新）。
+            # 必须传同一个 threshold，否则存储层会用更严的阈值把它否掉。
+            if await store.fail_if_stale(task.task_id, threshold, error):
                 result.reaped += 1
                 result.task_ids.append(task.task_id)
 

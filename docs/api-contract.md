@@ -69,15 +69,16 @@
 | 404 | `INVALID_TASK` | taskId 不存在或已过期 |
 | 409 | `TASK_INTERRUPTED` | 服务重启导致任务中断（前端给重试按钮） |
 | 413 | `TRANSCRIPT_TOO_LONG` | 文字稿超过 10 万字，不支持总结 |
-| 413 | `FILE_TOO_LARGE` | 音频超过 `MAX_AUDIO_SIZE_MB` |
-| 415 | `FILE_FORMAT_UNSUPPORTED` | 音频格式不支持 |
+| 413 | `AUDIO_TOO_LARGE` | 音频超过 `MAX_AUDIO_SIZE_MB` |
 | 422 | `UNSUPPORTED_PLATFORM` | 平台未接入（当前仅 B站） |
 | 500 | `TRANSCRIBE_FAILED` | 转写流程失败（含「未识别出语音内容」） |
 | 500 | `TASK_TIMEOUT` | reaper 判定任务超时 |
 | 500 | `INTERNAL_ERROR` | 未预期异常兜底 |
 | 502 | `SUMMARIZE_FAILED` | LLM 调用失败（网络 / HTTP / 重试耗尽） |
 
-状态码映射的代码事实来源是 [`src/lib/api-server.ts`](../src/lib/api-server.ts)（Mock 侧）与 [`backend/app/errors.py`](../backend/app/errors.py)（真实侧），两边必须一致。完整枚举定义见 `src/lib/types.ts` 的 `ApiErrorCode`——新增错误码时这三处要同步改，否则 `Record<ApiErrorCode, number>` 会类型报错。
+状态码映射的代码事实来源是 [`src/lib/api-server.ts`](../src/lib/api-server.ts)（Mock 侧）与 [`backend/app/errors.py`](../backend/app/errors.py)（真实侧），两边必须一致。完整枚举定义见 `src/lib/types.ts` 的 `ApiErrorCode`——新增错误码时要同步改四处：`types.ts`、`api-server.ts` 的 `STATUS_BY_CODE`、`src/components/shared/error-alert.tsx` 的中文标题表（`Record<ClientErrorCode, string>` 会强制穷举）、本文档；漏改会类型报错。
+
+> `FILE_TOO_LARGE` / `FILE_FORMAT_UNSUPPORTED` 曾作为「本地视频上传」的预留码存在，但前后端都没有生产者，已于 P2 清理。M3 真正做上传时再一并引入（届时后端 `errors.py` 也要加对应异常类）。
 
 ## 4. Mock 实现说明
 
