@@ -29,6 +29,13 @@ S2-P4 僵尸任务清理（Reaper）：
 - 判定策略（陈旧阈值、错误码、文案）不落在存储层，全部收敛在 app/services/reaper.py
 - fail_if_stale 必须做「状态 + 陈旧」二次校验：扫描与写入之间心跳可能刚刷新过，
   盲写会把正在跑的任务误杀；Redis 侧用 WATCH/MULTI 保证校验与写入原子
+- started_at（None = 还在排队）决定 reaper 用哪档阈值：排队任务没有心跳写入，
+  必须用更宽的 max(TASK_STALE_SECONDS, REAPER_QUEUED_STALE_SECONDS)
+
+P1 并发修复（update 的 CAS）：
+- RedisTaskStore.update 改 WATCH/MULTI 读-改-写；MemoryTaskStore 在锁内做等价保护
+- 两者都带**终态保护**：任务已是 completed/failed/interrupted 且本次不改 status 时
+  放弃写入，防止晚到的进度心跳把 Reaper 刚写的 failed 覆盖回 processing
 
 环境变量（app/config.py）：
 - TASK_STORE=memory（默认）| redis
@@ -55,6 +62,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from app.config import (
     REDIS_URL,
+    REAPER_QUEUED_STALE_SECONDS,
     TASK_DB_PATH,
     TASK_INIT_MODE,
     TASK_STALE_SECONDS,
@@ -82,6 +90,7 @@ class TranscribeTask:
     engine: str | None = None  # 本次任务的 ASR 引擎（local | cloud | 引擎名），重试沿用
     transcript_source: str | None = None  # 文字稿来源：subtitle_cc | subtitle_ai | asr
     attempts: int = 0  # 已执行次数（S2：Worker 重试计数 / reaper 判定依据）
+    started_at: float | None = None  # Worker 抢到锁、真正开跑的时刻；None = 还在排队
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -99,6 +108,7 @@ def _payload_dict(task: TranscribeTask) -> dict:
         "engine": task.engine,
         "transcript_source": task.transcript_source,
         "attempts": task.attempts,
+        "started_at": task.started_at,
     }
 
 
@@ -124,6 +134,9 @@ def _task_from_payload(
         engine=payload.get("engine"),
         transcript_source=payload.get("transcript_source"),
         attempts=int(payload.get("attempts") or 0),
+        # started_at 决定 reaper 用哪档陈旧阈值（排队 vs 执行中），必须往返保真；
+        # 旧数据无该字段 → None（按「排队中」处理，更保守：不会误杀刚派发的任务）
+        started_at=float(payload["started_at"]) if payload.get("started_at") is not None else None,
         created_at=created_at,
         # updated_at 必须往返保真：S2 的「陈旧判定」（心跳超时）完全依赖它；
         # 旧数据无该字段时回落到 created_at（更保守：更容易被判为陈旧）
@@ -327,6 +340,11 @@ class MemoryTaskStore:
             task = self._tasks.get(task_id)
             if task is None:
                 return
+            # 终态保护（与 RedisTaskStore.update 语义对齐）：已是 completed/failed/
+            # interrupted 且本次不改 status → 放弃，防止晚到的进度心跳把 Reaper
+            # 刚写的 failed 覆盖回 processing，导致前端永久转圈。
+            if task.status != "processing" and "status" not in fields:
+                return
             for key, value in fields.items():
                 setattr(task, key, value)
             task.updated_at = time.time()
@@ -456,6 +474,9 @@ class RedisTaskStore:
         if not recover_interrupted:
             return
         now = time.time()
+        # 与 reaper 同源的两档阈值：started_at 为空说明还在排队（派发积压 / 实例打满），
+        # 排队期间没有心跳写入，套用 _stale 会把刚派发的任务误标 interrupted。
+        queued_stale = max(self._stale, REAPER_QUEUED_STALE_SECONDS)
         async for key in client.scan_iter(match=f"{self._KEY_PREFIX}*"):
             # 只处理 task:{task_id}；未来的派生 key（如 task:lock:{id}）不参与恢复扫描
             suffix = key.decode() if isinstance(key, bytes) else key
@@ -467,8 +488,9 @@ class RedisTaskStore:
             task = _loads(raw)
             if task.status != "processing":
                 continue
-            if now - task.updated_at < self._stale:
-                continue  # 心跳正常：可能有别的实例正在处理，不动它
+            threshold = self._stale if task.started_at is not None else queued_stale
+            if now - task.updated_at < threshold:
+                continue  # 心跳正常 / 仍在排队：可能有别的实例正在处理，不动它
             task.status = "interrupted"
             task.updated_at = now
             await self._set(key, task)
@@ -484,13 +506,39 @@ class RedisTaskStore:
         return _loads(raw) if raw is not None else None
 
     async def update(self, task_id: str, **fields: object) -> None:
-        task = await self.get(task_id)
-        if task is None:
-            return
-        for key, value in fields.items():
-            setattr(task, key, value)
-        task.updated_at = time.time()
-        await self._set(self._key(task_id), task)
+        """WATCH/MULTI 读-改-写（P1-2 CAS）：防止心跳把 Reaper 刚写的 failed 覆盖回 processing。
+
+        两个保护：
+        - **终态保护**：任务已是 completed/failed/interrupted 且本次不改 `status` → 直接
+          放弃。晚到的进度心跳（30s 一拍）本来会把 failed 改回 processing，前端就会
+          一直转圈等一个永远不会完成的转写。
+        - **WATCH 冲突**：读到写之间若有人改过（Reaper / 别的实例），放弃本次写入；
+          下一次心跳会带着最新状态重试，不丢正确性。
+        """
+        key = self._key(task_id)
+        client = self._client()
+        async with client.pipeline(transaction=True) as pipe:
+            try:
+                await pipe.watch(key)
+                raw = await pipe.get(key)
+                if raw is None:
+                    await pipe.unwatch()
+                    return
+                task = _loads(raw)
+                if task.status != "processing" and "status" not in fields:
+                    await pipe.unwatch()
+                    return  # 终态不可被非状态字段覆盖
+                for name, value in fields.items():
+                    setattr(task, name, value)
+                task.updated_at = time.time()
+                pipe.multi()
+                if self._ttl > 0:
+                    pipe.set(key, _dumps(task), ex=self._ttl)
+                else:
+                    pipe.set(key, _dumps(task))
+                await pipe.execute()
+            except _WatchError:  # type: ignore[misc]
+                return  # 期间被改动：本次写入作废，避免覆盖别人的状态
 
     # ---- 执行锁（SET NX EX 原子领取 + WATCH 比对释放）----
 

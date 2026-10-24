@@ -242,6 +242,9 @@ API 函数不再受请求生命周期约束。
 - **失败不重试**：FC 自身已默认重试 3 次，应用层再重试会叠加放大重复计费；直接抛给路由层标 `failed`。
 - **本地验证**（不联网、不需要 FC）：`pytest tests/test_dispatcher.py tests/test_worker_app.py -q`，
   其中 `test_fc_dispatcher_delivers_body_worker_accepts` 把 `FcDispatcher` 的请求体直接喂给真实 worker 应用。
+  本地起 worker 前记得给一个非空 `WORKER_TOKEN`（P0 后为空一律 503）：
+  `WORKER_TOKEN=dev-token uvicorn app.worker_app:app --port 9000`，再带
+  `-H "X-Worker-Token: dev-token"` 调用。
 
 **独立 Worker（S2-P2）**：`app/worker_app.py` 是第二个 ASGI 应用（`uvicorn app.worker_app:app`），
 供 Serverless 平台异步调用，与 API 应用**完全隔离**——不挂 `RateLimitMiddleware` / CORS，也不 import
@@ -259,7 +262,10 @@ API 函数不再受请求生命周期约束。
   平台重试不会重跑已完成任务（云端 ASR 会重复计费）
 - **返回码语义**：pipeline 内部已把业务异常收敛为 `failed` → 返回 **200**（重试无意义）；只有胶水层/
   未捕获的基础设施异常才标 `failed` 并返回 **5xx**，交给平台重试
-- **鉴权**：`WORKER_TOKEN` 非空时要求请求头 `X-Worker-Token` 一致，或 `Authorization: Bearer <token>`
-  （两种等价，便于将来把触发器认证方式改成 Bearer）；为空则不校验
+- **鉴权（P0 fail-closed）**：`WORKER_TOKEN` 未配置时**所有入口一律 503**（旧实现是「为空则不校验」，
+  等于把异步执行入口敞开给公网）。配置后要求下列任一匹配：`X-Worker-Token` / `Authorization: Bearer <token>` /
+  定时触发器 payload 里的 `token`（FC 定时触发器无法自定义请求头，凭据放在 `reapTimer.payload` 里下发）
+- **SSRF 兜底（P0）**：`_run_job` 入口对 `job.url` 重跑 `validate_public_http_url`，命中内网/非法地址时
+  标 `failed` + `INVALID_URL` 并返回 200 `skipped`（不信任上游一定校验过，也不让 FC 无限重试）
 - **兜底分工**：进程被平台强杀（超时/OOM/缩容）时 Worker 无法自救——锁靠 TTL 过期释放，
   任务状态靠 P0 心跳停止 + P4 reaper 判定 `interrupted`

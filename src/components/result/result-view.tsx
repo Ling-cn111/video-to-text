@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { BookOpenText, FileText, Home, ScrollText } from 'lucide-react'
+import { BookOpenText, FileText, Home, RefreshCw, ScrollText } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -17,6 +17,7 @@ import { PlatformBadge } from '@/components/shared/platform-badge'
 import { formatDuration } from '@/lib/format'
 import { formatTranscriptToArticle } from '@/lib/article'
 import { useTaskStore } from '@/stores/task-store'
+import { useResultPolling } from '@/hooks/use-result-polling'
 import { cn } from '@/lib/utils'
 
 interface ResultViewProps {
@@ -47,6 +48,15 @@ export function ResultView({ taskId }: ResultViewProps) {
   const [retrying, setRetrying] = useState(false)
   const [summaryRetrying, setSummaryRetrying] = useState(false)
   const [tab, setTab] = useState<TranscriptTab>('article')
+
+  // P1-4：任务仍在跑时由本页自己推进（旧实现只把 phase 设成 transcribing 就 return，
+  // 进度页的轮询早已卸载，于是骨架屏永久转圈）。
+  useResultPolling(taskId)
+
+  const handleRefresh = () => {
+    setRecovering(true)
+    void recover(taskId).finally(() => setRecovering(false))
+  }
 
   // P0：summary 可为 null（总结失败/进行中）——分段只用可选的 chapters，导出与页面同源不受影响
   const paragraphs = useMemo(
@@ -100,9 +110,24 @@ export function ResultView({ taskId }: ResultViewProps) {
     )
   }
 
-  // P0：只要文字稿就绪即可渲染主体（总结失败/进行中不再整页骨架）
-  if (!transcript) {
-    return <ResultSkeleton />
+  // P1-4：任务还在跑时骨架屏必须配一个刷新出口。轮询已经在跑，但它救不了
+  // 「接口 5xx / 网络断开 / 后端被限额」这类情况——旧实现只转圈，用户只能干等。
+  if (!transcript && (phase === 'transcribing' || phase === 'idle')) {
+    return <ResultSkeleton onRefresh={handleRefresh} />
+  }
+
+  // P1-5：完成态却没有可用文字稿（空数组已在 store 归一成 error，这里是最后兜底）
+  if (!transcript || transcript.length === 0) {
+    return (
+      <div className="mx-auto w-full max-w-2xl px-4 py-10">
+        <ErrorAlert
+          error={{ code: 'TRANSCRIBE_FAILED', message: '未能识别出语音内容，请换一个视频或确认原视频有清晰人声' }}
+          onBack={handleBack}
+          onRetry={video ? handleRetry : undefined}
+          retrying={retrying}
+        />
+      </div>
+    )
   }
 
   return (
@@ -231,12 +256,21 @@ function TranscriptTabButton({ active, onClick, icon: Icon, children }: Transcri
   )
 }
 
-export function ResultSkeleton() {
+export function ResultSkeleton({ onRefresh }: { onRefresh?: () => void }) {
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:py-10">
       <div className="flex flex-col gap-2">
         <Skeleton className="h-6 w-2/3" />
         <Skeleton className="h-4 w-40" />
+        {onRefresh ? (
+          <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+            <span>正在处理中，转写长视频需要几分钟…</span>
+            <Button variant="ghost" size="sm" onClick={onRefresh} className="h-6 gap-1 px-2">
+              <RefreshCw className="size-3" aria-hidden />
+              刷新
+            </Button>
+          </div>
+        ) : null}
       </div>
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[1.15fr_1fr]">
         <Card>

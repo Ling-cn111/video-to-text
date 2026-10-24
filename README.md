@@ -22,21 +22,23 @@
 ```mermaid
 flowchart LR
   C["客户端<br/>Web PWA / Tauri 桌面端"]
-  A["阿里云 FC · API 函数<br/>FastAPI"]
-  W["阿里云 FC · Worker 函数<br/>ASR + LLM"]
+  A["阿里云 FC · API 函数<br/>FastAPI<br/>解析 + LLM 总结"]
+  W["阿里云 FC · Worker 函数<br/>ASR 转写"]
   R[("Redis 任务存储<br/>阿里云 Redis / Upstash<br/>TTL 7 天")]
   X["外部服务<br/>B站 / 硅基流动 / DeepSeek"]
 
   C -->|"POST /api/parse"| A
   A -->|"命中字幕快路径，同步返回"| C
   C -->|"轮询 GET /api/transcribe/:id"| A
+  C -->|"POST /api/summarize（文字稿已在手）"| A
   A -->|"异步派发（FC Invoke）"| W
   A <-->|"读写任务状态"| R
   W <-->|"读写任务状态"| R
-  W --> X
+  A -->|"B站页面 / LLM"| X
+  W -->|"下载音频 / 云端 ASR"| X
 ```
 
-**为什么必须异步**：ASR 要 30-155 秒（长视频更久），而 API 函数上限 120 秒；更关键的是 FC 在 HTTP 响应返回后会**冻结/回收实例**，`BackgroundTasks` 挂的后台协程拿不到 CPU——超时配多大都没用。因此 API 只做「解析 + 派发」并立即返回 `taskId`，作业体投交给独立的 Worker 函数（超时 1800 秒、单实例并发 1），前端轮询状态。设计推演见 [异步架构侦察报告](docs/s2-async-recon.md)。
+**为什么必须异步**：ASR 要 30-155 秒（长视频更久），而 API 函数超时是 300 秒；更关键的是 FC 在 HTTP 响应返回后会**冻结/回收实例**，`BackgroundTasks` 挂的后台协程拿不到 CPU——超时配多大都没用。因此 API 只做「解析 + 派发」并立即返回 `taskId`，作业体投交给独立的 Worker 函数（超时 1800 秒、单实例并发 1），前端轮询状态。**LLM 总结留在 API 侧**（`/api/summarize`）：它只依赖已经落库的文字稿，不需要重新下载音频，放 API 可以直接复用同一实例处理完；Worker 因此只管 ASR 这一件重活。设计推演见 [异步架构侦察报告](docs/s2-async-recon.md)。
 
 ## 快速开始
 

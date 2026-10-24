@@ -160,6 +160,12 @@ export interface SummarizeRequest {
 
 // ---- 错误契约 ----
 
+/**
+ * 错误码契约（以后端 `backend/app/errors.py` 为准）。
+ *
+ * 新增/删除错误码要同步四处：本文件、`src/lib/api-server.ts` 的 STATUS_BY_CODE、
+ * `src/components/shared/error-alert.tsx` 的中文标题表、`docs/api-contract.md`。
+ */
 export type ApiErrorCode =
   | 'INVALID_URL'
   | 'UNSUPPORTED_PLATFORM'
@@ -168,11 +174,10 @@ export type ApiErrorCode =
   | 'CLOUD_NOT_CONFIGURED'
   | 'SUMMARIZE_NOT_CONFIGURED'
   | 'TRANSCRIPT_TOO_LONG'
+  | 'AUDIO_TOO_LARGE'
   | 'SUMMARIZE_FAILED'
   | 'TASK_INTERRUPTED'
   | 'TASK_TIMEOUT'
-  | 'FILE_TOO_LARGE'
-  | 'FILE_FORMAT_UNSUPPORTED'
   | 'INTERNAL_ERROR'
 
 export interface AppError {
