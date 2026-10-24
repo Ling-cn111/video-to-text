@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 
 import { expect, test } from "@playwright/test";
 
+import { bannerMessage } from "../src/lib/banner-message";
+
 /**
  * 前端功能锁定 E2E（docs/frontend-features.md 的自动化强制层）。
  *
@@ -221,7 +223,13 @@ test.describe("前端功能锁定协议", () => {
     const banner = page.getByTestId("backend-unreachable-banner");
     await expect(banner).toBeVisible();
     await expect(banner).toContainText("后端服务不可达");
-    await expect(banner).toContainText("run.bat start"); // 明确的启动指引
+    // 文案分环境：E2E 跑在 localhost，应给出 run.bat 启动指引
+    await expect(banner).toContainText("run.bat start");
+
+    // 公网部署不得出现 run.bat（线上访客没有本地脚本）：文案选择是纯函数，直接断言两条分支
+    expect(bannerMessage("video-to-text-six.vercel.app")).toContain("请稍后重试");
+    expect(bannerMessage("video-to-text-six.vercel.app")).not.toContain("run.bat");
+    expect(bannerMessage("localhost")).toContain("run.bat start");
 
     // 不遮挡页面：横幅底部不越过顶栏顶部（占位 + 顶栏 sticky 偏移生效）
     const bannerBox = await banner.boundingBox();
