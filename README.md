@@ -1,254 +1,150 @@
 # video-to-text
 
-视频链接转文字 PWA：粘贴 B站视频链接，自动完成解析、转写（B站字幕快路径优先，否则本地/云端 ASR）与真实 AI 总结（DeepSeek），输出带时间戳的文字稿和结构化摘要。可安装到 Windows 桌面与手机主屏幕。
+基于 Serverless 架构的视频转文字与 AI 总结工具。粘贴一个 B站链接，从几秒（命中字幕）到几分钟（走 ASR）拿到带时间戳的文字稿与结构化 AI 摘要。
 
-> **当前进度**：阶段一（真实解析）✅ → 阶段二（真实转写 + 绝对 CER 基准）✅ → **阶段三（真实 AI 总结）✅（2026-10-07）**。多平台 / 本地视频 / 打包 App 规划见 [docs/ROADMAP.md](docs/ROADMAP.md)；验收报告 [阶段二](docs/acceptance-stage-2.md) / [阶段三](docs/acceptance-stage-3.md)。
+- **零成本字幕快路径**：视频有 CC / AI 字幕时直接取，27 分钟视频 5-7 秒出稿，¥0
+- **四层降级流水线**：字幕快路径 → 本地 faster-whisper → 云端 ASR → LLM 总结，逐层兜底不空手
+- **真实 AI 结构化总结**：一句话概要 / 带时间戳要点 / 章节笔记，时间戳锚定原文
+- **两种安装形态**：Web PWA（可装到主屏幕）、Windows 桌面安装包（Tauri，不依赖域名可达性）
 
-## 转写与总结的四条路径（及成本）
+| | 入口 |
+| --- | --- |
+| 在线体验 | <https://video-to-text-six.vercel.app> |
+| 桌面端下载 | 仓库 `dist/` 目录（该目录不入库，需本地构建产出） |
 
-| 路径 | 触发条件 | 耗时（27 分钟视频） | 成本 | 质量 |
-| --- | --- | --- | --- | --- |
-| ① 字幕快路径（**主路径**） | B站视频有 CC / AI 字幕（弹幕元数据接口未登录可取） | **5-7 秒** | ¥0 | B站官方字幕，接近人工 |
-| ② 本地 ASR（默认兜底） | 无字幕 + 首页「转写模式=本地」 | 36-155 秒（150s 音频） | ¥0 | 清晰口播 6-22%（CER），喊叫类 44% |
-| ③ 云端 ASR（手动选择） | 无字幕 + 强 BGM / 追求准确 | 19-43 秒（150s 音频） | ¥0（硅基流动 ASR 免费） | 4-17%（CER，绝对基准） |
-| ④ LLM 总结（阶段三） | 转写完成后自动触发 | 33-69 秒 | **¥0.07 / 27 分钟视频**（唯一成本项） | 结构化概要/要点/章节，时间戳指向原文 |
+- `dist/视频转文字_0.1.0_x64-setup.exe` — NSIS，普通用户双击安装（无需管理员）
+- `dist/视频转文字_0.1.0_x64_zh-CN.msi` — WiX，适合企业静默分发
 
-数据来源：[绝对 CER 基准](docs/asr-benchmark.md) / [LLM 成本记录](docs/llm-cost.md)。
+> 安装包未做代码签名，Windows SmartScreen 会提示「未知发布者」，点「更多信息 → 仍要运行」即可。构建方法见 [桌面端打包指南](docs/desktop-packaging.md)。
 
-## 功能
+## 架构
 
-- 粘贴 B站视频链接 → 真实解析（yt-dlp）→ 转写（四层降级：CC 字幕 → AI 字幕 → 本地/云端 ASR）→ 结果页
-- 全文阅读：无时间戳的文章式排版（按章节自动分段，段间空行、行高舒适）
-- 带时间戳文字稿（点击时间戳可复制，支持折叠/展开）；字幕来源任务显示「来源：B站字幕」Badge
-- 右侧 AI 总结（真实 LLM 生成：一句话概要 / 带时间戳要点 / 章节笔记）；首页可关闭「解析后自动 AI 总结」，关闭后结果页提供「生成 AI 总结」手动入口
-- 后端可达性横幅：后端未启动 / 离线外壳打开页面时顶部提示（含 `run.bat start` 启动指引），恢复后自动消失、可手动关闭
-- 导出 TXT / Markdown（纯文本全文，不含时间戳）
-- PWA：可安装、离线可用（应用外壳）
-- 响应式：桌面左右分栏，移动端上下卡片流
-- 错误态：无效链接、不支持平台、转写/总结失败（可重试）
+```mermaid
+flowchart LR
+  C["客户端<br/>Web PWA / Tauri 桌面端"]
+  A["阿里云 FC · API 函数<br/>FastAPI"]
+  W["阿里云 FC · Worker 函数<br/>ASR + LLM"]
+  R[("Redis 任务存储<br/>阿里云 Redis / Upstash<br/>TTL 7 天")]
+  X["外部服务<br/>B站 / 硅基流动 / DeepSeek"]
 
-## 支持的平台
+  C -->|"POST /api/parse"| A
+  A -->|"命中字幕快路径，同步返回"| C
+  C -->|"轮询 GET /api/transcribe/:id"| A
+  A -->|"异步派发（FC Invoke）"| W
+  A <-->|"读写任务状态"| R
+  W <-->|"读写任务状态"| R
+  W --> X
+```
 
-| 平台 | 解析 | 转写 |
-| --- | --- | --- |
-| 哔哩哔哩（www.bilibili.com / b23.tv） | ✅ yt-dlp | ✅ 字幕快路径（CC + AI 字幕，未登录可取）/ 本地 faster-whisper / 云端 ASR |
+**为什么必须异步**：ASR 要 30-155 秒（长视频更久），而 API 函数上限 120 秒；更关键的是 FC 在 HTTP 响应返回后会**冻结/回收实例**，`BackgroundTasks` 挂的后台协程拿不到 CPU——超时配多大都没用。因此 API 只做「解析 + 派发」并立即返回 `taskId`，作业体投交给独立的 Worker 函数（超时 1800 秒、单实例并发 1），前端轮询状态。设计推演见 [异步架构侦察报告](docs/s2-async-recon.md)。
 
-> 更多平台在 `src/lib/platforms/registry.ts` 与 `backend/app/platforms.py` 的注册表中追加即可。
+## 快速开始
 
-## 已知限制
+### 桌面端
 
-- **停止服务后刷新页面仍显示界面？** 若你的浏览器曾访问过生产构建（或点过首页「安装」），PWA 的 Service Worker 会缓存**离线外壳**——服务停止后刷新会显示缓存的界面（这是「离线可用外壳」的设计行为），此时页面顶部会出现「后端服务不可达」横幅（含启动指引，后端恢复后 15 秒内自动消失），页面内任何数据操作也会明确报「网络异常」。彻底清除：F12 → Application → Service Workers → Unregister，或在浏览器设置中清除该站点数据
-- **重建 / 重启服务后旧标签页报 webpack 错？** 例如 `Unhandled Runtime Error: Cannot read properties of undefined (reading 'call')`（栈顶在 `webpack.js` 的 `options.factory`）——这是**浏览器里保留的旧页面与刚重建的 `.next` 不匹配**（旧页面引用的 chunk 在当前构建里已不存在），不是代码故障：在报错页按 **Ctrl+Shift+R 硬刷新**即可。若从已安装的 PWA 窗口打开，先关闭该窗口并清除站点数据。开发环境（`pnpm dev`）现在会自动**注销残留 Service Worker + 清理 `vtt-shell-*` 外壳缓存**，避免再次混用（生产环境行为不变）
-- 转写任务已持久化到 SQLite（`backend/data/tasks.db`）：服务重启后历史任务可查，重启时未完成任务标记「已中断」并引导重试；多 worker / 云端部署仍需替换为 Redis（接口已封装，见 backend/README.md）
-- 当前仅支持 B站；抖音解析在前端 Mock 中预置，真实后端待接入
-- B站 AI 字幕非全覆盖（实测 6 视频中 5 个有轨道），无字幕时走 ASR 兜底
-- LLM 总结需配置 `DEEPSEEK_API_KEY`（或通义 `DASHSCOPE_API_KEY`），未配置时总结步骤明确报错
-- 本地 ASR 依赖 CPU：small 模型 150 秒音频约 40-155 秒；FFmpeg 可选（未装自动降级 PyAV 解码）
+1. 取安装包（见上表，`dist/` 或自行构建），双击安装（无需管理员权限）
+2. 从开始菜单打开「视频转文字」，粘贴 B站链接即可使用
 
-## 技术栈
-
-- [Next.js](https://nextjs.org) 14（App Router）+ TypeScript
-- Tailwind CSS + [shadcn/ui](https://ui.shadcn.com)
-- Zustand 状态管理
-- Next Route Handlers 提供 Mock API（`src/app/api`），客户端统一出口 `src/lib/api.ts`
-- 后端：FastAPI + yt-dlp + faster-whisper + DeepSeek/Qwen（见 [backend/README.md](backend/README.md)）
-- PWA：Web App Manifest + Service Worker（仅生产环境注册）
-
-## 快速开始（Windows）
-
-### 首次配置
-
-双击 `setup.bat`，自动创建虚拟环境、安装前后端依赖、复制配置模板（已存在的配置文件不会覆盖）。
-按提示填写 `backend/.env.local` 中的 `DEEPSEEK_API_KEY`（AI 总结）与 `CLOUD_ASR_API_KEY`（云端转写，均可选）。
-
-### 日常使用
-
-**方式一：系统托盘控制台（推荐）**
-
-- 启动：双击 `控制台.bat`——托盘区出现状态圆点，右键菜单：启动 / 停止 / 重启 / 查看日志 / 开机自启 / 退出；左键双击图标切换启停
-- 图标状态：🟢 运行中 ｜ 🟡 启动中 ｜ ⚪ 已停止 ｜ 🔴 出错（气泡提示，日志见 `logs/`）
-- 服务在后台隐藏运行，无黑窗口；启动完成自动打开浏览器
-- 未安装快捷方式时也可右键 `控制台.ps1` →「使用 PowerShell 运行」
-- **看不到图标？** Windows 11 默认把新出现的托盘图标收进折叠区：点击任务栏的 `^` 展开即可看到；可在「设置 → 个性化 → 任务栏 → 其他系统托盘图标」中把它设为常显
-- 命令行等价：`powershell -ExecutionPolicy Bypass -File 控制台.ps1 -Action start|stop|restart|status`
-- 托盘与 `run.bat` 共享端口 / 日志 / PID 约定，两者可互相启停
-
-**方式二：命令行脚本（run.bat）**
-
-- 启动：双击 `run.bat` 或命令行 `run.bat start`（前后端各开一个窗口，浏览器自动打开 http://localhost:3000）
-- 关闭：`run.bat stop`（按 PID → 窗口标题 → 端口三层兜底）
-- 重启：`run.bat restart`
-- 查看状态：`run.bat status`（显示运行状态、PID 与最新日志文件）
-- 查看用法：`run.bat help`（双击运行时如遇错误会停留等待按键，便于查看提示）
-
-后端 / 前端日志写入 `logs/backend-*.log` 与 `logs/frontend-*.log`（自动轮转，各保留 20 份）；
-进程 PID 记录在 `.vtt-pids/`。以上目录与数据库 `backend/data/` 均不入库。
-
-## 手动启动（Mac/Linux 或调试用）
+### 本地开发（Web）
 
 ```bash
 # 前端
 pnpm install
-pnpm dev      # 开发模式（不注册 Service Worker）
+cp .env.example .env.local     # 见下表，至少确认 NEXT_PUBLIC_USE_MOCK
+pnpm dev
 ```
 
 ```bash
 # 后端（另开终端）
 cd backend
-python -m venv .venv
-.venv\Scripts\activate          # Windows（macOS/Linux: source .venv/bin/activate）
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-打开 <http://localhost:3000>，使用首页提供的示例链接体验完整流程（含失败 / 不支持平台演示）。
-后端自检：<http://localhost:8000/api/health>；接口文档：<http://localhost:8000/docs>。
+打开 <http://localhost:3000>。首页提供示例链接，含失败与不支持平台的演示。
 
-```bash
-pnpm lint     # 代码检查
-pnpm build    # 生产构建
-pnpm start    # 生产模式（注册 Service Worker，可验证 PWA）
-```
+最核心的三个变量（全表见 [`.env.example`](.env.example)）：
 
-### 本地验证 E2E 锁定用例（Mock / 真实模式构建的区别）
-
-`NEXT_PUBLIC_USE_MOCK` 是**构建期常量**（Next.js 只在 `pnpm build` 时内联，不是运行时开关），切换模式必须重新构建；显式设置的同名环境变量优先于 `.env.local`。
-
-- 直接 `pnpm build` 会读取根目录 `.env.local`。本地 `cp .env.example .env.local` 后默认 `NEXT_PUBLIC_USE_MOCK=false`，构建出来的是**真实模式**。
-- `e2e/locked-features.spec.ts` 的锁定用例全部按 **Mock 模式**编写。对真实模式构建跑全套会**因环境原因全红**（Mock taskId 在真实接口取不到数据；真实模式的健康检查走 `/backend-api/health`，测试里对 `/api/health` 的拦截不生效）——这不是代码回归，别被吓到。
-- 本地跑锁定用例：
-
-  ```powershell
-  # PowerShell
-  $env:NEXT_PUBLIC_USE_MOCK="true"; pnpm build
-  pnpm exec playwright test      # webServer 自动执行 pnpm start，端口 3000
-  ```
-
-  ```bash
-  # bash / zsh
-  NEXT_PUBLIC_USE_MOCK=true pnpm build
-  pnpm exec playwright test
-  ```
-
-- 真实模式只需验证首页模式标识（对应 CI 第二阶段）：不加环境变量 `pnpm build`，然后 `$env:VTT_EXPECT_MODE="real"; pnpm exec playwright test -g "锁定 7"`。
-- CI 不受影响：CI 环境没有 `.env.local`、也不设该变量，默认构建即 Mock。
-
-### 图标生成（PWA 资源）
-
-```bash
-pnpm node scripts/generate-icons.mjs   # 修改 scripts/generate-icons.mjs 后重新生成 public/icons/
-```
-
-## 桌面端（Tauri）
-
-前端可打包成 Windows 安装包（`.msi` / `.exe`）。桌面版把静态资源装进本地，不依赖域名可达性，
-适合国内网络环境。
-
-### 一次性准备（仅构建者需要，最终用户只要安装包）
-
-| 依赖 | 说明 |
-| --- | --- |
-| Rust（`stable-x86_64-pc-windows-msvc`） | `rustup` 安装，Tauri 编译必需 |
-| MSVC C++ 生成工具 + Windows SDK | VS 2022 Build Tools，勾选「C++ 生成工具」工作负载 |
-| WebView2 Runtime | Win11 / 较新 Win10 已内置；老系统需单独装 |
-
-### 构建
-
-```powershell
-$env:DESKTOP_API_BASE = "https://<你的后端域名>"   # 省略则回退 .env.local 里的 BACKEND_ORIGIN
-pnpm tauri build
-```
-
-产物：
-
-- `src-tauri/target/release/bundle/msi/*.msi`：WiX，适合企业分发 / 静默安装
-- `src-tauri/target/release/bundle/nsis/*-setup.exe`：NSIS，普通用户双击安装
-
-国内网络下若卡在下载 NSIS/WiX，需设置 GitHub 镜像：
-`$env:TAURI_BUNDLER_TOOLS_GITHUB_MIRROR = "https://ghfast.top/https://github.com"`。
-完整踩坑记录（WiX 中文代码页、安装模式差异、验收清单）见
-[docs/desktop-packaging.md](docs/desktop-packaging.md)。
-
-### 与 Web 版的差异（为什么路由改了）
-
-Web 版靠 Next 服务端把 `/backend-api/*` 代理到后端；桌面端是纯静态文件（没有 Node 服务端），
-两处形态差异由 `scripts/build-desktop.mjs` 自动处理：
-
-| | Web（Vercel / 本地） | 桌面端（静态导出） |
+| 变量 | 默认 | 作用 |
 | --- | --- | --- |
-| 后端地址 | 同源 `/backend-api/*` → rewrites 代理 | `NEXT_PUBLIC_API_BASE` + `/api/*`，跨域直连 |
-| 任务页路由 | `/result/<taskId>`（308 跳到新形式） | `/result?id=<taskId>` |
-| Mock 路由 `src/app/api/*` | 保留 | 构建期临时移出（静态导出不支持 POST） |
+| `NEXT_PUBLIC_USE_MOCK` | `true` | **构建期常量**。`false` 时走真实后端（经 `/backend-api/*` 同源代理） |
+| `BACKEND_ORIGIN` | `http://localhost:8000` | 服务端变量，仅 Next rewrites 使用，不暴露给浏览器 |
+| `NEXT_PUBLIC_API_BASE` | 空 | 桌面端专用，静态导出后跨域直连后端的绝对地址 |
 
-所以**页面内跳转一律用 `src/lib/routes.ts` 的 `resultHref()` / `processingHref()`**，
-不要在组件里手拼 `/result/${id}`——那在桌面端会 404。旧链接在 Web 端由
-`next.config.mjs` 的 `redirects` 301 到新形式，已有书签不会失效。
+后端另需在 `backend/.env.local` 配 `DEEPSEEK_API_KEY`（AI 总结）与 `CLOUD_ASR_API_KEY`（云端转写），两者均可选，未配置时对应功能会明确提示。
 
-开发调试：`pnpm tauri dev` 会自动起 `pnpm dev`（3000 端口）并指向它，支持热更新。
+> **Windows 用户**：双击 `setup.bat` 一键装好全部依赖，再用 `控制台.bat` 启动托盘控制台。细节见 [本地开发指南](docs/local-development.md)。
+
+## 核心逻辑
+
+### 四条路径与成本
+
+| 路径 | 触发条件 | 耗时（27 分钟视频） | 成本 | 质量 |
+| --- | --- | --- | --- | --- |
+| ① 字幕快路径（**主路径**） | B站视频有 CC / AI 字幕 | **5-7 秒** | ¥0 | B站官方字幕，接近人工 |
+| ② 本地 ASR（默认兜底） | 无字幕 + 首页「转写模式=本地」 | 36-155 秒（150s 音频） | ¥0 | 清晰口播 6-22% CER，喊叫类 44% |
+| ③ 云端 ASR（手动选择） | 无字幕 + 强 BGM / 追求准确 | 19-43 秒（150s 音频） | ¥0（硅基流动 ASR 免费） | 4-17% CER（绝对基准） |
+| ④ LLM 总结 | 转写完成后自动触发 | 33-69 秒 | **¥0.07 / 27 分钟视频**（唯一成本项） | 结构化概要 / 要点 / 章节 |
+
+前两条是降级关系（有字幕就不跑 ASR），③ 由用户在首页手动切换。数据来源：[ASR 基准](docs/asr-benchmark.md) / [LLM 成本记录](docs/llm-cost.md)。
+
+### 两条开发铁律
+
+- **任务页 URL 只能由 [`src/lib/routes.ts`](src/lib/routes.ts) 生成**（`resultHref()` / `processingHref()`）。手拼 `/result/${id}` 在桌面端会 404，因为静态导出改用查询参数形态。
+- **导出与「全文阅读」同源且零时间戳**。TXT / MD 必须与页面全文视图逐段一致，改任一侧都要同步另一侧。
 
 ## 项目结构
 
 ```
-backend/                # FastAPI + yt-dlp 真实解析服务（详见 backend/README.md）
-└── app/                # parse 路由 / url_guard(SSRF守卫) / platforms(平台注册表) / services/parser(yt-dlp)
+backend/                  # FastAPI + yt-dlp 服务（详见 backend/README.md）
+└── app/                  # parse / url_guard(SSRF 守卫) / platforms / services/
 src/
-├── app/                  # 路由与 API（/、/processing?id=、/result?id=、/api/*）
-├── components/           # home / processing / result / shared / layout / pwa / ui(shadcn)
-├── lib/                  # types(契约) api(出口) real-api(真实后端) http(共享请求层)
-│                         # mock-api(无状态Mock) mock-data(假数据)
-│                         # platforms/registry(平台注册表) platform(链接解析) url-guard(安全校验)
-│                         # article(全文分段) export(导出) format(格式化)
+├── app/                  # 路由与 Mock API（/、/processing?id=、/result?id=、/api/*）
+├── components/           # home / processing / result / shared / layout / pwa / ui
+├── lib/                  # types(契约) api(出口) real-api http(请求层) mock-*
+│                         # platforms(平台注册表) article(分段) export(导出) format
 ├── stores/task-store.ts  # Zustand 任务状态机
 └── hooks/                # 轮询等
+e2e/                      # Playwright 功能锁定用例
+src-tauri/                # Tauri 桌面端壳
 ```
 
-## 本地联调真实后端（当前仅「解析」为真实实现）
-
-```bash
-# 1) 后端（Python 3.11+）
-cd backend
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
-
-# 2) 前端（等价于 npm run dev）
-cp .env.example .env.local   # 把 NEXT_PUBLIC_USE_MOCK 改为 false
-pnpm dev
-```
-
-粘贴 B站链接，进度页 / 结果页即显示真实标题、封面、时长（转写与总结仍为内置 Mock）。
-
-## API 契约
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| POST | `/api/parse` | 解析视频链接 → `{ title, cover, duration, platform, videoId }` |
-| POST | `/api/transcribe` | 创建转写任务 → `{ taskId, status, progress, stage }` |
-| GET | `/api/transcribe/:taskId` | 轮询任务 → `{ status, stage, progress, video?, transcript?, plainText?, error? }` |
-| POST | `/api/summarize` | 生成总结 → `{ summary, keyPoints, chapters }` |
-
-- 错误响应统一为 `{ error: { code, message } }`：`INVALID_URL`(400) / `UNSUPPORTED_PLATFORM`(422) / `INVALID_TASK`(404) / `TRANSCRIBE_FAILED`(500) / `TASK_TIMEOUT`(500) 等，完整定义见 `src/lib/types.ts`
-- 前端 Mock（Route Handlers）为**无状态**实现：taskId 自含上下文（base64url），进度按时间推算（全程约 10 秒）
-- 演示失败路径：`https://www.bilibili.com/video/BV1FailDemo`（60% 处失败，用于验证重试）
-- 真实后端模式下：解析由 FastAPI 完成（yt-dlp，仅放行 B站公开链接，服务端拒绝内网/保留地址），
-  转写 / 总结暂仍由 Mock 承担，真实解析出的元数据会透传展示
-
-## 后续路线
-
-见 [docs/ROADMAP.md](docs/ROADMAP.md)：M2 多平台支持、M3 本地视频转写、M4 打包桌面 / 移动 App（Tauri / Capacitor）。
+技术栈：Next.js 14（App Router）+ TypeScript + Tailwind + shadcn/ui + Zustand；后端 FastAPI + yt-dlp + faster-whisper + DeepSeek/Qwen；PWA 用 Web App Manifest + Service Worker（仅生产环境注册）。
 
 ## 部署
 
-推荐 [Vercel](https://vercel.com)：
+**前端（Vercel）**：GitHub 导入仓库即可，框架自动识别 Next.js。仅需两个环境变量——`BACKEND_ORIGIN`（后端地址）与 `NEXT_PUBLIC_USE_MOCK=false`，两者均为**构建期生效**，事后修改必须重新部署。
 
-1. GitHub 导入仓库（框架自动识别 Next.js）
-2. 无需额外环境变量；后端地址用服务端变量 `BACKEND_ORIGIN`（配合 NEXT_PUBLIC_USE_MOCK=false 与 next.config.mjs 代理）
-3. 部署完成后用 Chrome / Edge 打开站点，地址栏出现安装入口（或顶栏「安装应用」按钮），可安装到 Windows 桌面与 Android 主屏幕；iOS 从 Safari「添加到主屏幕」安装
+**后端（阿里云 FC）**：容器镜像 + `s.yaml` 双函数（API / Worker），完整流程见 [serverless-deploy.md](docs/serverless-deploy.md)。
 
-后端上云（容器镜像 + 阿里云 FC）见 [docs/serverless-deploy.md](docs/serverless-deploy.md)：`linux/amd64` 构建、ACR 推送、`s.yaml` 示例与环境变量清单，并明确标注 Serverless 下 `BackgroundTasks` 的已知限制（异步 ASR 需 S2 的独立函数触发改造）。
+## 文档索引
+
+| 想了解 | 去看 |
+| --- | --- |
+| 后端 FC 部署全流程（镜像构建、`s.yaml`、VPC、变量、验收） | [docs/serverless-deploy.md](docs/serverless-deploy.md) |
+| 本地开发与日常运行（Windows 脚本、托盘、故障排查） | [docs/local-development.md](docs/local-development.md) |
+| 测试指南（lint / build / E2E / pytest） | [docs/testing.md](docs/testing.md) |
+| 前端功能锁定协议与回归清单 | [docs/frontend-features.md](docs/frontend-features.md) |
+| API 契约（接口 / 错误码 / 路由约定） | [docs/api-contract.md](docs/api-contract.md) |
+| 桌面端打包指南（WiX / NSIS / 国内镜像） | [docs/desktop-packaging.md](docs/desktop-packaging.md) |
+| ASR 准确率评测基准（绝对 CER） | [docs/asr-benchmark.md](docs/asr-benchmark.md) |
+| 异步架构改造侦察报告 | [docs/s2-async-recon.md](docs/s2-async-recon.md) |
+| LLM 成本记录 | [docs/llm-cost.md](docs/llm-cost.md) |
+| 后端 API / 环境变量 / 容器化 | [backend/README.md](backend/README.md) |
+| 路线图与阶段验收 | [ROADMAP](docs/ROADMAP.md) · [阶段二](docs/acceptance-stage-2.md) · [阶段三](docs/acceptance-stage-3.md) |
+
+## 已知限制
+
+- **仅支持 B站**，抖音解析目前只在前端 Mock 中预置，真实后端待接入
+- B站 AI 字幕非全覆盖（实测 6 个视频中 5 个有轨道），无字幕时走 ASR 兜底
+- 本地 ASR 依赖 CPU：small 模型处理 150 秒音频约需 40-155 秒
+- 云端部署时若 `REDIS_URL` 连不上，应用会静默降级到内存存储，表现为任务永远停在 `processing`
+- PWA 在国内手机暂不可安装：`*.vercel.app` 被 DNS 污染与 SNI 阻断，需换自定义域名
 
 ## 协作规范
 
-- 分支：`main`（受保护）← `feat/frontend-demo`（阶段集成分支）← 功能分支；一个功能一个 PR（squash）
+- 分支：`main`（受保护）← 功能分支，一个功能一个 PR（squash 合并）
 - 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/)（`feat:` / `fix:` / `chore:` / `docs:` / `ci:`）
-- PR 会自动运行 lint + build 检查（GitHub Actions），绿灯后才能合并
-- PR / Issue 模板位于 `.github/`
+- PR 会自动跑三组检查（[CI 配置](.github/workflows/ci.yml)）：`lint + build`、`backend tests`、`e2e locked features`，全绿才能合并
+- 改前端前请先读 [前端功能锁定协议](docs/frontend-features.md)，模板位于 `.github/`
