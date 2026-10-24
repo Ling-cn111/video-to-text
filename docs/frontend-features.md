@@ -56,7 +56,7 @@
 | --- | --- |
 | 错误提示 | 后端错误形状 `{ error: { code, message } }` 统一转友好中文 toast / 错误卡；SSRF 守卫（url-guard）不得删除 |
 | ASR 文本后处理 | 繁→简统一（zhconv）、重复词折叠（3 次以上）、按语言补句末标点——backend 侧实现，前端文案展示依赖其输出 |
-| PWA | manifest + Service Worker（仅生产注册），顶栏安装按钮 |
+| PWA | manifest + Service Worker（仅生产注册），顶栏安装按钮。**改动 SW 策略或发布影响外壳的变更时必须提升 `CACHE_NAME` 版本号**（`vtt-shell-vN`）：`activate` 只清理非当前版本缓存，不升版本会让老客户端长期运行旧版 JS（2026-10 线上旧文案问题即此因） |
 | 全文导出一致性 | 页面全文视图、TXT、MD 三者的段落必须同源（`formatTranscriptToArticle`），改分段逻辑必须三处一起验证 |
 
 ## 6. 转写模式选择（首页，任务 D 新增）

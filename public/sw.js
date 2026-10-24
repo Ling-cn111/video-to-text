@@ -6,9 +6,9 @@
  * - /api/*：永不缓存（Mock 进度接口对时间敏感）
  *
  * 版本变更需同步提升 CACHE_NAME：activate 时会删除所有非当前版本的缓存，
- * 老客户端因此能拿到新策略（图标预缓存是 v2 新增）。
+ * 老客户端因此能拿到新策略。v3：修复旧外壳缓存不失效导致线上长期运行旧版 JS。
  */
-const CACHE_NAME = 'vtt-shell-v2'
+const CACHE_NAME = 'vtt-shell-v3'
 const PRECACHE_URLS = [
   '/',
   '/manifest.webmanifest',
@@ -50,8 +50,11 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          const copy = response.clone()
-          caches.open(CACHE_NAME).then((cache) => cache.put('/', copy)).catch(() => {})
+          // 只缓存成功响应：错误页（5xx / 平台错误页）一旦入缓存，离线时会长期当作外壳启动
+          if (response.ok) {
+            const copy = response.clone()
+            caches.open(CACHE_NAME).then((cache) => cache.put('/', copy)).catch(() => {})
+          }
           return response
         })
         .catch(() => caches.match('/').then((cached) => cached ?? Response.error())),
@@ -69,8 +72,11 @@ self.addEventListener('fetch', (event) => {
       caches.match(request).then((cached) => {
         if (cached) return cached
         return fetch(request).then((response) => {
-          const copy = response.clone()
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)).catch(() => {})
+          // 同上：404 / 错误页不入缓存，否则该 URL 会被永久钉死
+          if (response.ok) {
+            const copy = response.clone()
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)).catch(() => {})
+          }
           return response
         })
       }),
