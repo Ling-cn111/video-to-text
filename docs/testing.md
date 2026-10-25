@@ -24,6 +24,7 @@ pnpm start       # 以生产模式启动，默认 3000 端口
 | `e2e/locked-features.spec.ts` | 锁定 1-11，协议条文的强制层 |
 | `e2e/p0-regressions.spec.ts` | 回归 1-3：429 冷却、刷新不重复 summarize、engine 偏好持久化 |
 | `e2e/platform-claims.spec.ts` | 平台宣称 1-4：首页文案 / 示例链接 / 文案函数 / `resolveVideoUrl` 与 `SUPPORTED_PLATFORMS` 一致 |
+| `e2e/pr3-progress-and-history.spec.ts` | 回归 4-6：最近转写记录、进度页离开出口、剩余时间与轮询节奏纯函数 |
 
 ### 2.1 关键陷阱：`NEXT_PUBLIC_USE_MOCK` 是构建期常量
 

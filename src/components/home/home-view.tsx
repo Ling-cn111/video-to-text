@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { UrlForm } from '@/components/home/url-form'
 import { AutoSummaryToggle } from '@/components/home/auto-summary-toggle'
 import { ExampleLinks } from '@/components/home/example-links'
+import { RecentTasks } from '@/components/home/recent-tasks'
 import { TranscribeMode } from '@/components/home/transcribe-mode'
 import { useTaskStore } from '@/stores/task-store'
 import { supportedPlatformsShortText } from '@/lib/platforms/registry'
@@ -77,6 +78,9 @@ export function HomeView() {
         <TranscribeMode value={engine} onChange={setEngine} />
         <ExampleLinks onPick={pickExample} />
       </section>
+
+      {/* 最近转写（P1-7）：无记录时整块不渲染，保持首页单一入口 */}
+      <RecentTasks />
 
       {/* 工作流程 */}
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">

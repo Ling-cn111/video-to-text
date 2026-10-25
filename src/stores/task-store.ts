@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { api, ApiError, type ClientErrorCode } from '@/lib/api'
 import { summarizeUnconfiguredMessage } from '@/lib/capability-hint'
+import { ensureRecentTask, recordRecentTask, removeRecentTask, updateRecentTaskStatus } from '@/lib/recent-tasks'
+import type { RecentTaskStatus } from '@/lib/recent-tasks'
 import type {
   Capabilities,
   Summary,
@@ -221,6 +223,47 @@ function emptyTranscriptError(task: { transcript?: TranscriptItem[] | null }): U
   return { code: 'TRANSCRIBE_FAILED', message: '未能识别出语音内容，请换一个视频或确认原视频有清晰人声' }
 }
 
+/**
+ * 记录到首页「最近转写」（P1-7）。
+ *
+ * 提交成功就先记一条 processing：这是「可以关页面了」这个承诺的兑现方式 ——
+ * 没有记录时，用户一关标签页就彻底失联（taskId 只在 URL 里）。
+ * 转写失败时把这条删掉（见 forgetTask），别在首页留一堆点进去就报错的死链。
+ * 重复调用按 taskId 去重（见 recent-tasks.ts）。
+ */
+function rememberTask(taskId: string, video: VideoInfo | null | undefined, status: RecentTaskStatus): void {
+  if (!video) return
+  recordRecentTask({
+    taskId,
+    title: video.title,
+    cover: video.cover,
+    duration: video.duration,
+    platform: video.platform,
+    status,
+  })
+}
+
+/**
+ * 补记一条（仅当不存在）。用于刷新 / 直链恢复：
+ * 那里每次都无条件 record 会把 savedAt 刷成「刚刚」，首页的相对时间就失效了。
+ */
+function ensureRemembered(taskId: string, video: VideoInfo | null | undefined): void {
+  if (!video) return
+  ensureRecentTask({
+    taskId,
+    title: video.title,
+    cover: video.cover,
+    duration: video.duration,
+    platform: video.platform,
+    status: 'done',
+  })
+}
+
+/** 失败任务从「最近转写」里摘掉：留在首页只会变成死链 */
+function forgetTask(taskId: string): void {
+  removeRecentTask(taskId)
+}
+
 export const useTaskStore = create<TaskState>((set, get) => ({
   ...IDLE,
   engine: 'local',
@@ -245,6 +288,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       set({ video, sourceUrl: url })
       const task = await api.startTranscription(video.videoId, video, url, get().engine)
       set({ taskId: task.taskId, stage: task.stage, progress: task.progress, phase: 'transcribing' })
+      // P1-7：任务一创建就落一条记录，用户此刻关掉页面也还能从首页找回
+      rememberTask(task.taskId, video, 'processing')
       return task.taskId
     } catch (error) {
       set({ phase: 'error', error: toAppError(error) })
@@ -264,16 +309,20 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
       if (task.status === 'interrupted') {
         // 服务重启后未完成的历史任务（SQLite 持久化恢复）：引导重试
+        forgetTask(taskId)
         set({ phase: 'error', error: { code: 'TASK_INTERRUPTED', message: '任务已中断（服务重启过），请重试' } })
         return
       }
       if (task.status === 'failed') {
+        // 失败任务从「最近转写」摘掉：留着就是一条点进去必报错的死链
+        forgetTask(taskId)
         set({ phase: 'error', error: task.error ?? { code: 'TRANSCRIBE_FAILED', message: '转写失败，请重试' } })
         return
       }
       if (task.status === 'completed') {
         // P1-5：空数组也要按「没稿」处理，不能让结果页渲染 0 段空壳
         if (isEmptyTranscript(task.transcript)) {
+          forgetTask(taskId)
           set({ phase: 'error', error: emptyTranscriptError(task) })
           return
         }
@@ -281,6 +330,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           transcript: task.transcript ?? null,
           plainText: task.plainText ?? null,
           transcriptSource: task.transcriptSource ?? null,
+        }
+        // P1-7：确认有稿才把记录标成 done（首页据此决定是「继续看」还是「看结果」）。
+        // 有 video 就整条重记（顺带刷新 savedAt 排到最前），没有则只改状态位。
+        const doneVideo = task.video ?? get().video
+        if (doneVideo) {
+          rememberTask(taskId, doneVideo, 'done')
+        } else {
+          updateRecentTaskStatus(taskId, 'done')
         }
         // 用户偏好（autoSummary=false）：转写照常完成，不自动调用 summarize，结果页提供手动生成入口
         if (!get().autoSummary) {
@@ -324,10 +381,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       set({ taskId, video: task.video ?? null, stage: task.stage, progress: task.progress })
 
       if (task.status === 'interrupted') {
+        forgetTask(taskId)
         set({ phase: 'error', error: { code: 'TASK_INTERRUPTED', message: '任务已中断（服务重启过），请重试' } })
         return
       }
       if (task.status === 'failed') {
+        forgetTask(taskId)
         set({ phase: 'error', error: task.error ?? { code: 'TRANSCRIBE_FAILED', message: '转写失败，请重试' } })
         return
       }
@@ -340,11 +399,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       }
       // P1-5：`transcript: []` 是 truthy，`!task.transcript` 会把空数组判成有稿
       if (isEmptyTranscript(task.transcript) || !task.transcript) {
+        forgetTask(taskId)
         set({ phase: 'error', error: emptyTranscriptError(task) })
         return
       }
       // 到这里 transcript 一定是非空数组
       const readyTranscript = task.transcript
+      // P1-7：直链 / 刷新恢复的完成态补记一次（仅当不存在，不刷新 savedAt）
+      ensureRemembered(taskId, task.video ?? get().video)
       // 用户偏好（autoSummary=false）：刷新 / 直链恢复同样尊重开关，不自动调用 summarize
       if (!get().autoSummary) {
         set({
