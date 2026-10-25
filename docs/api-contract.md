@@ -40,16 +40,20 @@
 
 ### 2.2 `POST /api/summarize` 请求体
 
-无状态接口，真实后端只读后三个字段（`taskId` 仅 Mock 使用）：
+无状态接口，真实后端只读后四个字段（`taskId` 仅 Mock 使用）：
 
 ```jsonc
 {
   "taskId": "abc123",
   "transcript": [{ "time": 12.5, "text": "..." }],
   "title": "视频标题",
-  "duration": 1632
+  "duration": 1632,
+  "detail": "standard" // 可选：brief | standard | detailed，缺省 standard
 }
 ```
+
+`detail` 控制总结的详略（对应后端 `DETAIL_PRESETS`：要点条数上限 3 / 5 / 7，概要字数与章节说明同步收敛）。
+它是可选字段，老客户端不传也能正常调用（回落 `standard`），非法值由 pydantic 拒绝为 422。
 
 `keyPoints[].time` 的时间戳强制取自原 `transcript`（后端做就近吸附校验），LLM 不能凭空编造。
 

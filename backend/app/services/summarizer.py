@@ -33,16 +33,54 @@ MAX_CHUNK_CHARS = 6_000  # 单次 LLM 调用输入的文字稿字符上限（按
 MAX_RETRIES = 2  # JSON 解析失败的重试次数
 MAX_KEY_POINTS = 5
 
-_SYSTEM_PROMPT = (
-    "你是视频文字稿总结助手。只输出一个 JSON 对象，不要输出任何其他文字或代码块标记。"
-    "JSON 字段：\n"
-    '- "summary"：一句话概要（字符串，不超过 120 字）\n'
-    '- "keyPoints"：3-5 条核心要点，每条 {"time": 秒数, "text": 要点内容}；'
-    "time 必须从输入文字稿的时间戳中选择，禁止编造不存在的时刻\n"
-    '- "chapters"：按内容逻辑分段，每段 {"title": 段落标题, "timeStart": 秒, "timeEnd": 秒, '
-    '"note": 该段要点说明}；timeStart/timeEnd 必须落在文字稿时间范围内\n'
-    "所有时间单位为秒。"
-)
+# ---- 总结详细程度（P1-11）----
+# 为什么按「档位」而不是「字数 / 条数」连续参数：用户对总结的诉求只有三种
+# ——「给我一句话」「够用就行」「我要能替代看视频」。连续参数既难解释也难验证，
+# 三档足够，且每一档都能写进 prompt 并断言。
+DETAIL_PRESETS = {
+    "brief": {
+        "summary": "不超过 60 字，只讲这一个视频最核心的结论",
+        "keyPoints": "2-3 条",
+        "chapters": "2-3 段，每段说明不超过 30 字",
+        "maxKeyPoints": 3,
+    },
+    "standard": {
+        "summary": "不超过 120 字",
+        "keyPoints": "3-5 条",
+        "chapters": "按内容逻辑分段，每段说明 1-2 句",
+        "maxKeyPoints": 5,
+    },
+    "detailed": {
+        "summary": "不超过 200 字，交代背景、结论与适用条件",
+        "keyPoints": "5-7 条，每条讲清一个可独立成立的判断",
+        "chapters": "分得细一些，每段说明 2-3 句，保留关键数据与例证",
+        "maxKeyPoints": 7,
+    },
+}
+DEFAULT_DETAIL = "standard"
+
+
+def _detail_preset(detail: str | None) -> dict:
+    """未知档位回落到 standard：前端旧版本 / 手工请求不该因拼错而失败。"""
+    return DETAIL_PRESETS.get(detail or DEFAULT_DETAIL, DETAIL_PRESETS[DEFAULT_DETAIL])
+
+
+def _system_prompt(detail: str | None) -> str:
+    preset = _detail_preset(detail)
+    return (
+        "你是视频文字稿总结助手。只输出一个 JSON 对象，不要输出任何其他文字或代码块标记。"
+        "JSON 字段：\n"
+        f'- "summary"：一句话概要（字符串，{preset["summary"]}）\n'
+        f'- "keyPoints"：{preset["keyPoints"]}核心要点，每条 {{"time": 秒数, "text": 要点内容}}；'
+        "time 必须从输入文字稿的时间戳中选择，禁止编造不存在的时刻\n"
+        f'- "chapters"：{preset["chapters"]}，每段 {{"title": 段落标题, "timeStart": 秒, "timeEnd": 秒, '
+        '"note": 该段要点说明}；timeStart/timeEnd 必须落在文字稿时间范围内\n'
+        "所有时间单位为秒。"
+    )
+
+
+# 兼容旧调用方（测试 / 其他模块可能直接引用常量）：默认档位的 system prompt
+_SYSTEM_PROMPT = _system_prompt(DEFAULT_DETAIL)
 
 
 def _resolve_provider() -> tuple[str, str, str]:
@@ -73,7 +111,9 @@ def _snap_to_nearest(time_value: float, sorted_times: list[float]) -> float:
     return min(sorted_times, key=lambda t: abs(t - time_value))
 
 
-def _snap_summary_times(payload: dict, sorted_times: list[float], duration: int) -> dict:
+def _snap_summary_times(
+    payload: dict, sorted_times: list[float], duration: int, max_key_points: int = MAX_KEY_POINTS
+) -> dict:
     """对 LLM 输出的 keyPoints.time 与 chapters.timeStart/timeEnd 做就近吸附。"""
     last_time = sorted_times[-1] if sorted_times else float(duration)
     for point in payload.get("keyPoints") or []:
@@ -92,7 +132,7 @@ def _snap_summary_times(payload: dict, sorted_times: list[float], duration: int)
         if float(chapter["timeEnd"]) < float(chapter["timeStart"]):
             chapter["timeEnd"] = chapter["timeStart"]
     if payload.get("keyPoints") and sorted_times:
-        payload["keyPoints"] = payload["keyPoints"][:MAX_KEY_POINTS]
+        payload["keyPoints"] = payload["keyPoints"][:max_key_points]
     if not payload.get("chapters") and sorted_times:
         payload["chapters"] = [
             {"title": "全文", "timeStart": sorted_times[0], "timeEnd": last_time, "note": payload.get("summary", "")}
@@ -100,7 +140,7 @@ def _snap_summary_times(payload: dict, sorted_times: list[float], duration: int)
     return payload
 
 
-def _chat(base_url: str, api_key: str, model: str, user_content: str) -> tuple[str, dict]:
+def _chat(base_url: str, api_key: str, model: str, user_content: str, detail: str | None = None) -> tuple[str, dict]:
     """单次 chat.completions 调用（json_object），返回 (content, usage)；记录成本。"""
     try:
         response = httpx.post(
@@ -109,7 +149,7 @@ def _chat(base_url: str, api_key: str, model: str, user_content: str) -> tuple[s
             json={
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "system", "content": _system_prompt(detail)},
                     {"role": "user", "content": user_content},
                 ],
                 "response_format": {"type": "json_object"},
@@ -172,12 +212,14 @@ def _parse_payload(content: str) -> dict:
     return {"summary": data["summary"].strip(), "keyPoints": cleaned_points, "chapters": cleaned_chapters}
 
 
-def _chat_summary_with_retry(base_url: str, api_key: str, model: str, user_content: str) -> dict:
+def _chat_summary_with_retry(
+    base_url: str, api_key: str, model: str, user_content: str, detail: str | None = None
+) -> dict:
     """调用 + 解析，失败把错误反馈给模型重试（最多 MAX_RETRIES 次）。"""
     last_error: ValueError | None = None
     feedback = ""
     for attempt in range(MAX_RETRIES + 1):
-        content, _ = _chat(base_url, api_key, model, user_content + feedback)
+        content, _ = _chat(base_url, api_key, model, user_content + feedback, detail)
         try:
             return _parse_payload(content)
         except (json.JSONDecodeError, ValueError) as exc:
@@ -204,12 +246,15 @@ def _split_chunks(transcript: list[dict]) -> list[list[dict]]:
     return chunks
 
 
-def summarize_transcript(transcript: list[dict], title: str, duration: int) -> dict:
-    """业务入口：{transcript, title, duration} → Summary dict（含时间戳吸附）。"""
+def summarize_transcript(
+    transcript: list[dict], title: str, duration: int, detail: str | None = None
+) -> dict:
+    """业务入口：{transcript, title, duration, detail} → Summary dict（含时间戳吸附）。"""
     total_chars = sum(len(str(item.get("text", ""))) for item in transcript)
     if total_chars > MAX_TRANSCRIPT_CHARS:
         raise TranscriptTooLongError()
 
+    preset = _detail_preset(detail)
     base_url, api_key, model = _resolve_provider()
     sorted_times = sorted({float(item.get("time") or 0) for item in transcript})
 
@@ -219,18 +264,18 @@ def summarize_transcript(transcript: list[dict], title: str, duration: int) -> d
             f"视频标题：{title or '（无标题）'}\n时长：{duration} 秒\n\n"
             f"文字稿（每行 [mm:ss] 文本）：\n{format_transcript(transcript)}"
         )
-        payload = _chat_summary_with_retry(base_url, api_key, model, user_content)
+        payload = _chat_summary_with_retry(base_url, api_key, model, user_content, detail)
     else:
         # 多块：逐块提取候选要点（时间戳即原 transcript 时间，无需重映射），再合并终稿
         block_notes: list[str] = []
         for index, chunk in enumerate(chunks, 1):
             block_prompt = (
                 f"这是长视频文字稿的第 {index}/{len(chunks)} 块（标题：{title or '（无标题）'}）。"
-                "请只输出 JSON：{\"points\": [{\"time\": 秒, \"text\": 该块核心要点}], "
-                "\"digest\": \"该块内容摘要（2-3 句）\"}。time 必须取自本块文字稿的时间戳。"
+                '请只输出 JSON：{"points": [{"time": 秒, "text": 该块核心要点}], '
+                '"digest": "该块内容摘要（2-3 句）"}。time 必须取自本块文字稿的时间戳。'
                 f"\n\n文字稿：\n{format_transcript(chunk)}"
             )
-            content, _ = _chat(base_url, api_key, model, block_prompt)
+            content, _ = _chat(base_url, api_key, model, block_prompt, detail)
             try:
                 block = json.loads(content)
             except json.JSONDecodeError:
@@ -244,14 +289,19 @@ def summarize_transcript(transcript: list[dict], title: str, duration: int) -> d
         merge_prompt = (
             f"视频标题：{title or '（无标题）'}\n时长：{duration} 秒\n"
             "以下是对长视频逐块总结的要点与摘要，请合并产出最终总结"
-            "（keyPoints 精选 3-5 条，time 从候选要点的时间戳中选择；chapters 覆盖全片）：\n\n"
+            f"（keyPoints 精选 {preset['keyPoints']}，time 从候选要点的时间戳中选择；"
+            "chapters 覆盖全片）：\n\n"
             + "\n\n".join(block_notes)
         )
-        payload = _chat_summary_with_retry(base_url, api_key, model, merge_prompt)
+        payload = _chat_summary_with_retry(base_url, api_key, model, merge_prompt, detail)
 
-    payload = _snap_summary_times(payload, sorted_times, duration)
+    payload = _snap_summary_times(payload, sorted_times, duration, preset["maxKeyPoints"])
     logger.info(
-        "AI 总结完成：%d 字文字稿 / %d 块 / %d 条要点 / %d 章节",
-        total_chars, len(chunks), len(payload.get("keyPoints") or []), len(payload.get("chapters") or []),
+        "AI 总结完成：%d 字文字稿 / %d 块 / %d 条要点 / %d 章节 / 详细度 %s",
+        total_chars,
+        len(chunks),
+        len(payload.get("keyPoints") or []),
+        len(payload.get("chapters") or []),
+        detail or DEFAULT_DETAIL,
     )
     return payload

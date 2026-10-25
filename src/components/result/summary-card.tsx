@@ -6,8 +6,69 @@ import { summarizeUnconfiguredMessage } from '@/lib/capability-hint'
 import { useRateLimitCooldown } from '@/hooks/use-rate-limit-cooldown'
 import { useHostname } from '@/hooks/use-hostname'
 import { formatTimestamp } from '@/lib/format'
-import type { Summary } from '@/lib/types'
+import {
+  SUMMARY_DETAILS,
+  SUMMARY_DETAIL_HINT,
+  SUMMARY_DETAIL_LABEL,
+  type Summary,
+  type SummaryDetail,
+} from '@/lib/types'
+import { cn } from '@/lib/utils'
 import type { UiError } from '@/stores/task-store'
+
+/**
+ * 总结详细度切换（P1-11）。
+ *
+ * 为什么是「切换即重新生成」而不是「本地裁剪」：精简档要的是更短的句子与更少的要点，
+ * 只有重新问一次 LLM 才做得到；本地裁 keyPoints 只会得到「详细版被砍掉一半」，
+ * 那不算精简。代价是一次额外调用，因此按档位分别缓存（见 task-store 的 summaryCacheKey）。
+ *
+ * 切换中的按钮禁用 + spinner，避免连点产生三次并发请求。
+ */
+export function SummaryDetailSwitch({
+  value,
+  onChange,
+  busy = false,
+  disabled = false,
+}: {
+  value: SummaryDetail
+  onChange: (detail: SummaryDetail) => void
+  busy?: boolean
+  disabled?: boolean
+}) {
+  return (
+    <div className="flex items-center gap-2" data-testid="summary-detail-switch">
+      <span className="text-xs text-muted-foreground">详细度</span>
+      <div role="group" aria-label="总结详细度" className="flex rounded-full border bg-muted/40 p-0.5">
+        {SUMMARY_DETAILS.map((detail) => {
+          const active = detail === value
+          return (
+            <button
+              key={detail}
+              type="button"
+              data-testid={`summary-detail-${detail}`}
+              aria-pressed={active}
+              title={SUMMARY_DETAIL_HINT[detail]}
+              disabled={disabled || busy}
+              onClick={() => {
+                if (!active) onChange(detail)
+              }}
+              className={cn(
+                'rounded-full px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+                active
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+              )}
+            >
+              {SUMMARY_DETAIL_LABEL[detail]}
+            </button>
+          )
+        })}
+      </div>
+      {busy ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-hidden /> : null}
+    </div>
+  )
+}
 
 /** AI 总结卡：一句话概要 + 要点 + 章节笔记 */
 export function SummaryCard({ summary }: { summary: Summary }) {
@@ -139,14 +200,20 @@ export function SummaryErrorState({
   )
 }
 
-/** 未总结引导态（关闭「解析后自动 AI 总结」后）：引导文案 + 手动生成按钮。
+/** 未总结引导态（关闭「解析后自动 AI 总结」后）：引导文案 + 档位选择 + 手动生成按钮。
  *  summarizeConfigured=false（M2-P2-A）时按钮禁用并给出配置引导。 */
 export function SummaryManualPrompt({
   onGenerate,
   disabled = false,
+  detail,
+  onDetailChange,
+  busy = false,
 }: {
   onGenerate: () => void
   disabled?: boolean
+  detail?: SummaryDetail
+  onDetailChange?: (detail: SummaryDetail) => void
+  busy?: boolean
 }) {
   const hostname = useHostname()
   return (
@@ -154,14 +221,21 @@ export function SummaryManualPrompt({
       <p className="text-sm leading-relaxed text-muted-foreground">
         本次未生成 AI 总结。需要时可随时手动生成。
       </p>
+      {detail && onDetailChange ? (
+        <SummaryDetailSwitch value={detail} onChange={onDetailChange} busy={busy} disabled={disabled} />
+      ) : null}
       <Button
         data-testid="manual-summarize-button"
         size="sm"
         onClick={onGenerate}
-        disabled={disabled}
+        disabled={disabled || busy}
         className="gap-1.5"
       >
-        <Sparkles className="size-3.5" aria-hidden />
+        {busy ? (
+          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+        ) : (
+          <Sparkles className="size-3.5" aria-hidden />
+        )}
         生成 AI 总结
       </Button>
       {disabled ? (

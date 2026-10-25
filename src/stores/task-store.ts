@@ -6,6 +6,7 @@ import type { RecentTaskStatus } from '@/lib/recent-tasks'
 import type {
   Capabilities,
   Summary,
+  SummaryDetail,
   TaskStage,
   TranscribeEngine,
   TranscriptItem,
@@ -46,6 +47,8 @@ interface TaskState {
   engine: TranscribeEngine
   /** 解析后自动 AI 总结（首页开关；用户偏好，localStorage 持久化，跨任务保留，不随 reset 清空） */
   autoSummary: boolean
+  /** AI 总结详细度（用户偏好，localStorage 持久化，跨任务保留，不随 reset 清空） */
+  summaryDetail: SummaryDetail
   /** 文字稿来源（字幕来源任务在结果页显示来源 Badge） */
   transcriptSource: TranscriptSource | null
   /** 能力探测（M2-P2-A）：null=检测中；会话内加载一次，跨任务保留；不随 reset 清空 */
@@ -59,14 +62,17 @@ interface TaskState {
   recover: (taskId: string) => Promise<void>
   /** 失败后重试：用已解析的视频重新创建任务 */
   retry: () => Promise<string | null>
-  /** 总结失败后重试（文字稿已在手，直接重调 summarize） */
-  retrySummary: () => Promise<void>
+  /** 总结失败后重试（文字稿已在手，直接重调 summarize）。
+   *  可选传入 detail：结果页切换详细度时复用同一条路径（不走 autoSummary 判断，一定是用户显式要总结）。 */
+  retrySummary: (detail?: SummaryDetail) => Promise<void>
   /** 加载能力探测（幂等；失败时乐观放行） */
   loadCapabilities: () => Promise<void>
   /** 首页切换转写模式 */
   setEngine: (engine: TranscribeEngine) => void
   /** 首页切换「解析后自动 AI 总结」（写入 localStorage） */
   setAutoSummary: (enabled: boolean) => void
+  /** 结果页 / 首页切换总结详细度（写入 localStorage，并在结果页触发重新总结） */
+  setSummaryDetail: (detail: SummaryDetail) => void
   /** 从 localStorage 水合用户偏好：挂载后调用（SSR 阶段不读 localStorage，避免水合不一致） */
   hydratePreferences: () => void
   reset: () => void
@@ -114,6 +120,28 @@ function persistEngine(engine: TranscribeEngine): void {
   }
 }
 
+/** 总结详细度偏好键：'brief' | 'standard' | 'detailed' */
+const DETAIL_KEY = 'summaryDetail'
+
+/** 读详细度偏好：缺省 / 脏值一律回落 'standard'（与后端 DEFAULT_DETAIL 一致） */
+function readSummaryDetail(): SummaryDetail {
+  if (typeof window === 'undefined') return 'standard'
+  try {
+    const raw = window.localStorage.getItem(DETAIL_KEY)
+    return raw === 'brief' || raw === 'detailed' ? raw : 'standard'
+  } catch {
+    return 'standard'
+  }
+}
+
+function persistSummaryDetail(detail: SummaryDetail): void {
+  try {
+    window.localStorage.setItem(DETAIL_KEY, detail)
+  } catch {
+    // 同 persistAutoSummary：存储不可用只影响跨会话记忆
+  }
+}
+
 /**
  * 取当前 hostname 用于选文案（本地给配置指引，公网只说「暂不可用」）。
  * store 里的提示在事件回调里生成，此时一定在浏览器环境；SSR 兜底返回空串，
@@ -125,11 +153,14 @@ function currentHostname(): string {
 }
 
 /**
- * 总结结果缓存（sessionStorage，键 `summary:<taskId>`）。
+ * 总结结果缓存（sessionStorage，键 `summary:<taskId>:<detail>`）。
  *
  * 为什么需要：`POST /api/summarize` 是无状态接口，后端不落库。刷新结果页会重新
  * 走一遍 `recover()`，把整份文字稿再传一次、再调一次 LLM —— 每次刷新都在重复计费。
  * 缓存命中后直接复用上次的结构化结果，不再发请求。
+ *
+ * 为什么键里带 detail：同一份文字稿在「精简 / 标准 / 详细」下是三次不同的调用，
+ * 只按 taskId 缓存会让用户切到「详细」却拿回「精简」的旧结果 —— 缓存反而成了 bug。
  *
  * 为什么是 sessionStorage 而不是 localStorage：总结只在当前标签页的生命周期内有意义，
  * 关标签页即失效，避免 7 天任务 TTL 内留下过期的陈旧总结。
@@ -138,15 +169,15 @@ const SUMMARY_CACHE_PREFIX = 'summary:'
 /** 缓存条目上限：超出按插入顺序淘汰最旧的（总结单条约 1-2KB，20 条远低于配额） */
 const SUMMARY_CACHE_LIMIT = 20
 
-function summaryCacheKey(taskId: string): string {
-  return `${SUMMARY_CACHE_PREFIX}${taskId}`
+function summaryCacheKey(taskId: string, detail: SummaryDetail): string {
+  return `${SUMMARY_CACHE_PREFIX}${taskId}:${detail}`
 }
 
 /** 读缓存：形状不对（旧版本 / 手工篡改）一律当作未命中，宁可重算也不渲染脏数据 */
-function readCachedSummary(taskId: string): Summary | null {
+function readCachedSummary(taskId: string, detail: SummaryDetail): Summary | null {
   if (typeof window === 'undefined') return null
   try {
-    const raw = window.sessionStorage.getItem(summaryCacheKey(taskId))
+    const raw = window.sessionStorage.getItem(summaryCacheKey(taskId, detail))
     if (!raw) return null
     const parsed = JSON.parse(raw) as Summary
     if (!parsed || typeof parsed.summary !== 'string' || !Array.isArray(parsed.keyPoints)) return null
@@ -156,10 +187,10 @@ function readCachedSummary(taskId: string): Summary | null {
   }
 }
 
-function persistSummary(taskId: string, summary: Summary): void {
+function persistSummary(taskId: string, detail: SummaryDetail, summary: Summary): void {
   if (typeof window === 'undefined') return
   try {
-    window.sessionStorage.setItem(summaryCacheKey(taskId), JSON.stringify(summary))
+    window.sessionStorage.setItem(summaryCacheKey(taskId, detail), JSON.stringify(summary))
     pruneSummaryCache()
   } catch {
     // 配额受限 / 隐私模式：缓存失效不影响主流程，只是下次仍会重新请求
@@ -268,6 +299,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   ...IDLE,
   engine: 'local',
   autoSummary: true,
+  summaryDetail: 'standard',
   capabilities: null,
 
   loadCapabilities: async () => {
@@ -351,14 +383,16 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           return
         }
         try {
+          const detail = get().summaryDetail
           const summary = await api.summarize({
             taskId,
             transcript: task.transcript ?? [],
             title: (task.video ?? get().video)?.title ?? '',
             duration: (task.video ?? get().video)?.duration ?? 0,
+            detail,
           })
           if (get().taskId !== taskId) return
-          persistSummary(taskId, summary)
+          persistSummary(taskId, detail, summary)
           set({ phase: 'done', summary })
         } catch (error) {
           // P0 降级：总结失败不改变任务 phase，文字稿照常渲染，仅记录总结错误
@@ -426,7 +460,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         return
       }
       // 缓存命中：刷新 / 直链恢复不再重传整份文字稿、不再重复调 LLM（后端 summarize 无状态、不落库）
-      const cached = readCachedSummary(taskId)
+      const detail = get().summaryDetail
+      const cached = readCachedSummary(taskId, detail)
       if (cached) {
         set({ phase: 'done', summary: cached })
         return
@@ -437,8 +472,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           transcript: readyTranscript,
           title: (task.video ?? get().video)?.title ?? '',
           duration: (task.video ?? get().video)?.duration ?? 0,
+          detail,
         })
-        persistSummary(taskId, summary)
+        persistSummary(taskId, detail, summary)
         set({ phase: 'done', summary })
       } catch (error) {
         // P0 降级：同 pollTask —— 文字稿可渲染，仅总结区降级
@@ -464,13 +500,16 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
-  retrySummary: async () => {
+  retrySummary: async (detail) => {
     const { taskId, transcript, video } = get()
     if (!taskId || !transcript) return
+    // 显式传入的档位优先（结果页切换详细度走这条路径），否则用当前偏好
+    const target = detail ?? get().summaryDetail
+    if (detail) set({ summaryDetail: detail })
     set({ summaryError: null, summary: null })
     try {
-      // 重试前先看缓存：刷新过的任务不该每次重试都付一次 LLM 的钱
-      const cached = readCachedSummary(taskId)
+      // 切档位前先看缓存：来回切换时不该每次都付一次 LLM 的钱
+      const cached = readCachedSummary(taskId, target)
       if (cached) {
         set({ summary: cached })
         return
@@ -480,9 +519,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         transcript,
         title: video?.title ?? '',
         duration: video?.duration ?? 0,
+        detail: target,
       })
-      // 手动重试成功同样写缓存：此后刷新不再重复计费
-      persistSummary(taskId, summary)
+      // 手动重试 / 换档位成功同样写缓存：此后刷新不再重复计费
+      persistSummary(taskId, target, summary)
       set({ summary })
     } catch (error) {
       set({ summaryError: toAppError(error) })
@@ -499,9 +539,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     persistAutoSummary(enabled)
   },
 
-  hydratePreferences: () => set({ autoSummary: readAutoSummary(), engine: readEngine() }),
+  setSummaryDetail: (detail) => {
+    set({ summaryDetail: detail })
+    persistSummaryDetail(detail)
+  },
 
-  // 不清 engine / autoSummary：均为用户偏好，跨任务保留
+  hydratePreferences: () =>
+    set({ autoSummary: readAutoSummary(), engine: readEngine(), summaryDetail: readSummaryDetail() }),
+
+  // 不清 engine / autoSummary / summaryDetail：均为用户偏好，跨任务保留
   reset: () => set({ ...IDLE }),
 }))
 

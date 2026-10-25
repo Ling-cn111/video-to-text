@@ -11,11 +11,12 @@ import { TranscriptList } from '@/components/result/transcript-list'
 import { ArticleView } from '@/components/result/full-text-view'
 import { CopyFullTextButton } from '@/components/result/copy-fulltext-button'
 import { ExportMenu } from '@/components/result/export-menu'
-import { SummaryCard, SummaryErrorState, SummaryManualPrompt, SummarySkeleton } from '@/components/result/summary-card'
+import { SummaryCard, SummaryDetailSwitch, SummaryErrorState, SummaryManualPrompt, SummarySkeleton } from '@/components/result/summary-card'
 import { ErrorAlert } from '@/components/shared/error-alert'
 import { PlatformBadge } from '@/components/shared/platform-badge'
 import { formatDuration } from '@/lib/format'
-import { formatTranscriptToArticle } from '@/lib/article'
+import { formatTranscriptToSections } from '@/lib/article'
+import { processingHref } from '@/lib/routes'
 import { useTaskStore } from '@/stores/task-store'
 import { useResultPolling } from '@/hooks/use-result-polling'
 import { cn } from '@/lib/utils'
@@ -43,6 +44,8 @@ export function ResultView({ taskId }: ResultViewProps) {
   const retrySummary = useTaskStore((state) => state.retrySummary)
   const loadCapabilities = useTaskStore((state) => state.loadCapabilities)
   const capabilities = useTaskStore((state) => state.capabilities)
+  const summaryDetail = useTaskStore((state) => state.summaryDetail)
+  const setSummaryDetail = useTaskStore((state) => state.setSummaryDetail)
   const reset = useTaskStore((state) => state.reset)
   const [recovering, setRecovering] = useState(storeTaskId !== taskId)
   const [retrying, setRetrying] = useState(false)
@@ -59,10 +62,12 @@ export function ResultView({ taskId }: ResultViewProps) {
   }
 
   // P0：summary 可为 null（总结失败/进行中）——分段只用可选的 chapters，导出与页面同源不受影响
-  const paragraphs = useMemo(
-    () => (transcript ? formatTranscriptToArticle(transcript, summary?.chapters) : []),
+  const sections = useMemo(
+    () => (transcript ? formatTranscriptToSections(transcript, summary?.chapters) : []),
     [transcript, summary],
   )
+  // 扁平段落：复制 / 导出 / 统计的唯一来源（锁定项 §2 三者同源）
+  const paragraphs = useMemo(() => sections.flatMap((section) => section.paragraphs), [sections])
 
   useEffect(() => {
     void loadCapabilities() // 幂等；直访结果页时用于判断总结不可重试场景
@@ -79,12 +84,21 @@ export function ResultView({ taskId }: ResultViewProps) {
     setRetrying(true)
     const newTaskId = await retry()
     setRetrying(false)
-    if (newTaskId) router.replace(`/processing/${newTaskId}`)
+    if (newTaskId) router.replace(processingHref(newTaskId))
   }
 
   const handleSummaryRetry = async () => {
     setSummaryRetrying(true)
     await retrySummary()
+    setSummaryRetrying(false)
+  }
+
+  // P1-11：切换详细度 = 重新生成（精简档靠本地裁剪做不出来，见 summary-card 注释）。
+  // 用同一条 retrySummary 路径并显式传档位，避免走 autoSummary 判断。
+  const handleDetailChange = async (detail: typeof summaryDetail) => {
+    setSummaryDetail(detail)
+    setSummaryRetrying(true)
+    await retrySummary(detail)
     setSummaryRetrying(false)
   }
 
@@ -153,7 +167,7 @@ export function ResultView({ taskId }: ResultViewProps) {
         </div>
         <div className="flex shrink-0 gap-2 self-start sm:self-auto">
           <CopyFullTextButton paragraphs={paragraphs} />
-          {video ? <ExportMenu video={video} paragraphs={paragraphs} /> : null}
+          {video ? <ExportMenu video={video} paragraphs={paragraphs} transcript={transcript} /> : null}
           <Button variant="outline" size="sm" onClick={handleBack} className="gap-1.5">
             <Home className="size-3.5" aria-hidden />
             返回首页
@@ -189,7 +203,7 @@ export function ResultView({ taskId }: ResultViewProps) {
           </CardHeader>
           <CardContent>
             {tab === 'article' ? (
-              <ArticleView paragraphs={paragraphs} />
+              <ArticleView sections={sections} paragraphs={paragraphs} />
             ) : (
               <TranscriptList items={transcript} />
             )}
@@ -198,9 +212,22 @@ export function ResultView({ taskId }: ResultViewProps) {
 
         <Card>
           <CardHeader className="pb-3">
-            <div className="flex items-center gap-2 text-base font-semibold">
-              <FileText className="size-4 text-primary" aria-hidden />
-              AI 总结
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-2 text-base font-semibold">
+                <FileText className="size-4 text-primary" aria-hidden />
+                AI 总结
+              </div>
+              {/* 总结已就绪或可生成时才显示档位切换：骨架期切换会打断正在进行的请求 */}
+              {summary || summaryError || (!summaryRetrying && phase !== 'summarizing') ? (
+                <div className="ml-auto">
+                  <SummaryDetailSwitch
+                    value={summaryDetail}
+                    onChange={(detail) => void handleDetailChange(detail)}
+                    busy={summaryRetrying}
+                    disabled={capabilities?.summarizeConfigured === false}
+                  />
+                </div>
+              ) : null}
             </div>
           </CardHeader>
           <CardContent>
@@ -220,6 +247,9 @@ export function ResultView({ taskId }: ResultViewProps) {
               <SummaryManualPrompt
                 onGenerate={handleSummaryRetry}
                 disabled={capabilities?.summarizeConfigured === false}
+                detail={summaryDetail}
+                onDetailChange={(detail) => setSummaryDetail(detail)}
+                busy={summaryRetrying}
               />
             )}
           </CardContent>

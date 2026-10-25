@@ -66,11 +66,14 @@ class SummarizeRequest(BaseModel):
     """POST /api/summarize 请求体（无状态，不关联任务）。
 
     transcript 为已完成的文字稿；title/duration 作 prompt 上下文。
+    detail 控制总结的详细程度（brief / standard / detailed），缺省 standard
+    与旧行为一致，老客户端不传该字段也能正常调用。
     """
 
     transcript: list[TranscriptItem]
     title: str = ""
     duration: int = 0
+    detail: Literal["brief", "standard", "detailed"] = "standard"
 
 
 class KeyPoint(BaseModel):

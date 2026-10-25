@@ -7,6 +7,7 @@ import type {
   Platform,
   StartTaskResponse,
   Summary,
+  SummaryDetail,
   TaskStage,
   TaskStatus,
   VideoInfo,
@@ -187,7 +188,14 @@ export async function getTask(taskId: string): Promise<GetTaskResponse> {
   return base
 }
 
-export async function summarizeTask(taskId: string): Promise<Summary> {
+/** Mock 的档位裁剪：与后端 DETAIL_PRESETS 的 maxKeyPoints 保持一致，便于 E2E 断言「档位真的生效」 */
+const MOCK_DETAIL_MAX_POINTS: Record<SummaryDetail, number> = {
+  brief: 3,
+  standard: 5,
+  detailed: 7,
+}
+
+export async function summarizeTask(taskId: string, detail: SummaryDetail = 'standard'): Promise<Summary> {
   const payload = decodeTaskId(taskId)
   if (!payload) {
     // Mock 模式下所有任务均为本模块编码的 taskId；无法解码视为非法请求
@@ -197,7 +205,11 @@ export async function summarizeTask(taskId: string): Promise<Summary> {
     // E2E 锁定 8：模拟总结失败（验证 P0 降级——文字稿照常渲染 + 总结区错误与重试）
     throw new MockApiError('SUMMARIZE_FAILED', 'AI 总结生成失败，请稍后重试')
   }
-  return getMockData(payload.p).summary
+  const summary = getMockData(payload.p).summary
+  const limit = MOCK_DETAIL_MAX_POINTS[detail] ?? MOCK_DETAIL_MAX_POINTS.standard
+  // brief 档连章节也收敛：只留前两段，模拟「精简」在真实 LLM 下的表现
+  const chapters = detail === 'brief' ? summary.chapters.slice(0, 2) : summary.chapters
+  return { ...summary, keyPoints: summary.keyPoints.slice(0, limit), chapters }
 }
 
 export { getPlatformMeta }

@@ -72,12 +72,35 @@ export interface Summary {
   chapters: ChapterNote[]
 }
 
-/** AI 总结请求（无状态）：Mock 只用 taskId，真实后端只用 transcript/title/duration */
+/**
+ * AI 总结详细度（P1-11）：三档，对应后端 DETAIL_PRESETS。
+ * 为什么是三档而不是字数滑块：用户对总结只有三种诉求——一句话结论 / 够用 / 能替代看视频，
+ * 连续参数既难解释也难验证。
+ */
+export type SummaryDetail = 'brief' | 'standard' | 'detailed'
+
+export const SUMMARY_DETAILS: SummaryDetail[] = ['brief', 'standard', 'detailed']
+
+export const SUMMARY_DETAIL_LABEL: Record<SummaryDetail, string> = {
+  brief: '精简',
+  standard: '标准',
+  detailed: '详细',
+}
+
+export const SUMMARY_DETAIL_HINT: Record<SummaryDetail, string> = {
+  brief: '2-3 条要点，只给结论',
+  standard: '3-5 条要点，适合快速了解',
+  detailed: '5-7 条要点，保留细节与例证',
+}
+
+/** AI 总结请求（无状态）：Mock 只用 taskId，真实后端只用 transcript/title/duration/detail */
 export interface SummarizeRequest {
   taskId: string
   transcript: TranscriptItem[]
   title: string
   duration: number
+  /** 详细度，缺省 standard（老调用方不传也兼容） */
+  detail?: SummaryDetail
 }
 
 /** 健康检查响应（GET /api/health）：仅可达性探测，不含任何配置信息 */
@@ -156,10 +179,6 @@ export interface GetTaskResponse {
   error?: AppError
   /** 文字稿来源（字幕来源任务显示来源 Badge）；缺省视为 asr */
   transcriptSource?: TranscriptSource
-}
-
-export interface SummarizeRequest {
-  taskId: string
 }
 
 // ---- 错误契约 ----

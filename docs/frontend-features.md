@@ -14,6 +14,7 @@
 | --- | --- |
 | **双视图 Tab 切换** | 文字稿区提供两个 Tab：**`全文阅读`（默认激活）** 与 **`时间戳定位`**。不得移除 Tab 结构、不得改默认 Tab |
 | 全文阅读视图 | 无时间戳、无 `[00:00]` 标记的文章式排版：按语义分段（章节对齐 + 句长兜底 + 超长段落切分）、段落空行、行高 1.9、两端对齐、内容限宽；带字数与预计阅读时长徽章 |
+| 全文阅读辅助工具（P1-9） | 正文上方工具条：三档字号 `data-testid="article-font-size"`（`localStorage` 键 `readingFontSize`，刷新保留）、段落搜索 `data-testid="article-search"`、章节目录开关 `data-testid="toggle-toc"`。目录 `data-testid="article-toc"` 仅在总结含 chapters 时渲染。搜索高亮用 `<mark>` 只改样式、**不得改变正文 `textContent`**（否则复制/导出与页面不一致）。**`data-testid="fulltext-article"` 只包正文，目录与工具条必须在它外面** |
 | 时间戳定位视图 | 逐句列表，句首时间戳可点击复制（`[mm:ss] 文本`），带复制成功反馈；Badge「点击时间可复制」保留。列表高度自适应（`max-h-` 必须加在 ScrollArea 的 **viewport** 上，不能加在 Root 上——Root 是 `overflow-hidden` 裁剪层，加错会让长稿「看着能滚但滚不动」） |
 | 复制全文按钮 | 结果页头部动作区与「导出」并列新增 `data-testid="copy-fulltext-button"`：点击复制「全文阅读」正文纯文本（`formatTranscriptToArticle` 派生段落，`paragraphs.join('\n\n')`，无时间戳），与页面全文视图逐段一致；桌面 / 移动端均不遮挡标题与元信息行 |
 | 复制反馈与降级 | 优先 `navigator.clipboard.writeText`，失败降级临时 `textarea` + `document.execCommand('copy')`；成功 toast「已复制全文」+ 按钮 1.5 秒内图标切 Check、文案变「已复制」，失败 toast「复制失败，请手动选择正文复制」，**严禁静默失败**；无可复制内容时按钮禁用 |
@@ -27,7 +28,9 @@
 | --- | --- |
 | TXT 导出 | `《标题》` + `来源：xx ｜ 时长：x 分 x 秒`（中文时长，**严禁 12:34 形式的类时间戳写法**）+ 纯文本段落。**全文件零时间戳** |
 | Markdown 导出 | `# 标题` + `> 元信息` + **`## 正文`** + 段落（空行分隔）。**全文件零时间戳**，可直接贴入 Notion / Obsidian |
-| 导出入口 | 结果页头部「导出」下拉菜单（TXT / MD），菜单带「纯文本 · 不含时间戳」说明 |
+| 导出入口 | 结果页头部「导出」下拉菜单，分两组：**「导出全文」**（TXT / MD，带「纯文本 · 不含时间戳」说明）与**「导出字幕」**（SRT / VTT，带「带时间轴 · 可直接挂到播放器」说明）。两组不得合并为一组 |
+| 字幕导出（SRT / VTT） | 由 `lib/subtitle-export.ts` 的 `buildSrt` / `buildVtt` 生成：SRT 时间码 `HH:MM:SS,mmm`（逗号），VTT 时间码 `HH:MM:SS.mmm`（点号）且首行必须是 `WEBVTT`。每条字幕的结束时间取下一条的起点，最后一条用视频时长兜底；超长句按标点拆分为多条，拆分后拼回必须与原文逐字一致。文件名 `<标题>-字幕.<格式>` |
+| 两类导出语义相反，严禁混用 | TXT / MD 是**阅读产物**，全文件零时间戳（§2 铁律）；SRT / VTT 是**字幕产物**，时间轴就是其全部意义。**不得往 `buildPlainText` / `buildMarkdown` 里塞时间戳，也不得让字幕导出复用文章分段逻辑**。改动任一侧都必须确认另一侧未被污染 |
 | 分段来源 | 导出段落 = 页面全文视图段落（`formatTranscriptToArticle`），两者必须保持一致 |
 | 复制全文同源 | 复制全文按钮的剪贴板内容 = `formatTranscriptToArticle` 派生段落（`paragraphs.join('\n\n')`），与页面全文视图逐段一致、全文件零时间戳（E2E 锁定 11） |
 
@@ -64,7 +67,7 @@
 | 全文导出一致性 | 页面全文视图、TXT、MD 三者的段落必须同源（`formatTranscriptToArticle`），改分段逻辑必须三处一起验证 |
 | 错误码表四处同步 | 新增/删除错误码必须同步：`src/lib/types.ts` 的 `ApiErrorCode`、`src/lib/api-server.ts` 的 `STATUS_BY_CODE`（穷举，漏改 TS 报错）、`src/components/shared/error-alert.tsx` 的中文标题表、`docs/api-contract.md`。**`RATE_LIMITED`（429）必须显示「请求太频繁」并进入 60 秒冷却**，冷却期内禁用重试按钮——重试本身也是 POST，冷却期点必然再 429 |
 | 未配置提示分环境 | 云端 ASR / LLM 未配置的提示必须按 hostname 分流（`src/lib/capability-hint.ts`）：本地给配置指引（可提环境变量名），公网只说「暂不可用」。**线上访客没有 `.env` 也没有 setup.bat，暴露这些只会造成困惑**（同 §9 的 run.bat 教训） |
-| 偏好持久化 | `autoSummary` / `engine` 均存 `localStorage`，键名不得更改；`engine` 读到非法值必须回落 `local`（§6 默认本地）。新增加载期读取的偏好一律走 `hydratePreferences` 或挂载后 `useEffect`，**不要直接读 `localStorage` 初始化 state**（SSR 会 hydration mismatch） |
+| 偏好持久化 | `autoSummary` / `engine` / `summaryDetail` / `readingFontSize` 均存 `localStorage`，键名不得更改；`engine` 读到非法值必须回落 `local`（§6 默认本地）。新增加载期读取的偏好一律走 `hydratePreferences` 或挂载后 `useEffect`，**不要直接读 `localStorage` 初始化 state**（SSR 会 hydration mismatch） |
 
 ## 6. 转写模式选择（首页，任务 D 新增）
 
@@ -115,18 +118,10 @@
 | 两条路径一致 | 轮询完成（`pollTask`）与刷新 / 直链恢复（`recover`）都必须尊重开关 |
 | 未配置 LLM Key | `summarizeConfigured=false` 时手动按钮禁用并显示「未配置 LLM Key，无法生成总结」；自动总结路径保持既有错误卡引导（M2-P2-A） |
 | 纯前端控制 | 开关不进入任何接口请求体，`/api/transcribe`、`/api/summarize` 契约不变 |
+| 总结详细度（P1-11） | 结果页总结卡头部三档切换 `data-testid="summary-detail-switch"`（精简 / 标准 / 详细），每档 `data-testid="summary-detail-<brief\|standard\|detailed>"` + `aria-pressed`；选择存 `localStorage` 键 `summaryDetail`，刷新保留；缺省 `standard`。**切换必须重新请求 LLM，禁止本地裁剪 keyPoints**——精简档要的是更短的句子，本地砍条数只会得到「详细版被砍一半」 |
+| 总结缓存键带档位 | 总结缓存的 key 必须是 `summary:<taskId>:<detail>`。**只按 taskId 缓存会让用户切到「详细」却拿回「精简」的旧结果，缓存反而成 bug** |
 
-## 11. 平台宣称与能力一致（P0-4 新增）
-
-| 功能 | 锁定要求 |
-| --- | --- |
-| 宣称范围随能力 | 对外宣称支持哪些平台，必须由 `src/lib/platforms/registry.ts` 的 `SUPPORTED_PLATFORMS` 单一来源生成，**禁止在文案里写死平台名**。首页 Hero、特性卡、输入框 placeholder、`metadata.description`、manifest 的 description 全部走 `supportedPlatformsText()` / `supportedPlatformsShortText()` |
-| 与后端能力对齐 | `SUPPORTED_PLATFORMS` 必须等于「本构建真能转写的平台」。真实后端只接了 bilibili（`backend/app/platforms.py` 的 `PLATFORM_REGISTRY`），故真实模式只宣称 B站；Mock 模式含 douyin。**新增平台时先接后端，再改 `SUPPORTED_PLATFORMS`**，顺序反了就是虚假宣称 |
-| 三种失败原因分开 | `resolveVideoUrl` 的失败必须区分：`invalid`（不是视频链接）/ `unsupported`（不认识这个站，如 v.qq.com）/ `unavailable`（认得域名但本构建没接，如真实模式下的抖音）。**`unavailable` 的文案不得说「暂不支持」**，那是「永远不支持」的语感；应说「暂未支持」，并给出当前可转写的范围 |
-| 示例链接同步 | 首页示例链接只列 `SUPPORTED_PLATFORMS` 内的平台；「不支持平台演示」「转写失败演示」两条固定演示项始终保留（属 Mock 教学用途） |
-| 禁止虚假功能承诺 | 特性卡与 Hero 不得承诺未实现的行为（历史教训：「点击时间戳即可跳转对应画面」曾与「只复制不跳转」的实际行为不符） |
-
-## 12. 最近转写记录（首页，P1-7 新增）
+## 11. 最近转写记录（首页，P1-7 新增）
 
 | 功能 | 锁定要求 |
 | --- | --- |
@@ -135,6 +130,16 @@
 | 状态分流 | `status='processing'` → 「查看进度」跳 `processingHref`；`status='done'` → 「查看结果」跳 `resultHref`。失败 / 中断的任务必须从列表移除，不留死链 |
 | 时间戳不得被刷新的场景污染 | 结果页每次挂载都会走 `recover`，**必须用「仅在不存在时补记」的语义**（`ensureRecentTask`），无条件 `record` 会把 `savedAt` 刷成「刚刚」，相对时间就失去意义 |
 | 空态 | 无记录时不渲染任何节点（不要留空卡片占位） |
+
+## 12. 平台宣称与能力一致（P0-4 新增）
+
+| 功能 | 锁定要求 |
+| --- | --- |
+| 宣称范围随能力 | 对外宣称支持哪些平台，必须由 `src/lib/platforms/registry.ts` 的 `SUPPORTED_PLATFORMS` 单一来源生成，**禁止在文案里写死平台名**。首页 Hero、特性卡、输入框 placeholder、`metadata.description`、manifest 的 description 全部走 `supportedPlatformsText()` / `supportedPlatformsShortText()` |
+| 与后端能力对齐 | `SUPPORTED_PLATFORMS` 必须等于「本构建真能转写的平台」。真实后端只接了 bilibili（`backend/app/platforms.py` 的 `PLATFORM_REGISTRY`），故真实模式只宣称 B站；Mock 模式含 douyin。**新增平台时先接后端，再改 `SUPPORTED_PLATFORMS`**，顺序反了就是虚假宣称 |
+| 三种失败原因分开 | `resolveVideoUrl` 的失败必须区分：`invalid`（不是视频链接）/ `unsupported`（不认识这个站，如 v.qq.com）/ `unavailable`（认得域名但本构建没接，如真实模式下的抖音）。**`unavailable` 的文案不得说「暂不支持」**，那是「永远不支持」的语感；应说「暂未支持」，并给出当前可转写的范围 |
+| 示例链接同步 | 首页示例链接只列 `SUPPORTED_PLATFORMS` 内的平台；「不支持平台演示」「转写失败演示」两条固定演示项始终保留（属 Mock 教学用途） |
+| 禁止虚假功能承诺 | 特性卡与 Hero 不得承诺未实现的行为（历史教训：「点击时间戳即可跳转对应画面」曾与「只复制不跳转」的实际行为不符） |
 
 ## 13. 回归检查清单（改前端后必跑）
 
@@ -154,6 +159,11 @@
 - [ ] 关闭「解析后自动 AI 总结」后解析任务：结果页无 keyPoints，显示引导 +「生成 AI 总结」按钮，点击后总结渲染（E2E 锁定 10）
 - [ ] 结果页头部「复制全文」按钮可见：点击后剪贴板内容与全文阅读逐段一致且零时间戳，toast「已复制」反馈；剪贴板不可用时给出错误提示（E2E 锁定 11）
 - [ ] 平台宣称：首页 Hero / 特性卡 / placeholder / metadata 里的平台名与 `SUPPORTED_PLATFORMS` 一致；真实构建不出现「抖音」（E2E 平台宣称 1-4，CI 双模式各跑一次）
+- [ ] 导出字幕 SRT / VTT：SRT 时间码带逗号、VTT 首行 `WEBVTT` 且时间码带点号、结束时间晚于开始时间、文件名含「字幕」（E2E 回归 7 / 7b）
+- [ ] 新增字幕导出后 TXT / MD 仍零时间戳、MD 仍含 `## 正文`（E2E 回归 7c，防两类导出互相污染）
+- [ ] 阅读体验：章节目录可点击定位；搜索有命中/未命中文案且不改变正文 `innerText`；字号三档可切且刷新后保留（E2E 回归 8）
+- [ ] 时间戳列表高度自适应：短稿不留大片空白、长稿仍可滚动（`max-h-` 加在 ScrollArea 视口上，E2E 回归 8b）
+- [ ] 总结详细度：三档切换真的换一份结果（精简档要点条数更少），选择刷新后保留（E2E 回归 9 / 9b）
 - [ ] 最近转写：首页列出本机最近任务，相对时间正确，点击可回到进度页或结果页；失败/中断的任务不出现在列表里（E2E 回归 4）
 - [ ] 进度页：「不等了」按钮可回首页且提示任务会继续跑；页面不可见时暂停轮询、10 秒后降频（E2E 回归 5）
 - [ ] `pnpm lint && pnpm build` 通过

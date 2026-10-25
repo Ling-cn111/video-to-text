@@ -28,7 +28,17 @@ export function TranscriptList({ items }: TranscriptListProps) {
   }
 
   return (
-    <ScrollArea className="h-[420px] pr-3 sm:h-[560px]" data-testid="transcript-list">
+    // 高度自适应：短文字稿不该在 420px 的固定框里留一大片空白，
+    // 长文字稿仍需要一个上限，否则整页被无限拉长（右侧 AI 总结会被推走）。
+    //
+    // 关键细节：max-h 必须加在**视口**（真正滚动的元素）上，而不是 Root 上。
+    // Root 是 overflow-hidden 的裁剪层，如果只给 Root 加 max-h，视口会撑到内容全高、
+    // 被 Root 裁掉——长稿变成「看着能滚但滚不动」，底部内容直接消失。
+    <ScrollArea
+      className="pr-3"
+      viewportClassName="max-h-[420px] sm:max-h-[560px]"
+      data-testid="transcript-list"
+    >
       <ul className="flex flex-col">
         {items.map((item, index) => {
           const copied = copiedTime === item.time

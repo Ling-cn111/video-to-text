@@ -25,6 +25,7 @@ pnpm start       # 以生产模式启动，默认 3000 端口
 | `e2e/p0-regressions.spec.ts` | 回归 1-3：429 冷却、刷新不重复 summarize、engine 偏好持久化 |
 | `e2e/platform-claims.spec.ts` | 平台宣称 1-4：首页文案 / 示例链接 / 文案函数 / `resolveVideoUrl` 与 `SUPPORTED_PLATFORMS` 一致 |
 | `e2e/pr3-progress-and-history.spec.ts` | 回归 4-6：最近转写记录、进度页离开出口、剩余时间与轮询节奏纯函数 |
+| `e2e/pr4-reading-and-export.spec.ts` | 回归 7-9：SRT/VTT 导出、目录搜索字号、总结详细度 |
 
 ### 2.1 关键陷阱：`NEXT_PUBLIC_USE_MOCK` 是构建期常量
 
@@ -114,6 +115,6 @@ PWA 验收需先 `pnpm build && pnpm start`；桌面端相关脚本见 [desktop-
 | 改动范围 | 必跑 |
 | --- | --- |
 | 前端 UI / 逻辑 | `pnpm lint` + `pnpm build` + Mock 模式全量 E2E |
-| 前端路由 / Mock 数据 / 平台宣称 | 同上，另加真实模式 `-g "锁定 7\|平台宣称"`（记得同时传 `NEXT_PUBLIC_USE_MOCK=false`） |
+| 前端路由 / Mock 数据 / 平台宣称 / 导出 | 同上，另加真实模式 `-g "锁定 7\|平台宣称"`（记得同时传 `NEXT_PUBLIC_USE_MOCK=false`） |
 | 后端 | 上面的 pytest 命令（应与 CI 同为全绿，0 failed） |
 | 文档 / 构建脚本 | 若动了 `next.config.mjs`、`scripts/`，跑一次 `pnpm build` |
