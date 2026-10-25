@@ -1,12 +1,14 @@
 import type { MetadataRoute } from 'next'
 
+import { supportedPlatformsShortText } from '@/lib/platforms/registry'
+
 /** PWA manifest：由 Next 构建时生成到 /manifest.webmanifest */
 export default function manifest(): MetadataRoute.Manifest {
   return {
     name: '视频转文字 — 链接一键生成文字稿与 AI 总结',
     short_name: '视频转文字',
-    description:
-      '粘贴 B站 / 抖音视频链接，自动生成带时间戳的文字稿与 AI 总结，支持导出 TXT / Markdown。',
+    // 支持平台随构建能力变化（真实后端只接了 B站），与 layout.tsx 的 description 同源
+    description: `粘贴${supportedPlatformsShortText()}视频链接，自动生成带时间戳的文字稿与 AI 总结，支持导出 TXT / Markdown。`,
     id: '/',
     start_url: '/',
     scope: '/',

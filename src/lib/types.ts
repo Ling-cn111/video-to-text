@@ -6,7 +6,11 @@
  * 补充了 stage / progress / video / error 字段，属向后兼容的超集。
  */
 
-/** 平台标识。当前 Demo 支持 B站 / 抖音，后续按此联合类型扩展新平台。 */
+/**
+ * 平台标识。这是前端「认得」的域名集合（识别链接、取 videoId 用），
+ * **不等于对外宣称的支持范围** —— 后者见 `src/lib/platforms/registry.ts` 的
+ * `SUPPORTED_PLATFORMS`（真实后端只接了 B站，抖音目前仅 Mock 演示可用）。
+ */
 export type Platform = 'bilibili' | 'douyin'
 
 /** 任务来源：链接解析或本地文件（本地文件在 M3 落地，见 docs/ROADMAP.md） */

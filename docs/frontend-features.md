@@ -14,7 +14,7 @@
 | --- | --- |
 | **双视图 Tab 切换** | 文字稿区提供两个 Tab：**`全文阅读`（默认激活）** 与 **`时间戳定位`**。不得移除 Tab 结构、不得改默认 Tab |
 | 全文阅读视图 | 无时间戳、无 `[00:00]` 标记的文章式排版：按语义分段（章节对齐 + 句长兜底 + 超长段落切分）、段落空行、行高 1.9、两端对齐、内容限宽；带字数与预计阅读时长徽章 |
-| 时间戳定位视图 | 逐句列表，句首时间戳可点击复制（`[mm:ss] 文本`），带复制成功反馈；Badge「点击时间可复制」保留 |
+| 时间戳定位视图 | 逐句列表，句首时间戳可点击复制（`[mm:ss] 文本`），带复制成功反馈；Badge「点击时间可复制」保留。列表高度自适应（`max-h-` 必须加在 ScrollArea 的 **viewport** 上，不能加在 Root 上——Root 是 `overflow-hidden` 裁剪层，加错会让长稿「看着能滚但滚不动」） |
 | 复制全文按钮 | 结果页头部动作区与「导出」并列新增 `data-testid="copy-fulltext-button"`：点击复制「全文阅读」正文纯文本（`formatTranscriptToArticle` 派生段落，`paragraphs.join('\n\n')`，无时间戳），与页面全文视图逐段一致；桌面 / 移动端均不遮挡标题与元信息行 |
 | 复制反馈与降级 | 优先 `navigator.clipboard.writeText`，失败降级临时 `textarea` + `document.execCommand('copy')`；成功 toast「已复制全文」+ 按钮 1.5 秒内图标切 Check、文案变「已复制」，失败 toast「复制失败，请手动选择正文复制」，**严禁静默失败**；无可复制内容时按钮禁用 |
 | AI 总结面板 | 右侧独立卡片：一句话概要、**3-5 条要点（每条带原文字稿时间戳徽章，`data-testid="key-points"`）**、章节笔记（**时间区间 `mm:ss–mm:ss`，`data-testid="chapter-timeline"`**，字段 `{title, timeStart, timeEnd, note}`）。**修改总结 UI 时严禁波及左侧 Tab 结构**。阶段三起由真实 LLM 生成（E2E 锁定 6；失败降级见下条） |
@@ -112,7 +112,17 @@
 | 未配置 LLM Key | `summarizeConfigured=false` 时手动按钮禁用并显示「未配置 LLM Key，无法生成总结」；自动总结路径保持既有错误卡引导（M2-P2-A） |
 | 纯前端控制 | 开关不进入任何接口请求体，`/api/transcribe`、`/api/summarize` 契约不变 |
 
-## 11. 回归检查清单（改前端后必跑）
+## 11. 平台宣称与能力一致（P0-4 新增）
+
+| 功能 | 锁定要求 |
+| --- | --- |
+| 宣称范围随能力 | 对外宣称支持哪些平台，必须由 `src/lib/platforms/registry.ts` 的 `SUPPORTED_PLATFORMS` 单一来源生成，**禁止在文案里写死平台名**。首页 Hero、特性卡、输入框 placeholder、`metadata.description`、manifest 的 description 全部走 `supportedPlatformsText()` / `supportedPlatformsShortText()` |
+| 与后端能力对齐 | `SUPPORTED_PLATFORMS` 必须等于「本构建真能转写的平台」。真实后端只接了 bilibili（`backend/app/platforms.py` 的 `PLATFORM_REGISTRY`），故真实模式只宣称 B站；Mock 模式含 douyin。**新增平台时先接后端，再改 `SUPPORTED_PLATFORMS`**，顺序反了就是虚假宣称 |
+| 三种失败原因分开 | `resolveVideoUrl` 的失败必须区分：`invalid`（不是视频链接）/ `unsupported`（不认识这个站，如 v.qq.com）/ `unavailable`（认得域名但本构建没接，如真实模式下的抖音）。**`unavailable` 的文案不得说「暂不支持」**，那是「永远不支持」的语感；应说「暂未支持」，并给出当前可转写的范围 |
+| 示例链接同步 | 首页示例链接只列 `SUPPORTED_PLATFORMS` 内的平台；「不支持平台演示」「转写失败演示」两条固定演示项始终保留（属 Mock 教学用途） |
+| 禁止虚假功能承诺 | 特性卡与 Hero 不得承诺未实现的行为（历史教训：「点击时间戳即可跳转对应画面」曾与「只复制不跳转」的实际行为不符） |
+
+## 12. 回归检查清单（改前端后必跑）
 
 - [ ] 结果页默认显示「全文阅读」，文章排版无时间戳
 - [ ] Tab 可切换到「时间戳定位」，列表 + 复制功能正常
@@ -129,6 +139,7 @@
 - [ ] 后端可达性横幅：不可达时出现且含 run.bat 指引，恢复后自动隐藏，可手动关闭，且不遮挡页面内容（E2E 锁定 9）
 - [ ] 关闭「解析后自动 AI 总结」后解析任务：结果页无 keyPoints，显示引导 +「生成 AI 总结」按钮，点击后总结渲染（E2E 锁定 10）
 - [ ] 结果页头部「复制全文」按钮可见：点击后剪贴板内容与全文阅读逐段一致且零时间戳，toast「已复制」反馈；剪贴板不可用时给出错误提示（E2E 锁定 11）
+- [ ] 平台宣称：首页 Hero / 特性卡 / placeholder / metadata 里的平台名与 `SUPPORTED_PLATFORMS` 一致；真实构建不出现「抖音」（E2E 平台宣称 1-4，CI 双模式各跑一次）
 - [ ] `pnpm lint && pnpm build` 通过
 
 > 修改本文件（新增/放宽锁定项）需要用户明确确认。

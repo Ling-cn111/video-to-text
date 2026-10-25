@@ -106,7 +106,18 @@ jobs:
         env:
           NEXT_PUBLIC_USE_MOCK: "false"
 
+      # 跑真实模式断言。NEXT_PUBLIC_USE_MOCK 必须同时传给测试进程：
+      # 平台支持范围（SUPPORTED_PLATFORMS）是构建期常量，测试用例在 Node 里
+      # import 同一份模块来判断「当前构建该宣称哪些平台」，env 不一致会两边打架。
       - name: Run E2E (real mode, lock 7)
         run: pnpm playwright test -g "锁定 7"
         env:
           VTT_EXPECT_MODE: real
+          NEXT_PUBLIC_USE_MOCK: "false"
+
+      # 平台宣称一致性（P0-4）：真实模式下抖音必须被前端拦下而不是放行到后端 422
+      - name: Run E2E (real mode, platform claims)
+        run: pnpm playwright test -g "平台宣称"
+        env:
+          VTT_EXPECT_MODE: real
+          NEXT_PUBLIC_USE_MOCK: "false"

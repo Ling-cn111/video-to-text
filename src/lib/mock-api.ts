@@ -1,5 +1,5 @@
 import { resolveVideoUrl } from '@/lib/platform'
-import { getPlatformMeta } from '@/lib/platforms/registry'
+import { getPlatformMeta, unsupportedHostMessage } from '@/lib/platforms/registry'
 import { FAIL_VIDEO_ID, getMockData } from '@/lib/mock-data'
 import type {
   ApiErrorCode,
@@ -137,10 +137,7 @@ export async function parseVideoUrl(rawUrl: string): Promise<VideoInfo> {
     if (result.reason === 'invalid') {
       throw new MockApiError('INVALID_URL', '链接格式不正确，请粘贴完整的视频页面链接')
     }
-    throw new MockApiError(
-      'UNSUPPORTED_PLATFORM',
-      `暂不支持「${result.host}」平台，当前支持哔哩哔哩、抖音`,
-    )
+    throw new MockApiError('UNSUPPORTED_PLATFORM', unsupportedHostMessage(result.host))
   }
 
   return {

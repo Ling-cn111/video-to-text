@@ -17,6 +17,14 @@ pnpm start       # 以生产模式启动，默认 3000 端口
 
 `e2e/locked-features.spec.ts` 是[前端功能锁定协议](frontend-features.md)的自动化实现。Playwright 的 `webServer` 会自动执行 `pnpm start`（端口 3000），本地已有服务在跑时会复用。
 
+其余 spec 按「回归 N」编号，**不占用锁定编号**（锁定编号专属于协议文件）：
+
+| 文件 | 覆盖 |
+| --- | --- |
+| `e2e/locked-features.spec.ts` | 锁定 1-11，协议条文的强制层 |
+| `e2e/p0-regressions.spec.ts` | 回归 1-3：429 冷却、刷新不重复 summarize、engine 偏好持久化 |
+| `e2e/platform-claims.spec.ts` | 平台宣称 1-4：首页文案 / 示例链接 / 文案函数 / `resolveVideoUrl` 与 `SUPPORTED_PLATFORMS` 一致 |
+
 ### 2.1 关键陷阱：`NEXT_PUBLIC_USE_MOCK` 是构建期常量
 
 Next.js 只在 `pnpm build` 时把 `NEXT_PUBLIC_*` 内联进产物，**改这个变量必须重新构建**，改完重启进程无效。显式设置的同名环境变量优先于 `.env.local`。
@@ -43,27 +51,31 @@ pnpm exec playwright test
 
 > 保险做法：先删掉 `.next` 再构建，避免残留产物用旧常量。
 
-### 2.3 真实模式只验锁定 7
+### 2.3 真实模式：跑锁定 7 与平台宣称
 
-锁定 7 是「Mock 标识在真实模式不出现」，CI 第二阶段单独跑它：
+锁定 7 是「Mock 标识在真实模式不出现」，平台宣称组断言「真实模式只宣称 B站」。CI 第二阶段单独跑这两组：
 
 ```bash
-pnpm build                                  # 不加环境变量，读 .env.local 的 false
-VTT_EXPECT_MODE=real pnpm exec playwright test -g "锁定 7"
+NEXT_PUBLIC_USE_MOCK=false pnpm build
+NEXT_PUBLIC_USE_MOCK=false VTT_EXPECT_MODE=real pnpm exec playwright test -g "锁定 7|平台宣称"
 ```
 
 ```powershell
 # PowerShell 等价
+$env:NEXT_PUBLIC_USE_MOCK = "false"
 pnpm build
-$env:VTT_EXPECT_MODE = "real"; pnpm exec playwright test -g "锁定 7"
+$env:VTT_EXPECT_MODE = "real"; pnpm exec playwright test -g "锁定 7|平台宣称"
 ```
+
+> **必须把 `NEXT_PUBLIC_USE_MOCK` 同时传给测试进程**，只传 `VTT_EXPECT_MODE` 会红。原因：`e2e/platform-claims.spec.ts` 在 Node 里 `import` 了 `src/lib/platforms/registry.ts` 来算「本构建该宣称哪些平台」，而 `SUPPORTED_PLATFORMS` 是构建期常量。测试进程没拿到该变量时，它按 Mock 模式期望「B站 / 抖音」，页面却按真实模式只显示「B站」，两边打架。
 
 ### 2.4 CI 为什么不会遇到这个问题
 
 CI 环境没有 `.env.local`、也不设该变量，默认构建即 Mock 模式。CI 的 e2e job 依次执行：
 
-1. `pnpm build` → `pnpm playwright test`（Mock 模式，全部锁定项）
-2. 带 `NEXT_PUBLIC_USE_MOCK=false` 重新 `pnpm build` → `pnpm playwright test -g "锁定 7"`（真实模式）
+1. `pnpm build` → `pnpm playwright test`（Mock 模式，全部锁定项 + 全部回归项）
+2. 带 `NEXT_PUBLIC_USE_MOCK=false` 重新 `pnpm build` → `NEXT_PUBLIC_USE_MOCK=false VTT_EXPECT_MODE=real pnpm playwright test -g "锁定 7"`（真实模式）
+3. 同上环境再跑 `-g "平台宣称"`（真实模式平台宣称）
 
 ## 3. 后端（pytest）
 
@@ -101,6 +113,6 @@ PWA 验收需先 `pnpm build && pnpm start`；桌面端相关脚本见 [desktop-
 | 改动范围 | 必跑 |
 | --- | --- |
 | 前端 UI / 逻辑 | `pnpm lint` + `pnpm build` + Mock 模式全量 E2E |
-| 前端路由 / Mock 数据 | 同上，另加真实模式锁定 7 |
+| 前端路由 / Mock 数据 / 平台宣称 | 同上，另加真实模式 `-g "锁定 7\|平台宣称"`（记得同时传 `NEXT_PUBLIC_USE_MOCK=false`） |
 | 后端 | 上面的 pytest 命令（应与 CI 同为全绿，0 failed） |
 | 文档 / 构建脚本 | 若动了 `next.config.mjs`、`scripts/`，跑一次 `pnpm build` |

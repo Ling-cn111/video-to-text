@@ -2,25 +2,30 @@
 
 import { ExternalLink } from 'lucide-react'
 import { PlatformBadge, UnsupportedBadge } from '@/components/shared/platform-badge'
+import { SUPPORTED_PLATFORMS } from '@/lib/platforms/registry'
+import type { Platform } from '@/lib/types'
 
 export interface ExampleLink {
   label: string
   url: string
-  platform: 'bilibili' | 'douyin' | 'unsupported' | 'fail'
+  platform: Platform | 'unsupported' | 'fail'
   hint?: string
 }
 
-export const EXAMPLE_LINKS: ExampleLink[] = [
-  {
+/** 各平台的示例链接：只列当前构建真能转写的平台，由 SUPPORTED_PLATFORMS 决定 */
+const PLATFORM_EXAMPLES: Record<Platform, Omit<ExampleLink, 'platform'>> = {
+  bilibili: {
     label: 'B站视频示例',
     url: 'https://www.bilibili.com/video/BV1GJ411x7h7',
-    platform: 'bilibili',
   },
-  {
+  douyin: {
     label: '抖音视频示例',
     url: 'https://www.douyin.com/video/7301234567890123456',
-    platform: 'douyin',
   },
+}
+
+/** 固定的两个「演示异常」入口：与平台支持范围无关，任何构建都保留 */
+const DEMO_EXAMPLES: ExampleLink[] = [
   {
     label: '不支持平台演示',
     url: 'https://v.qq.com/x/cover/mzc00200xxxx.html',
@@ -33,6 +38,21 @@ export const EXAMPLE_LINKS: ExampleLink[] = [
     platform: 'fail',
     hint: '演示失败与重试',
   },
+]
+
+/**
+ * 示例链接清单：平台示例跟随 SUPPORTED_PLATFORMS。
+ *
+ * 为什么不再写死四条：真实后端只接了 B站，写死的「抖音视频示例」点下去必然
+ * 422 失败 —— 把用户的第一次点击变成一次报错，是最差的首次体验。示例链接
+ * 的职责是让用户「一按就能看到成品」，不是展示我们认得多少域名。
+ */
+export const EXAMPLE_LINKS: ExampleLink[] = [
+  ...SUPPORTED_PLATFORMS.map((platform) => ({
+    ...PLATFORM_EXAMPLES[platform],
+    platform,
+  })),
+  ...DEMO_EXAMPLES,
 ]
 
 interface ExampleLinksProps {
