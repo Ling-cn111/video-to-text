@@ -82,13 +82,19 @@ resources:
       # 1C2G：解析 + 总结（同步 30-70s）；音频全程在内存流转（S1-B），512MB 易 OOM
       cpu: 1
       memorySize: 2048
-      # 同步总结最长 30-70s，留余量；异步分发只等 202，不受此限
+      # 同步总结最长 30-70s，长视频（>1 小时）加长文本总结会显著拉长；
+      # 300s 留足余量，避免 504 网关超时。异步分发只等 202，不受此限
       # fc3 的 Disk 是必填项（缺了报 Disk is required but not provided），
       # 512MB 是允许的最小值；音频流在内存里，磁盘只放临时文件
       diskSize: 512
-      timeout: 120
+      timeout: 300
       # 允许单实例处理多个并发请求，降低冷启动影响
       instanceConcurrency: 10
+      # 实例数上限（P2 防刷爆额度）：FC3 没有函数级 maxInstance 字段，
+      # 弹性上限走 concurrencyConfig.reservedConcurrency（预置并发/实例数配额）。
+      # 5 实例 × instanceConcurrency 10 = 最多 50 并发，挡得住刷量与异常重试风暴。
+      concurrencyConfig:
+        reservedConcurrency: 5
       # 需访问 worker 的 fcapp.run、bilibili、云端 ASR、DeepSeek
       internetAccess: true
       # ---- VPC 网络（访问云 Redis 内网地址必需）----
@@ -267,8 +273,9 @@ resources:
 
         # ---- S2-P4：僵尸任务清理（Reaper）----
         # 关键约束：定时触发器是「事件调用」，不能指定 HTTP 路径，FC 固定把 event
-        # POST 到容器的 /invoke。worker_app 的 /invoke 按 triggerTime/triggerName
-        # 特征分流到 reaper，因此这里配的 payload 不参与路由，仅用于日志辨识。
+        # POST 到容器的 /invoke；它也**不能带自定义请求头**，所以凭据放在 payload 里，
+        # 由 worker_app._timer_payload_token 取出后走同一套 _verify_token。
+        # P0-2：/invoke 是公网匿名入口，绝不能再靠 triggerTime/triggerName 免鉴权。
         - triggerName: reapTimer
           triggerType: timer
           triggerConfig:
@@ -276,4 +283,8 @@ resources:
             # 每 5 分钟一轮：远小于 TASK_STALE_SECONDS(600s)，僵尸任务最长滞留约 15 分钟
             cronExpression: "0 */5 * * * *"
             enable: true
-            payload: '{"action":"reap"}'
+            # 凭据放 payload：定时触发器无法带请求头，worker_app._timer_payload_token
+            # 会把它取出来交给 _verify_token（P0-2：不再有免鉴权分支）。
+            # 用 YAML 双引号标量是因为内层 JSON 也需要双引号；${env(...)} 由 s 在
+            # YAML 解析前做文本替换，所以这里必须保持单引号的 env 魔法变量写法。
+            payload: "{\"action\":\"reap\",\"token\":\"${env('WORKER_TOKEN', '')}\"}"

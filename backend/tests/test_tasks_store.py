@@ -101,6 +101,63 @@ def test_update_unknown_task_is_noop(store):
     asyncio.run(store.update("no-such-task", status="completed"))  # 不抛
 
 
+# ---- 终态保护 / CAS（P1-2）----
+
+def test_update_does_not_overwrite_failed_status(store):
+    """P1-2 回归：Reaper 标了 failed 之后，迟到的进度写入不能把它改回 processing。
+
+    真实竞态：心跳线程每 30s 写一次 stage/progress；Reaper 恰好在两次心跳之间
+    判定超时并写 failed。旧实现是「读-改-写」，读到的还是 processing 的快照，
+    回写时把 failed 覆盖掉——任务永远停在 processing，前端骨架屏一直转。
+    """
+    task_id = asyncio.run(store.create(VIDEO))
+    asyncio.run(store.update(task_id, status="failed", error={"code": "TASK_TIMEOUT", "message": "超时"}))
+
+    # 心跳（只带 stage/progress，不带 status）
+    asyncio.run(store.update(task_id, stage="asr", progress=80))
+
+    task = asyncio.run(store.get(task_id))
+    assert task.status == "failed", "终态不能被心跳覆盖"
+    assert task.error == {"code": "TASK_TIMEOUT", "message": "超时"}
+    assert task.progress != 80
+
+
+def test_update_does_not_overwrite_completed_status(store):
+    """同样的保护对 completed 生效（Reaper 之外的终态写入路径）。"""
+    task_id = asyncio.run(store.create(VIDEO))
+    asyncio.run(store.update(task_id, status="completed", progress=100))
+
+    asyncio.run(store.update(task_id, stage="asr", progress=50))
+
+    task = asyncio.run(store.get(task_id))
+    assert task.status == "completed"
+    assert task.progress == 100
+
+
+def test_update_can_still_set_status_explicitly(store):
+    """保护只拦「非终态→终态」的隐式回写；显式改状态（Reaper/Worker）必须放行。"""
+    task_id = asyncio.run(store.create(VIDEO))
+
+    asyncio.run(store.update(task_id, status="failed", error={"code": "TRANSCRIBE_FAILED", "message": "x"}))
+    assert asyncio.run(store.get(task_id)).status == "failed"
+
+    # 显式改回 processing（重试路径）也必须能写
+    asyncio.run(store.update(task_id, status="processing", error=None))
+    assert asyncio.run(store.get(task_id)).status == "processing"
+
+
+def test_update_still_writes_while_processing(store):
+    """正常路径不受影响：processing 期间的心跳照常写入。"""
+    task_id = asyncio.run(store.create(VIDEO))
+
+    asyncio.run(store.update(task_id, stage="asr", progress=42))
+
+    task = asyncio.run(store.get(task_id))
+    assert task.status == "processing"
+    assert task.stage == "asr"
+    assert task.progress == 42
+
+
 def test_updated_at_advances_on_update(store):
     task_id = asyncio.run(store.create(VIDEO))
     before = asyncio.run(store.get(task_id)).updated_at
@@ -126,6 +183,20 @@ def test_attempts_defaults_to_zero_and_roundtrips(store):
     assert asyncio.run(store.get(task_id)).attempts == 2
 
 
+def test_started_at_defaults_to_none_and_roundtrips(store):
+    """started_at（P1-1）默认 None = 排队中，写入后必须往返保真。
+
+    Reaper 靠它区分「还没轮到跑」（无心跳、用宽阈值）与「跑了一半崩了」
+    （有 started_at、用严阈值）。丢失这个字段会让排队任务被误杀。
+    """
+    task_id = asyncio.run(store.create(VIDEO))
+    assert asyncio.run(store.get(task_id)).started_at is None
+
+    stamp = time.time()
+    asyncio.run(store.update(task_id, started_at=stamp))
+    assert asyncio.run(store.get(task_id)).started_at == pytest.approx(stamp)
+
+
 def test_init_marks_stale_processing_tasks_interrupted(store):
     """启动恢复：陈旧的 processing 任务标记 interrupted，已完成不受影响。"""
     processing_id = asyncio.run(store.create(VIDEO))
@@ -137,6 +208,36 @@ def test_init_marks_stale_processing_tasks_interrupted(store):
 
     assert asyncio.run(store.get(processing_id)).status == "interrupted"
     assert asyncio.run(store.get(done_id)).status == "completed"
+
+
+def test_redis_init_does_not_interrupt_queued_task():
+    """P1-1 同源修复：排队中的任务（started_at 为空）不能用心跳阈值判死。
+
+    冷启动恢复与 reaper 走的是同一套陈旧判定。排队任务本来就没有心跳写入，
+    套用 TASK_STALE_SECONDS（600s）会在派发积压 / 实例打满时把刚派发的任务
+    全部标成 interrupted，用户看到「任务已中断」却从没跑过。
+
+    只对 Redis 生效：MemoryTaskStore 是单进程实现，「重启即中断」是它的既定语义
+    （重启后进程内所有在途任务确实都死了），没有跨实例误杀的问题。
+    """
+    store = _make_redis_store()
+    task_id = asyncio.run(store.create(VIDEO))  # started_at 默认 None = 排队中
+    asyncio.run(_backdate(store, task_id, 900))  # 超过 TASK_STALE_SECONDS，但没到 queued 阈值
+
+    asyncio.run(store.init())
+
+    assert asyncio.run(store.get(task_id)).status == "processing"
+
+
+def test_redis_init_interrupts_queued_task_past_queued_threshold():
+    """排队也有上限：超过 max(TASK_STALE_SECONDS, REAPER_QUEUED_STALE_SECONDS) 仍要判死。"""
+    store = _make_redis_store()
+    task_id = asyncio.run(store.create(VIDEO))
+    asyncio.run(_backdate(store, task_id, 7200))  # 远超 1800s
+
+    asyncio.run(store.init())
+
+    assert asyncio.run(store.get(task_id)).status == "interrupted"
 
 
 def test_init_without_recovery_keeps_processing_tasks(store):

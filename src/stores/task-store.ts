@@ -113,6 +113,26 @@ function toAppError(error: unknown): UiError {
   return { code: 'INTERNAL_ERROR', message: '出了点问题，请稍后重试' }
 }
 
+/**
+ * 任务完成但没有可用文字稿（P1-5）。
+ *
+ * `transcript: []` 是 truthy —— 旧代码用 `!task.transcript` 判断，空数组会被当成
+ * 「有稿」，结果页渲染出「共 0 段」的空壳，用户完全不知道发生了什么。
+ * 后端对空识别结果会抛 TRANSCRIBE_FAILED，所以走到这里的空数组多半来自历史数据
+ * 或异常路径，统一按「没识别出内容」引导重试。
+ */
+function isEmptyTranscript(transcript: TranscriptItem[] | null | undefined): boolean {
+  return !transcript || transcript.length === 0
+}
+
+/** 完成态但文字稿为空时的统一错误（区分「任务不存在」与「识别结果为空」） */
+function emptyTranscriptError(task: { transcript?: TranscriptItem[] | null }): UiError {
+  if (task.transcript === null || task.transcript === undefined) {
+    return { code: 'INVALID_TASK', message: '任务不存在或已过期，请重新解析视频链接' }
+  }
+  return { code: 'TRANSCRIBE_FAILED', message: '未能识别出语音内容，请换一个视频或确认原视频有清晰人声' }
+}
+
 export const useTaskStore = create<TaskState>((set, get) => ({
   ...IDLE,
   engine: 'local',
@@ -164,6 +184,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         return
       }
       if (task.status === 'completed') {
+        // P1-5：空数组也要按「没稿」处理，不能让结果页渲染 0 段空壳
+        if (isEmptyTranscript(task.transcript)) {
+          set({ phase: 'error', error: emptyTranscriptError(task) })
+          return
+        }
         const transcriptReady = {
           transcript: task.transcript ?? null,
           plainText: task.plainText ?? null,
@@ -218,27 +243,32 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         return
       }
       if (task.status === 'processing') {
-        // 直接访问进度页但任务未完成：交给轮询继续推进
+        // 直接访问结果页但任务还在跑：置为 transcribing，由结果页的 useResultPolling
+        // 继续推进（P1-4：旧实现只 set phase 就 return，没有任何东西会再拉状态，
+        // 结果页于是永远停在骨架屏）。
         set({ phase: 'transcribing' })
         return
       }
-      if (!task.transcript) {
-        set({ phase: 'error', error: { code: 'INVALID_TASK', message: '任务不存在或已过期，请重新解析视频链接' } })
+      // P1-5：`transcript: []` 是 truthy，`!task.transcript` 会把空数组判成有稿
+      if (isEmptyTranscript(task.transcript) || !task.transcript) {
+        set({ phase: 'error', error: emptyTranscriptError(task) })
         return
       }
+      // 到这里 transcript 一定是非空数组
+      const readyTranscript = task.transcript
       // 用户偏好（autoSummary=false）：刷新 / 直链恢复同样尊重开关，不自动调用 summarize
       if (!get().autoSummary) {
         set({
           phase: 'done',
           summary: null,
           summaryError: null,
-          transcript: task.transcript,
+          transcript: readyTranscript,
           plainText: task.plainText ?? null,
           transcriptSource: task.transcriptSource ?? null,
         })
         return
       }
-      set({ phase: 'summarizing', transcript: task.transcript, plainText: task.plainText ?? null, transcriptSource: task.transcriptSource ?? null, summaryError: null })
+      set({ phase: 'summarizing', transcript: readyTranscript, plainText: task.plainText ?? null, transcriptSource: task.transcriptSource ?? null, summaryError: null })
       // 能力前置（M2-P2-A）：未配置 LLM Key 时不发起无用请求
       if (get().capabilities?.summarizeConfigured === false) {
         set({ phase: 'done', summary: null, summaryError: '未配置 LLM Key，无法生成总结：请在 backend/.env.local 填写 DEEPSEEK_API_KEY 后重试' })
@@ -247,7 +277,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       try {
         const summary = await api.summarize({
           taskId,
-          transcript: task.transcript,
+          transcript: readyTranscript,
           title: (task.video ?? get().video)?.title ?? '',
           duration: (task.video ?? get().video)?.duration ?? 0,
         })

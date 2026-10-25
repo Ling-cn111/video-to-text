@@ -17,15 +17,24 @@
 - `POST /invoke`：`InvokeFunction` API 调用与**所有事件源触发器（含定时触发器）**
   的固定落点，FC 把 event 作为 body POST 到这里（Content-Type: application/octet-stream）。
 
+鉴权（P0 封堵，fail-closed）：
+`WORKER_TOKEN` 未配置时**拒绝一切请求**（503），不再「未配置就放行」——线上漏配
+一个环境变量不该等于把异步执行入口敞开给公网。所有入口（含 `/invoke`）一律
+先验 token，没有任何免鉴权分支。
+
 S2-P4 定时触发器分流（关键约束）：
 阿里云 FC 的定时触发器是**事件调用**，不能指定 HTTP 路径——FC 固定投递到 `/invoke`。
 因此 reaper 不能只挂在 `/internal/worker/reap` 上，否则线上永远不会被触发。
-`/invoke` 按事件特征分流，判定顺序固定为：
+`/invoke` 验完 token 后按事件特征分流，顺序固定为：
 1. 含 `triggerTime` + `triggerName` → 定时事件，跑 reaper
 2. 含 `task_id` → 转写作业
 3. 其它 → 422
-Timer 必须优先：定时事件体里的 `payload` 是用户自定义字符串，理论上可能被配成
-一个恰好含 `task_id` 的 JSON，先判 timer 特征可避免误当作业执行。
+
+定时触发器不能自定义请求头，带不了 `X-Worker-Token`，所以**凭据放在触发器
+payload 里**（`{"action": "reap", "token": "<WORKER_TOKEN>"}`，见 s.yaml 的
+`reapTimer`），由 `_timer_payload_token` 从事件体取出后交给同一套校验。
+不能靠「事件体里出现 triggerTime/triggerName 就信任」——`/invoke` 是公网
+匿名 HTTP 入口，任何人都能伪造这两个字段，那正是被审计打回的漏洞。
 
 `/internal/worker/reap` 保留给本地脚本与人工 curl（Timer 打不到它）。
 
@@ -35,6 +44,8 @@ Timer 必须优先：定时事件体里的 `payload` 是用户自定义字符串
 3. pipeline 业务异常 → pipeline 内部已收敛为 failed，返回 200（重试无意义且会重复计费）
 4. 胶水层/未捕获异常 → 标 failed 后返回 5xx（基础设施类问题，值得平台重试）
 5. 定时触发器事件 → 跑 reaper，返回收割计数（与作业路径完全隔离）
+6. `job.url` 未通过 `validate_public_http_url`（内网/非法地址）→ 标 failed + 200 skipped
+   （P0 SSRF 兜底：不信任派发方，Worker 侧独立复核一次）
 """
 import asyncio
 import base64
@@ -42,16 +53,19 @@ import binascii
 import json
 import logging
 import secrets
+import time
 from typing import Any, Callable
 
 import httpx
 from fastapi import Body, FastAPI, Header, HTTPException, Request
 
 from app.config import TASK_LOCK_SECONDS, WORKER_TOKEN
+from app.errors import InvalidUrlError
 from app.services import reaper
 from app.services import tasks as task_store
 from app.services import transcribe
 from app.services.dispatcher import TranscribeJob
+from app.url_guard import validate_public_http_url
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +83,9 @@ _MAX_UNWRAP_DEPTH = 4
 
 # 任务不存在时的 skipped 原因
 _SKIP_NOT_FOUND = "task_not_found"
+
+# URL 未通过公网校验时的 skipped 原因（P0 SSRF 兜底）
+_SKIP_INVALID_URL = "invalid_url"
 
 app = FastAPI(title="video-to-text worker", version="0.1.0")
 
@@ -101,22 +118,41 @@ def _token_matches(candidate: str | None) -> bool:
     return secrets.compare_digest(candidate.encode("utf-8"), WORKER_TOKEN.encode("utf-8"))
 
 
-def _verify_token(token: str | None, authorization: str | None = None) -> None:
-    """WORKER_TOKEN 未配置时不校验；配置后要求完全一致。
+def _verify_token(
+    token: str | None,
+    authorization: str | None = None,
+    *,
+    payload_token: str | None = None,
+) -> None:
+    """fail-closed 鉴权：`WORKER_TOKEN` 未配置时拒绝一切请求（503）。
 
-    接受两种携带方式：
+    旧实现是「未配置就放行」，等于把异步执行入口敞开给公网——线上漏配一个环境
+    变量就能被人拿去跑任意 URL（SSRF）与刷额度。宁可整条链路不可用，也不放行。
+
+    接受三种携带方式（前两种来自请求头，第三种来自定时触发器 payload），任意一种
+    匹配即通过：
     - `X-Worker-Token: <token>`（P2 约定，api 侧 FcDispatcher 默认发这个）
     - `Authorization: Bearer <token>`（FC 触发器若改成 Bearer 认证，网关会先校验，
       到达容器时仍是这个头；两种都认可以避免切换认证方式时改代码）
+    - 事件体 payload 里的 `token` 字段（定时触发器带不了自定义头，见
+      `_timer_payload_token`）
+
+    三种是「或」关系而不是「头优先」：触发器可能带上网关注入的占位头，若头存在就
+    短路，payload 凭据会被无声丢弃。
     """
     if not WORKER_TOKEN:
-        return
+        raise HTTPException(
+            status_code=503,
+            detail="worker token 未配置，拒绝执行（请设置 WORKER_TOKEN 环境变量）",
+        )
     if _token_matches(token):
         return
     if authorization:
         scheme, _, value = authorization.partition(" ")
         if scheme.lower() == "bearer" and _token_matches(value.strip()):
             return
+    if payload_token and _token_matches(payload_token):
+        return
     raise HTTPException(status_code=401, detail="worker token 无效")
 
 
@@ -209,6 +245,53 @@ def _looks_like_timer_event(payload: Any) -> bool:
     return False
 
 
+def _timer_payload_token(payload: Any) -> str | None:
+    """从定时触发器事件体的 `payload` 里取共享密钥（P0-2 的补偿机制）。
+
+    FC 的定时触发器不能自定义请求头，带不了 `X-Worker-Token`，所以凭据放在
+    触发器配置的 payload 里（s.yaml → `reapTimer.payload`）。取不到就返回 None，
+    由 `_verify_token` 走正常 401 分支——**不存在「是定时事件就放行」的分支**。
+
+    payload 可能是 JSON 字符串（s.yaml 里就是字符串形态），也可能是对象；
+    只认顶层 `token` 字段，不做模糊匹配。
+    """
+    current = payload
+    for _ in range(_MAX_UNWRAP_DEPTH):
+        if isinstance(current, (str, bytes, bytearray)):
+            try:
+                current = _decode_body(current, is_base64=False)
+            except ValueError:
+                return None
+            continue
+        if not isinstance(current, dict):
+            return None
+        if "triggerTime" in current and "triggerName" in current:
+            inner = current.get("payload")
+            if isinstance(inner, (str, bytes, bytearray)):
+                try:
+                    inner = _decode_body(inner, is_base64=False)
+                except ValueError:
+                    return None
+            if not isinstance(inner, dict):
+                return None
+            token = inner.get("token")
+            return token if isinstance(token, str) and token else None
+        is_base64 = bool(current.get("isBase64Encoded"))
+        for key in ("body", "payload", "event", "data"):
+            if key in current:
+                value = current[key]
+                if isinstance(value, (str, bytes, bytearray)):
+                    try:
+                        value = _decode_body(value, is_base64 and key == "body")
+                    except ValueError:
+                        return None
+                current = value
+                break
+        else:
+            return None
+    return None
+
+
 def _lock_renewer(task_id: str, token: str, loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     """返回同步续期回调：pipeline 心跳线程 → 投递到 Worker 事件循环执行。
 
@@ -245,6 +328,22 @@ async def _mark_failed_if_processing(task_id: str) -> None:
 async def _run_job(job: TranscribeJob) -> dict:
     store = task_store.get_task_store()
 
+    # P0 SSRF 兜底：不信任派发方（API 侧已校验过一次），Worker 侧独立复核。
+    # 不能直接抛 InvalidUrlError —— 那会变成 5xx，触发 FC 异步重试无限循环；
+    # 这里按「确定性失败」处理：标 failed + 200 skipped。
+    try:
+        validate_public_http_url(job.url)
+    except InvalidUrlError as exc:
+        logger.warning("Worker 拒绝非公网 URL（task_id=%s）：%s", job.task_id, exc.message)
+        current = await store.get(job.task_id)
+        if current is not None and current.status == "processing":
+            await store.update(
+                job.task_id,
+                status="failed",
+                error={"code": "INVALID_URL", "message": exc.message},
+            )
+        return {"status": "skipped", "reason": _SKIP_INVALID_URL, "task_id": job.task_id}
+
     task = await store.get(job.task_id)
     if task is None:
         logger.error("Worker 收到未知任务（task_id=%s）：可能已过 TTL", job.task_id)
@@ -265,7 +364,11 @@ async def _run_job(job: TranscribeJob) -> dict:
             status = task.status if task is not None else "missing"
             return {"status": "skipped", "reason": f"already_{status}", "task_id": job.task_id}
 
-        await store.update(job.task_id, attempts=(task.attempts or 0) + 1)
+        await store.update(
+            job.task_id,
+            attempts=(task.attempts or 0) + 1,
+            started_at=time.time(),
+        )
 
         loop = asyncio.get_running_loop()
         # pipeline 是同步实现（yt-dlp / ffmpeg / ASR 全阻塞），必须让出事件循环；
@@ -316,13 +419,13 @@ async def run_invoke_entry(
     """`InvokeFunction` API 与事件源触发器（含定时触发器）的统一入口。
 
     FC 固定把 event 作为 body POST 到 `/invoke`（octet-stream），因此这里直接读原始
-    字节，不依赖 FastAPI 的 JSON 解析。分流顺序见模块 docstring：Timer 优先，
-    其次是转写作业。
+    字节，不依赖 FastAPI 的 JSON 解析。
 
-    鉴权顺序很重要：**先解析出事件体判断是不是定时触发器，再决定要不要校验 token**。
-    定时触发器由 FC 自己发起，请求里不会带 `X-Worker-Token`——若先校验 token，
-    每 5 分钟一次的 `reapTimer` 会被 401 挡住，僵尸任务清理永远不生效
-    （线上实测：日志里每分钟一条 `POST /invoke 401 Unauthorized`）。
+    **鉴权先于一切分流**（P0-2）：旧实现「先判 timer 特征、是 timer 就跳过鉴权」，
+    而 `/invoke` 是 `authType: anonymous` 的公网 HTTP 入口——任何人 POST 一个带
+    `triggerTime`/`triggerName` 的 body 就能触发 reaper（伪造定时任务）。
+    现在所有请求统一先过 `_verify_token`，定时触发器的凭据来自它自己的 payload
+    （`_timer_payload_token`），不存在免鉴权分支。
     """
     await _ensure_initialized()
 
@@ -332,14 +435,14 @@ async def run_invoke_entry(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"事件体无法解析：{exc}") from exc
 
+    # 凭据来源：请求头 / 事件体 payload（定时触发器），三者「或」关系
+    _verify_token(x_worker_token, authorization, payload_token=_timer_payload_token(payload))
+
     if _looks_like_timer_event(payload):
-        # 定时触发器事件带 FC 注入的 triggerTime/triggerName，外部无法伪造；
-        # 且 reap_once 自身有互斥锁 + CAS 幂等，重复执行不会写坏状态。
+        # 走到这里说明 token 已通过校验；reap_once 自身还有互斥锁 + CAS 幂等
         logger.info("收到定时触发器事件，执行僵尸任务清理")
         return (await reaper.reap_once()).to_dict()
 
-    # 非定时事件（转写作业）仍必须带 token
-    _verify_token(x_worker_token, authorization)
     return await _run_job(_parse_job(payload))
 
 
