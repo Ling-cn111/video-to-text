@@ -127,6 +127,11 @@ resources:
         # API 侧负责把「陈旧」processing 任务判为 interrupted
         TASK_INIT_MODE: recover
         TASK_STALE_SECONDS: "600"
+        # 排队中任务（started_at 为空、没有心跳）的判定阈值，实际生效取
+        # max(TASK_STALE_SECONDS, 本项)。Worker 的 instanceConcurrency 是 1，
+        # 派发积压时后面排队的任务可能等十几分钟才有机会开跑，套用 600s 会被
+        # init/reaper 误标 interrupted/failed。调大即放宽排队容忍度。
+        REAPER_QUEUED_STALE_SECONDS: "1800"
         TASK_HEARTBEAT_SECONDS: "30"
         # ---- 外部服务（必填）----
         CLOUD_ASR_API_KEY: ${env('CLOUD_ASR_API_KEY')}
@@ -234,6 +239,9 @@ resources:
         # 关键：Worker 冷启动不得改写其他实例在途任务（代码里也显式传 False，双保险）
         TASK_INIT_MODE: none
         TASK_STALE_SECONDS: "600"
+        # 排队中任务（started_at 为空）的判定阈值，与 API 侧保持一致；
+        # 实际生效取 max(TASK_STALE_SECONDS, 本项)。见 reaper.py 的两档阈值。
+        REAPER_QUEUED_STALE_SECONDS: "1800"
         TASK_HEARTBEAT_SECONDS: "30"
         # 执行锁 TTL，执行期间按心跳续期；崩溃后到期自动释放
         TASK_LOCK_SECONDS: "3600"

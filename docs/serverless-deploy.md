@@ -538,6 +538,11 @@ resources:
         # API 侧负责把「陈旧」processing 任务判为 interrupted
         TASK_INIT_MODE: recover
         TASK_STALE_SECONDS: "600"
+        # 排队中任务（started_at 为空、没有心跳）的判定阈值，实际生效取
+        # max(TASK_STALE_SECONDS, 本项)。Worker 的 instanceConcurrency 是 1，
+        # 派发积压时后面排队的任务可能等十几分钟才有机会开跑，套用 600s 会被
+        # init/reaper 误标 interrupted/failed。调大即放宽排队容忍度。
+        REAPER_QUEUED_STALE_SECONDS: "1800"
         TASK_HEARTBEAT_SECONDS: "30"
         # ---- 外部服务（必填）----
         CLOUD_ASR_API_KEY: ${env('CLOUD_ASR_API_KEY')}
@@ -645,6 +650,9 @@ resources:
         # 关键：Worker 冷启动不得改写其他实例在途任务（代码里也显式传 False，双保险）
         TASK_INIT_MODE: none
         TASK_STALE_SECONDS: "600"
+        # 排队中任务（started_at 为空）的判定阈值，与 API 侧保持一致；
+        # 实际生效取 max(TASK_STALE_SECONDS, 本项)。见 reaper.py 的两档阈值。
+        REAPER_QUEUED_STALE_SECONDS: "1800"
         TASK_HEARTBEAT_SECONDS: "30"
         # 执行锁 TTL，执行期间按心跳续期；崩溃后到期自动释放
         TASK_LOCK_SECONDS: "3600"
@@ -834,7 +842,7 @@ s deploy -t s.yaml
 | `TASK_TTL_SECONDS` | `604800`（7 天） | 任务 JSON 含完整文字稿；0 = 永久保留（不推荐，Redis 会无限增长） |
 | `TASK_INIT_MODE` | `recover`（API）/ `none`（Worker） | Worker 必须 `none`，否则每次冷启动会把其他实例在跑的任务判为中断 |
 | `TASK_STALE_SECONDS` | `600` | 超过该时长无心跳写入才判为遗留任务；须明显大于心跳间隔 |
-| `REAPER_QUEUED_STALE_SECONDS` | `1800` | **排队中**任务（`started_at` 为空，没有心跳）的判定阈值。实际生效取 `max(TASK_STALE_SECONDS, 本项)`——否则队列一堵十几分钟就把还没轮到跑的任务判成超时 |
+| `REAPER_QUEUED_STALE_SECONDS` | `1800` | **排队中**任务（`started_at` 为空，没有心跳）的判定阈值，`s.yaml` 里 API 与 Worker 两个函数都显式声明。实际生效取 `max(TASK_STALE_SECONDS, 本项)`——否则队列一堵十几分钟就把还没轮到跑的任务判成超时。Worker 的 `instanceConcurrency` 是 `1`，一次只跑一个任务，**派发积压时请按「最长排队时长」调大本项**（例如 10 个长视频依次 8 分钟 ≈ 72 分钟，就要设到 3600 以上） |
 | `TASK_HEARTBEAT_SECONDS` | `30` | 长阻塞步骤（下载 / FFmpeg / ASR）靠心跳保活；0 = 关闭 |
 | `ENQUEUE_MODE` | `fc`（API）/ `inline`（Worker） | 任务分发模式。`inline` = 同进程 BackgroundTasks；`fc` = 投递到 worker 触发器（异步）；`mns`/`redis` 为后续实现位，当前显式报错 |
 | `WORKER_URL` | worker 的 `*.fcapp.run` 地址 | **`ENQUEUE_MODE=fc` 时必填**。`s info -t s.yaml` 里取；无法由 region + 函数名推导 |
