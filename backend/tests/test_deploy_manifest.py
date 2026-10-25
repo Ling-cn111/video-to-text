@@ -226,6 +226,39 @@ def test_worker_reaper_lock_ttl_covers_single_scan(worker):
     assert 0 < int(env["REAPER_LOCK_SECONDS"]) <= 600
 
 
+def test_queued_stale_threshold_is_declared_and_shared(api, worker):
+    """排队阈值必须在两个函数上都显式声明，且取值一致。
+
+    这个值决定「派发积压时还没轮到跑的任务能容忍多久」。只写代码默认值也能跑，
+    但线上想调整就得改代码重建镜像；而两侧不一致时行为会分裂——API 冷启动的
+    init 与 Worker 的 reaper 会用两套阈值判定同一批任务。
+    """
+    api_env, worker_env = _env(api), _env(worker)
+    for name, env in (("api", api_env), ("worker", worker_env)):
+        assert "REAPER_QUEUED_STALE_SECONDS" in env, (
+            f"{name} 函数未声明 REAPER_QUEUED_STALE_SECONDS："
+            "线上将只能使用代码默认值，调整排队容忍度必须改代码重建镜像"
+        )
+    assert api_env["REAPER_QUEUED_STALE_SECONDS"] == worker_env["REAPER_QUEUED_STALE_SECONDS"]
+
+
+def test_queued_stale_threshold_not_tighter_than_running_threshold(api, worker):
+    """排队阈值不能小于执行阈值。
+
+    代码里取 max(TASK_STALE_SECONDS, REAPER_QUEUED_STALE_SECONDS)，所以配得更小
+    不会立刻出错，但会让这个变量变成「配了等于没配」——用户以为放宽了排队容忍度，
+    实际生效的仍是 TASK_STALE_SECONDS。这里拦住这种静默失效。
+    """
+    for name, props in (("api", api), ("worker", worker)):
+        env = _env(props)
+        stale = int(env["TASK_STALE_SECONDS"])
+        queued = int(env["REAPER_QUEUED_STALE_SECONDS"])
+        assert queued >= stale, (
+            f"{name} 的 REAPER_QUEUED_STALE_SECONDS({queued}) 小于 "
+            f"TASK_STALE_SECONDS({stale})：会被 max() 吃掉，配置不生效"
+        )
+
+
 def test_timer_payload_is_present_but_not_load_bearing(worker):
     """payload 只用于日志辨识；分流靠 triggerTime/triggerName 特征（见 worker_app）。"""
     payload = _timer_trigger(worker)["triggerConfig"]["payload"]
