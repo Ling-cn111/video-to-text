@@ -58,6 +58,9 @@
 | ASR 文本后处理 | 繁→简统一（zhconv）、重复词折叠（3 次以上）、按语言补句末标点——backend 侧实现，前端文案展示依赖其输出 |
 | PWA | manifest + Service Worker（仅生产注册），顶栏安装按钮。**改动 SW 策略或发布影响外壳的变更时必须提升 `CACHE_NAME` 版本号**（`vtt-shell-vN`）：`activate` 只清理非当前版本缓存，不升版本会让老客户端长期运行旧版 JS（2026-10 线上旧文案问题即此因） |
 | 全文导出一致性 | 页面全文视图、TXT、MD 三者的段落必须同源（`formatTranscriptToArticle`），改分段逻辑必须三处一起验证 |
+| 错误码表四处同步 | 新增/删除错误码必须同步：`src/lib/types.ts` 的 `ApiErrorCode`、`src/lib/api-server.ts` 的 `STATUS_BY_CODE`（穷举，漏改 TS 报错）、`src/components/shared/error-alert.tsx` 的中文标题表、`docs/api-contract.md`。**`RATE_LIMITED`（429）必须显示「请求太频繁」并进入 60 秒冷却**，冷却期内禁用重试按钮——重试本身也是 POST，冷却期点必然再 429 |
+| 未配置提示分环境 | 云端 ASR / LLM 未配置的提示必须按 hostname 分流（`src/lib/capability-hint.ts`）：本地给配置指引（可提环境变量名），公网只说「暂不可用」。**线上访客没有 `.env` 也没有 setup.bat，暴露这些只会造成困惑**（同 §9 的 run.bat 教训） |
+| 偏好持久化 | `autoSummary` / `engine` 均存 `localStorage`，键名不得更改；`engine` 读到非法值必须回落 `local`（§6 默认本地）。新增加载期读取的偏好一律走 `hydratePreferences` 或挂载后 `useEffect`，**不要直接读 `localStorage` 初始化 state**（SSR 会 hydration mismatch） |
 
 ## 6. 转写模式选择（首页，任务 D 新增）
 

@@ -2,8 +2,12 @@ import { AlertTriangle, BookOpenText, ListChecks, Loader2, RefreshCw, Sparkles }
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
+import { summarizeUnconfiguredMessage } from '@/lib/capability-hint'
+import { useRateLimitCooldown } from '@/hooks/use-rate-limit-cooldown'
+import { useHostname } from '@/hooks/use-hostname'
 import { formatTimestamp } from '@/lib/format'
 import type { Summary } from '@/lib/types'
+import type { UiError } from '@/stores/task-store'
 
 /** AI 总结卡：一句话概要 + 要点 + 章节笔记 */
 export function SummaryCard({ summary }: { summary: Summary }) {
@@ -72,18 +76,26 @@ export function SummaryCard({ summary }: { summary: Summary }) {
 }
 
 /** 总结生成失败（P0 降级态）：错误卡 + 重试按钮；文字稿区域不受影响。
- *  retryable=false（如 LLM Key 未配置，M2-P2-A）时隐藏重试按钮，改为配置引导。 */
+ *  retryable=false（如 LLM Key 未配置，M2-P2-A）时隐藏重试按钮，改为配置引导。
+ *
+ *  为什么收整个 UiError 而不是 message 字符串：429 限流和普通服务异常的处理方式完全不同
+ *  ——限流要给冷却倒计时并临时禁用重试（重试本身也是 POST，冷却期内点必然再次 429），
+ *  而这只在拿到错误码时才做得到。 */
 export function SummaryErrorState({
-  message,
+  error,
   onRetry,
   retrying,
   retryable = true,
 }: {
-  message: string
+  error: UiError
   onRetry: () => void
   retrying: boolean
   retryable?: boolean
 }) {
+  const rateLimited = error.code === 'RATE_LIMITED'
+  const cooldown = useRateLimitCooldown(rateLimited)
+  const retryBlocked = rateLimited && cooldown > 0
+
   return (
     <div
       data-testid="summary-error"
@@ -92,12 +104,25 @@ export function SummaryErrorState({
       <div className="flex items-start gap-2">
         <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
         <div className="flex flex-col gap-0.5">
-          <p className="text-sm font-medium">总结生成失败</p>
-          <p className="text-xs leading-relaxed text-muted-foreground">{message}</p>
+          <p className="text-sm font-medium">{rateLimited ? '请求太频繁' : '总结生成失败'}</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">{error.message}</p>
+          {rateLimited ? (
+            <p data-testid="rate-limit-hint" className="text-xs leading-relaxed text-muted-foreground">
+              {retryBlocked
+                ? `为避免继续触发限制，约 ${cooldown} 秒后可重试`
+                : '冷却结束，现在可以重试了'}
+            </p>
+          ) : null}
         </div>
       </div>
       {retryable ? (
-        <Button size="sm" variant="outline" onClick={onRetry} disabled={retrying} className="gap-1.5">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onRetry}
+          disabled={retrying || retryBlocked}
+          className="gap-1.5"
+        >
           {retrying ? (
             <Loader2 className="size-3.5 animate-spin" aria-hidden />
           ) : (
@@ -123,6 +148,7 @@ export function SummaryManualPrompt({
   onGenerate: () => void
   disabled?: boolean
 }) {
+  const hostname = useHostname()
   return (
     <div data-testid="summary-manual-prompt" className="flex flex-col items-start gap-3">
       <p className="text-sm leading-relaxed text-muted-foreground">
@@ -140,7 +166,8 @@ export function SummaryManualPrompt({
       </Button>
       {disabled ? (
         <p data-testid="manual-summarize-config-hint" className="text-xs leading-relaxed text-muted-foreground">
-          未配置 LLM Key，无法生成总结：请在 backend/.env.local 填写对应的 Key 后刷新页面。
+          {/* 文案分环境：本地给配置指引，公网只说「暂不可用 + 文字稿不受影响」 */}
+          {hostname === null ? 'AI 总结暂不可用，文字稿与导出不受影响' : summarizeUnconfiguredMessage(hostname)}
         </p>
       ) : null}
     </div>

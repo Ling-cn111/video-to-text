@@ -178,6 +178,7 @@ export type ApiErrorCode =
   | 'SUMMARIZE_FAILED'
   | 'TASK_INTERRUPTED'
   | 'TASK_TIMEOUT'
+  | 'RATE_LIMITED'
   | 'INTERNAL_ERROR'
 
 export interface AppError {

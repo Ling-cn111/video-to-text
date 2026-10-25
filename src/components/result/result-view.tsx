@@ -208,7 +208,7 @@ export function ResultView({ taskId }: ResultViewProps) {
               <SummaryCard summary={summary} />
             ) : summaryError ? (
               <SummaryErrorState
-                message={summaryError}
+                error={summaryError}
                 onRetry={handleSummaryRetry}
                 retrying={summaryRetrying}
                 retryable={capabilities?.summarizeConfigured !== false}

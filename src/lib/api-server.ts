@@ -18,6 +18,9 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   SUMMARIZE_FAILED: 502,
   TASK_INTERRUPTED: 409,
   TASK_TIMEOUT: 500,
+  // 限流（后端 backend/app/services/rate_limit.py 的中间件产生，非 Mock 路径；
+  // 此处补齐映射只为让 `Record<ApiErrorCode, number>` 穷举成立，Mock 永不抛该码）
+  RATE_LIMITED: 429,
   INTERNAL_ERROR: 500,
 }
 
