@@ -382,9 +382,10 @@ def test_pipeline_failure_sets_friendly_error(monkeypatch):
 
 def test_http_subtitle_flow(monkeypatch):
     """HTTP 层：POST 创建任务 → BackgroundTasks 执行字幕快路径 → GET 拿到文字稿与来源。"""
-    # S1-C：后端默认引擎为 cloud；本用例不传 engine，显式设为 local 走本地字幕快路径
-    # （否则会因未配云端 Key 被 400 CLOUD_NOT_CONFIGURED 预检拦下）
-    monkeypatch.setattr("app.routers.transcribe.ASR_ENGINE", "local")
+    # 本用例不传 engine，后端按能力自动挑：显式声明「没云端 Key、本地可用」，
+    # 让它选到 local 走字幕快路径（否则会因未配云端 Key 被 400 CLOUD_NOT_CONFIGURED 拦下）
+    monkeypatch.setattr("app.routers.transcribe.CLOUD_ASR_API_KEY", "")
+    monkeypatch.setattr("app.routers.transcribe.local_engine_available", lambda: True)
     monkeypatch.setattr(
         "app.services.transcribe.try_extract_subtitle_transcript",
         lambda url: ([{"time": 1.0, "text": "接口级字幕"}], "subtitle_ai"),

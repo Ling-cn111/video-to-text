@@ -167,8 +167,9 @@ def run_transcription_pipeline(
 ) -> None:
     """后台转写主流程。任何异常都收敛为任务 failed + 友好信息。
 
-    engine 为请求级手动选择（local | cloud，缺省跟随 ASR_ENGINE）；
-    云端运行期故障由 asr.transcribe_audio 内的 ASR_ENGINE_FALLBACK 降级本地。
+    engine 为请求级手动选择（local | cloud，缺省由调用方按可用性自动挑，见 routers/transcribe.py）；
+    云端运行期故障由 asr.transcribe_audio 内的 ASR_ENGINE_FALLBACK 降级本地，
+    但降级目标本身不可用（如云端镜像没装 faster-whisper）时会直接抛错，不白跑一趟。
 
     on_heartbeat：心跳回调（S2-P2），Worker 用它续期执行锁；同步上下文调用。
     byok_key：用户自带的云端 ASR Key（见 services/byok.py），只对 cloud 引擎有意义。

@@ -28,6 +28,7 @@ pnpm start       # 以生产模式启动，默认 3000 端口
 | `e2e/pr4-reading-and-export.spec.ts` | 回归 7-9：SRT/VTT 导出、目录搜索字号、总结详细度 |
 | `e2e/pr5-errors-and-theme.spec.ts` | 回归 10-13：404 页、错误边界产物、robots/sitemap、安全响应头、深色模式 |
 | `e2e/pr6-byok.spec.ts` | 回归 14-17：BYOK 面板存取与掩码、Key 走请求头不进请求体、错误归属、未配置提示的自助出路 |
+| `e2e/pr7-no-key-and-engine.spec.ts` | 回归 18-21：没有可用 Key 时不发请求也不报红卡、引导态一键打开设置、填完 Key 立刻可用、转写模式选择器按 `localAsrAvailable` 显示、面板只收 LLM Key 且文案如实 |
 
 **`test_byok.py`（后端）** 与上面的 BYOK 前端用例是配套的：前端只证明「头发出去了」，后端证明「收到后按请求级覆盖、被拒时报对错误码、不落库、不降级」。改任一侧都要跑另一侧。
 
@@ -133,5 +134,6 @@ PWA 验收需先 `pnpm build && pnpm start`；桌面端相关脚本见 [desktop-
 | 后端 | 上面的 pytest 命令（应与 CI 同为全绿，0 failed） |
 | 改限流（`rate_limit.py` / `main.py` 中间件顺序） | `pytest tests/test_rate_limit.py tests/test_rate_limit_redis.py`。**中间件顺序是命门**：`add_middleware` 后注册的包在外层，必须「先限流、后 CORS」，否则 429 绕过 CORS 处理，跨源前端只看到网络错误（`test_429_response_carries_cors_headers` 会拦） |
 | 改 `s.yaml` | `pytest tests/test_deploy_manifest.py`——它会把 §5 的模板副本与真实 `s.yaml` 逐字段比对，改一处忘另一处就红 |
-| 改 BYOK（`src/lib/byok.ts` / `services/byok.py` / 设置面板） | 前端 `pnpm exec playwright test e2e/pr6-byok.spec.ts` + 后端 `pytest tests/test_byok.py`。**两侧必须一起跑**：前端只证明「头发出去了」，后端证明「按请求级覆盖、被拒时报对错误码」。改请求头常量时前后端两个文件都要改，名字不一致不会报错、只会静默回落站点 Key |
+| 改 BYOK（`src/lib/byok.ts` / `services/byok.py` / 设置面板） | 前端 `pnpm exec playwright test e2e/pr6-byok.spec.ts e2e/pr7-no-key-and-engine.spec.ts` + 后端 `pytest tests/test_byok.py tests/test_capabilities.py`。**两侧必须一起跑**：前端只证明「头发出去了」，后端证明「按请求级覆盖、被拒时报对错误码」。改请求头常量时前后端两个文件都要改，名字不一致不会报错、只会静默回落站点 Key |
+| 改转写引擎选择 / 降级链（`_resolve_engine` / `local_engine_available` / `capabilities.localAsrAvailable`） | `pytest tests/test_capabilities.py tests/test_asr_cloud.py` + `pnpm exec playwright test e2e/pr7-no-key-and-engine.spec.ts`。**注意线上镜像不含 faster-whisper**：任何「默认走 local」的改动在线上都会变成 ModuleNotFoundError，必须由后端按能力挑 |
 | 文档 / 构建脚本 | 若动了 `next.config.mjs`、`scripts/`，跑一次 `pnpm build` |

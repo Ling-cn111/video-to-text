@@ -1,7 +1,6 @@
 import { create } from 'zustand'
 import { api, ApiError, type ClientErrorCode } from '@/lib/api'
 import { readLlmKey } from '@/lib/byok'
-import { summarizeUnconfiguredMessage } from '@/lib/capability-hint'
 import { ensureRecentTask, recordRecentTask, removeRecentTask, updateRecentTaskStatus } from '@/lib/recent-tasks'
 import type { RecentTaskStatus } from '@/lib/recent-tasks'
 import type {
@@ -146,13 +145,30 @@ function persistSummaryDetail(detail: SummaryDetail): void {
 }
 
 /**
- * 取当前 hostname 用于选文案（本地给配置指引，公网只说「暂不可用」）。
- * store 里的提示在事件回调里生成，此时一定在浏览器环境；SSR 兜底返回空串，
- * 空串按「非本机」处理，也就是宁可少说内部细节。
+ * 本次请求该不该带 engine。
+ *
+ * 只有「这个部署真能跑本地 ASR」时才带：那时选择器是可见的，用户的点击有意义。
+ * 否则必须传 undefined，让后端按「字幕 → 云端 ASR → 本地」的可用性自己挑
+ * （见 backend/app/routers/transcribe.py 的 _resolve_engine）。
+ *
+ * 为什么不能一直带 'local'：线上镜像没有 faster-whisper，带 'local' 会让
+ * build_engine 抛 ModuleNotFoundError，用户等满一分钟后收到「转写失败」——
+ * 而正确行为是走云端。这个 bug 靠界面隐藏选择器修不掉，必须连请求参数一起改。
  */
-function currentHostname(): string {
-  if (typeof window === 'undefined') return ''
-  return window.location.hostname
+function engineParam(capabilities: Capabilities | null, engine: TranscribeEngine): TranscribeEngine | undefined {
+  return capabilities?.localAsrAvailable ? engine : undefined
+}
+
+/**
+ * 有没有可用的 LLM Key：用户自己的优先，其次看站点是否配了。
+ * 站点未配（capabilities.summarizeConfigured === false 或尚未探测到）时，
+ * 用户填了自己的 Key 依然可用——这正是 BYOK 的意义。
+ * 探测失败（capabilities === null）时乐观放行：真没 Key 的话请求会带回
+ * SUMMARIZE_NOT_CONFIGURED，那时再显示引导也不迟。
+ */
+function hasLlmKey(): boolean {
+  if (readLlmKey()) return true
+  return useTaskStore.getState().capabilities?.summarizeConfigured !== false
 }
 
 /**
@@ -298,6 +314,9 @@ function forgetTask(taskId: string): void {
   removeRecentTask(taskId)
 }
 
+/** 能力探测是否真的成功拿到过一次（探测失败时不置位，下次还会重试） */
+let capabilitiesLoaded = false
+
 export const useTaskStore = create<TaskState>((set, get) => ({
   ...IDLE,
   engine: 'local',
@@ -306,9 +325,13 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   capabilities: null,
 
   loadCapabilities: async () => {
-    if (get().capabilities) return // 幂等：会话内只探测一次
+    // 幂等：会话内只探测一次。注意必须把「有没有拿到」与「拿到了什么」分开判断——
+    // 早期版本用 `if (get().capabilities) return`，一旦探测失败被写成乐观默认值，
+    // 之后即使后端恢复了也再不会重探，localAsrAvailable 会永远停在 false。
+    if (capabilitiesLoaded) return
     try {
       const capabilities = await api.getCapabilities()
+      capabilitiesLoaded = true
       set({ capabilities })
     } catch {
       // 探测失败不阻塞主流程：乐观放行（后端不可达时后续请求会给出明确错误）
@@ -321,7 +344,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     try {
       const video = await api.parseVideo(url)
       set({ video, sourceUrl: url })
-      const task = await api.startTranscription(video.videoId, video, url, get().engine)
+      // 先确保能力已探测：engine 传不传取决于本机有没有本地 ASR
+      await get().loadCapabilities()
+      const task = await api.startTranscription(
+        video.videoId,
+        video,
+        url,
+        engineParam(get().capabilities, get().engine),
+      )
       set({ taskId: task.taskId, stage: task.stage, progress: task.progress, phase: 'transcribing' })
       // P1-7：任务一创建就落一条记录，用户此刻关掉页面也还能从首页找回
       rememberTask(task.taskId, video, 'processing')
@@ -380,10 +410,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           return
         }
         set({ phase: 'summarizing', summaryError: null, ...transcriptReady })
-        // 能力前置：站点未配 LLM Key 且用户也没填自己的 Key 时，不发起无用请求，
-        // 直接给出引导（M2-P2-A）。BYOK 上线后「站点没配」不再等于「用不了」。
-        if (get().capabilities?.summarizeConfigured === false && !readLlmKey()) {
-          set({ phase: 'done', summary: null, summaryError: { code: 'SUMMARIZE_NOT_CONFIGURED', message: summarizeUnconfiguredMessage(currentHostname()) } })
+        // 能力前置：没有可用 Key 时**不自动发起**注定失败的请求，直接落到「手动生成」态
+        // （结果页会把按钮换成「填写自己的 Key」）。用红卡报 SUMMARIZE_NOT_CONFIGURED
+        // 是不对的——用户什么都没做错，他只是还没填 Key。
+        await get().loadCapabilities()
+        if (!hasLlmKey()) {
+          set({ phase: 'done', summary: null, summaryError: null, ...transcriptReady })
           return
         }
         try {
@@ -458,9 +490,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         return
       }
       set({ phase: 'summarizing', transcript: readyTranscript, plainText: task.plainText ?? null, transcriptSource: task.transcriptSource ?? null, summaryError: null })
-      // 能力前置（M2-P2-A）：站点未配 LLM Key 且用户也没填自己的，才不发起请求
-      if (get().capabilities?.summarizeConfigured === false && !readLlmKey()) {
-        set({ phase: 'done', summary: null, summaryError: { code: 'SUMMARIZE_NOT_CONFIGURED', message: summarizeUnconfiguredMessage(currentHostname()) } })
+      // 能力前置：没有可用 Key 时落到「手动生成」态，不报错（用户没做错什么）。
+      // 结果页会把按钮换成「填写自己的 Key」，填完点一下就能生成。
+      await get().loadCapabilities()
+      if (!hasLlmKey()) {
+        set({ phase: 'done', summary: null, summaryError: null })
         return
       }
       // 缓存命中：刷新 / 直链恢复不再重传整份文字稿、不再重复调 LLM（后端 summarize 无状态、不落库）
@@ -494,8 +528,13 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (!video) return null
     set({ phase: 'parsing', error: null, stage: null, progress: 0 })
     try {
-      // 重试沿用提交时的转写模式（engine 为用户偏好，跨任务保留）
-      const task = await api.startTranscription(video.videoId, video, sourceUrl ?? undefined, get().engine)
+      // 重试沿用同一套 engine 判定：有本地 ASR 才带用户偏好，否则交给后端自动挑
+      const task = await api.startTranscription(
+        video.videoId,
+        video,
+        sourceUrl ?? undefined,
+        engineParam(get().capabilities, get().engine),
+      )
       set({ taskId: task.taskId, stage: task.stage, progress: task.progress, phase: 'transcribing' })
       return task.taskId
     } catch (error) {

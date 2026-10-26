@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { ExternalLink, KeyRound, ShieldCheck, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -15,44 +15,35 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useApiSettingsOpenSignal } from '@/hooks/use-api-settings'
 import { notifyByokChanged } from '@/hooks/use-byok-status'
-import {
-  ASR_KEY_PROVIDERS,
-  LLM_KEY_PROVIDERS,
-  clearAllKeys,
-  maskKey,
-  readAsrKey,
-  readLlmKey,
-  saveAsrKey,
-  saveLlmKey,
-  validateKeyFormat,
-  type KeyProvider,
-} from '@/lib/byok'
+import { LLM_KEY_PROVIDERS, maskKey, readLlmKey, saveLlmKey, validateKeyFormat } from '@/lib/byok'
 
 /**
- * API 设置面板：让用户填自己的 Key，用各自的额度。
+ * 一个 Key 字段。三条界面约束，改之前先想清楚：
  *
- * 三条界面约束：
- * 1. **默认遮住已填的 Key**（只露末 4 位）。设置面板经常在投屏、录屏、截图的场景
- *    下打开，明文铺在屏幕上等于泄露。
- * 2. **保存前不做「有效性」判断**，只拦手误（空格/超长/过短）。Key 是否有效只有
- *    服务商知道；在这里假装能验证，用户会以为填对了，直到转写失败才发现。
- * 3. **必须写清存储位置与风险**。用户把 Key 交给一个网页，有权知道它存在哪、
- *    会不会上传。含糊其辞比不写更糟。
+ * 1. **默认遮住**：填完立刻变掩码。投屏、录屏、截图、旁边有人看一眼，都不该泄露。
+ * 2. **保存前不做有效性判断**：只有服务商知道 Key 能不能用，本地瞎猜会把合法 Key 拒掉。
+ *    真正的校验发生在第一次调用，错误码 `BYOK_KEY_INVALID` 会把用户指回这个面板。
+ * 3. **必须写清存储位置与边界**：见面板底部说明，不能含糊成「不会上传」。
  */
-
-interface KeyFieldProps {
+function KeyField({
+  id,
+  title,
+  description,
+  providers,
+  stored,
+  onSave,
+  testId,
+}: {
   id: string
   title: string
   description: string
-  providers: KeyProvider[]
-  /** 当前已保存的值（挂载后从 localStorage 读，避免 hydration mismatch） */
+  providers: typeof LLM_KEY_PROVIDERS
   stored: string | null
   onSave: (value: string | null) => void
   testId: string
-}
-
-function KeyField({ id, title, description, providers, stored, onSave, testId }: KeyFieldProps) {
+}) {
   const [draft, setDraft] = useState('')
   const [editing, setEditing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -78,7 +69,7 @@ function KeyField({ id, title, description, providers, stored, onSave, testId }:
     setDraft('')
     setEditing(false)
     setError(null)
-    toast.success(`${title} 已清除，将改用站点提供的额度`)
+    toast.success(`${title} 已清除`)
   }
 
   return (
@@ -96,7 +87,7 @@ function KeyField({ id, title, description, providers, stored, onSave, testId }:
           </span>
         ) : (
           <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-            使用站点额度
+            未填写
           </span>
         )}
       </div>
@@ -185,12 +176,14 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
   // 初始 null，挂载后再读 localStorage：服务端没有 localStorage，
   // 直接在 useState 初值里读会导致 hydration 前后 DOM 不一致
   const [llmKey, setLlmKey] = useState<string | null>(null)
-  const [asrKey, setAsrKey] = useState<string | null>(null)
+
+  // 任意位置（结果页总结卡、首页提示）都能把这个面板叫起来
+  const handleExternalOpen = useCallback(() => onOpenChange(true), [onOpenChange])
+  useApiSettingsOpenSignal(handleExternalOpen)
 
   useEffect(() => {
     if (!open) return
     setLlmKey(readLlmKey())
-    setAsrKey(readAsrKey())
   }, [open])
 
   function handleSaveLlm(value: string | null) {
@@ -200,18 +193,11 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
     notifyByokChanged()
   }
 
-  function handleSaveAsr(value: string | null) {
-    saveAsrKey(value)
-    setAsrKey(value)
-    notifyByokChanged()
-  }
-
   function handleClearAll() {
-    clearAllKeys()
+    saveLlmKey(null)
     setLlmKey(null)
-    setAsrKey(null)
     notifyByokChanged()
-    toast.success('已清除全部 Key，将改用站点提供的额度')
+    toast.success('已清除 API Key')
   }
 
   return (
@@ -223,7 +209,8 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
             API 设置
           </DialogTitle>
           <DialogDescription>
-            填自己的 Key 就用各自的额度，不占用站点配额。不填则使用站点提供的额度（可能因共享而排队）。
+            填自己的 AI 总结 Key，就用你自己的额度，不占用站点配额。不填则走站点额度（本站默认不提供，
+            需要自己填）。语音识别用的是免费模型，不需要填 Key。
           </DialogDescription>
         </DialogHeader>
 
@@ -231,28 +218,19 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
           <KeyField
             id="byok-llm"
             title="AI 总结 Key"
-            description="用于生成概要、要点与章节笔记"
+            description="用于生成一句话概要、核心要点与章节笔记"
             providers={LLM_KEY_PROVIDERS}
             stored={llmKey}
             onSave={handleSaveLlm}
             testId="byok-llm"
           />
-          <KeyField
-            id="byok-asr"
-            title="语音识别 Key"
-            description="用于云端转写（本地模式不需要 Key）"
-            providers={ASR_KEY_PROVIDERS}
-            stored={asrKey}
-            onSave={handleSaveAsr}
-            testId="byok-asr"
-          />
         </div>
 
         <div className="flex gap-2 rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
           <ShieldCheck className="mt-0.5 size-4 shrink-0" aria-hidden />
-          <p>
-            Key 只保存在这台设备的浏览器里，不会上传到服务器，也不会写进日志。请求时通过请求头直接发给你选的服务商。
-            公用电脑上用完建议清除。
+          <p data-testid="byok-storage-note">
+            填写后只保存在这台设备的浏览器里，不用每次重填。生成总结时，Key 会随请求发给本站后端，后端用它调用你选的
+            AI 服务商，用完即丢弃：不写入任务记录、不写进日志、不随任务存下来。公用电脑上用完建议清除。
           </p>
         </div>
 
@@ -263,9 +241,9 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
             size="sm"
             onClick={handleClearAll}
             data-testid="byok-clear-all"
-            disabled={!llmKey && !asrKey}
+            disabled={!llmKey}
           >
-            清除全部
+            清除
           </Button>
           <Button type="button" onClick={() => onOpenChange(false)} data-testid="byok-done">
             完成

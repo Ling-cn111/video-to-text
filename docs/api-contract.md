@@ -22,7 +22,7 @@
 | POST | `/api/transcribe` | 创建转写任务 → `{ taskId, status, progress, stage }` |
 | GET | `/api/transcribe/{taskId}` | 轮询任务 → `{ status, stage, progress, video?, transcript?, plainText?, error?, transcriptSource? }` |
 | POST | `/api/summarize` | 生成总结（无状态）→ `{ summary, keyPoints, chapters }` |
-| GET | `/api/capabilities` | 配置态探测 → `{ cloudAsrConfigured, summarizeConfigured }`（只返回布尔，**不含 Key 信息**） |
+| GET | `/api/capabilities` | 配置态与依赖探测 → `{ cloudAsrConfigured, summarizeConfigured, localAsrAvailable }`（只返回布尔，**不含 Key 信息**） |
 | GET | `/api/health` | 可达性探测 → `{ status: "ok" }` |
 
 ### 2.1 `POST /api/transcribe` 请求体
@@ -32,11 +32,18 @@
   "videoId": "BV1xx411c7mD",   // 必填
   "video": { /* VideoInfo，可选，透传解析结果 */ },
   "url": "https://www.bilibili.com/video/BV1xx411c7mD",  // 真实后端用
-  "engine": "local"            // "local"（默认）| "cloud"
+  "engine": "local"            // 可选："local" | "cloud"；不传由后端按能力自动挑
 }
 ```
 
-`engine` 是**纯手动**选择，随首页「转写模式」传入，后端不做自动判断。
+`engine` 的行为：
+
+- **传了**：照它说的办（`cloud` 还要预检 Key，站点与请求头都没 Key 时 400 `CLOUD_NOT_CONFIGURED`）。
+  只有 `capabilities.localAsrAvailable === true` 的自建部署才会传——那时首页显示选择器，用户的点击有意义。
+- **不传**（网页端与桌面端的默认行为）：后端按可用性自动挑，顺序是
+  「有云端 ASR Key → `cloud`（快、准）→ 否则本地引擎可用 → `local`（免费、慢）→ 都没有 → 400 `CLOUD_NOT_CONFIGURED`」。
+  线上 FC 镜像按 `requirements-cloud.txt` 构建，**不含 faster-whisper**，所以自动挑的结果必然是 `cloud`。
+  这条不能由前端猜：猜 `local` 会让线上任务在等满一分钟后以 `ModuleNotFoundError` 收场。
 
 ### 2.2 `POST /api/summarize` 请求体
 
@@ -65,6 +72,10 @@
 | --- | --- | --- |
 | `X-Vtt-Llm-Key` | `POST /api/summarize` 的 LLM Key | 回落站点 `DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` |
 | `X-Vtt-Asr-Key` | `POST /api/transcribe`（`engine=cloud`）的云端 ASR Key | 回落站点 `CLOUD_ASR_API_KEY` |
+
+**界面只收集 `X-Vtt-Llm-Key`**：云端 ASR 用的是硅基流动的免费模型（刊例价 0 元/千字符），
+用户没有自备 Key 的必要，多一个输入框只是多一道门槛。`X-Vtt-Asr-Key` 保留给脚本与
+API 调用方，前端不再发送。
 
 约定：
 

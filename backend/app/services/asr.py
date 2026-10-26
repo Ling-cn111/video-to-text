@@ -13,8 +13,10 @@
   context 注入热词；官方支持 Songs with BGM（针对 faster-whisper 强 BGM 幻觉）
 - FunASRNanoEngine：Fun-ASR-Nano-2512（funasr 包，0.8B 级 CPU 友好，无时间戳输出）
 - ASR_ENGINE=faster-whisper|qwen3|funasr|cloud 切换（兼容旧值 local；旧变量名 ASR_PROVIDER）
-- 引擎切换完全手动（环境变量 / 请求 engine 字段），不做基于 VAD / 信噪比的自动判断；
-  ASR_ENGINE_FALLBACK：主引擎失败自动降级（默认 faster-whisper，留空禁用）
+- 引擎切换不做基于 VAD / 信噪比的自动判断；请求没带 engine 时由 routers/transcribe.py
+  按「有没有云端 Key / 本地依赖装没装」自动挑（local_engine_available() 就是那个探针）
+- ASR_ENGINE_FALLBACK：主引擎失败自动降级（默认 faster-whisper，留空禁用）；
+  降级目标不可用时直接抛错，不白跑一趟
 - 输出统一过 postprocess_items：zhconv 繁→简、折叠明显重复词、按语言补句末标点
 - initial_prompt：热词（hotwords）+ 视频标题组合，引导专有名词识别
 - 去磁盘化（S1-B）：音频以 BytesIO 贯穿；PyAV 解码与云端上传均直接吃内存，
@@ -409,6 +411,8 @@ class FunASRNanoEngine(BaseASREngine):
 
 _ENGINES: dict[str, BaseASREngine] = {}
 _ENGINE_LOCK = threading.Lock()
+# 本地 ASR 依赖探测结果缓存：None=未探测，True/False=已探测
+_LOCAL_AVAILABLE: bool | None = None
 
 _ENGINE_BUILDERS = {
     "faster-whisper": lambda: LocalWhisperEngine(),
@@ -417,6 +421,27 @@ _ENGINE_BUILDERS = {
     "funasr": lambda: FunASRNanoEngine(),
     "cloud": lambda: CloudASREngine(),
 }
+
+
+def local_engine_available() -> bool:
+    """本地 ASR 依赖是否齐备（faster-whisper + PyAV）。
+
+    线上 FC 镜像按 `requirements-cloud.txt` 构建，**不含**这两个包，本地引擎
+    import 就会炸。所以「降级到本地」在线上是一句空话——不先问这一句，
+    用户会在进度条走完 40 秒后收到一个「转写失败」，而他本来只想用云端。
+
+    结果缓存：依赖不会在进程生命周期里装上来，重复探测只是白白 import 两次。
+    """
+    global _LOCAL_AVAILABLE
+    if _LOCAL_AVAILABLE is None:
+        try:
+            import av  # noqa: F401
+            import faster_whisper  # noqa: F401
+        except Exception:
+            _LOCAL_AVAILABLE = False
+        else:
+            _LOCAL_AVAILABLE = True
+    return _LOCAL_AVAILABLE
 
 
 def build_engine(name: str) -> BaseASREngine:
@@ -464,6 +489,10 @@ def transcribe_audio(
     except Exception as exc:
         fallback_name = ASR_ENGINE_FALLBACK.strip()
         if not fallback_name or fallback_name == primary.name:
+            raise
+        # 降级目标不可用就别试了：线上镜像没有本地依赖，build_engine 会抛
+        # ModuleNotFoundError，白等一次 import 再抛原始错误，日志里还会多一条误导性堆栈。
+        if fallback_name == "local" and not local_engine_available():
             raise
         fallback = build_engine(fallback_name)
         try:

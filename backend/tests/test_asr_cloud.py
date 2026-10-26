@@ -240,10 +240,9 @@ def test_submit_cloud_with_key_creates_task(monkeypatch):
     assert tasks_module.get_task(task_id).engine == "cloud"
 
 
-def test_submit_without_engine_defaults_to_env_engine(monkeypatch):
-    # 缺省不传 engine：跟随后端 ASR_ENGINE（S1-C 起默认 cloud）。
+def test_submit_without_engine_picks_cloud_when_key_present(monkeypatch):
+    # 缺省不传 engine：后端按能力自动挑（云端有 Key 就优先云端，快且准）。
     # 注入假 Key 仅用于通过 _resolve_engine 预检，不访问真实网络（后台流水线已被拦截）。
-    monkeypatch.setattr("app.routers.transcribe.ASR_ENGINE", "cloud")
     monkeypatch.setattr("app.routers.transcribe.CLOUD_ASR_API_KEY", "test-key")
 
     response = client.post("/api/transcribe", json=VIDEO_BODY)
@@ -253,10 +252,21 @@ def test_submit_without_engine_defaults_to_env_engine(monkeypatch):
 
 
 def test_submit_without_engine_and_no_cloud_key_rejected(monkeypatch):
-    # S1-C 默认 cloud 后：未传 engine 且未配 Key → 预检拒绝（不静默降级、不创建任务）
-    monkeypatch.setattr("app.routers.transcribe.ASR_ENGINE", "cloud")
+    # 未传 engine、没云端 Key、本地依赖也没装 → 明确报缺什么（不静默降级、不创建任务）
     monkeypatch.setattr("app.routers.transcribe.CLOUD_ASR_API_KEY", "")
+    monkeypatch.setattr("app.routers.transcribe.local_engine_available", lambda: False)
 
     response = client.post("/api/transcribe", json=VIDEO_BODY)
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "CLOUD_NOT_CONFIGURED"
+
+
+def test_submit_without_engine_falls_back_to_local_when_no_cloud_key(monkeypatch):
+    # 没有云端 Key 但本机装得上 faster-whisper（本地自建部署）→ 自动走本地，免费可用
+    monkeypatch.setattr("app.routers.transcribe.CLOUD_ASR_API_KEY", "")
+    monkeypatch.setattr("app.routers.transcribe.local_engine_available", lambda: True)
+
+    response = client.post("/api/transcribe", json=VIDEO_BODY)
+    assert response.status_code == 200
+    task_id = response.json()["taskId"]
+    assert tasks_module.get_task(task_id).engine == "local"

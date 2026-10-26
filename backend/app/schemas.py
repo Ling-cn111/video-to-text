@@ -31,8 +31,10 @@ class StartTranscribeRequest(BaseModel):
     - videoId 必填；url 缺省时由 videoId 按平台规则重建
     - video 为解析阶段透传的元数据（供前端刷新恢复展示）
     - hotwords 为可选热词（专有名词列表，经 initial_prompt 引导 ASR 识别）
-    - engine 为可选转写引擎手动选择：local（本地 faster-whisper）/ cloud（云端 OpenAI 兼容）；
-      缺省跟随后端 ASR_ENGINE 环境变量。纯手动选择，无自动切换
+    - engine 为可选转写引擎手动选择：local（本地 faster-whisper）/ cloud（云端 OpenAI 兼容）。
+      不传时由 routers/transcribe.py 的 _resolve_engine 按实际可用性自动挑
+      （有云端 Key → cloud，否则本地可用 → local，都没有 → CLOUD_NOT_CONFIGURED）；
+      传了就照办。网页端与桌面端因线上镜像不含本地 ASR，一律不传
     """
 
     videoId: str
@@ -99,10 +101,16 @@ class SummaryResponse(BaseModel):
 
 
 class CapabilitiesResponse(BaseModel):
-    """能力探测（任务 M2-P2-A）：仅两个布尔，绝不含 Key 的任何信息。"""
+    """能力探测（任务 M2-P2-A）：仅布尔状态，绝不含 Key 的任何信息。
+
+    localAsrAvailable 是**依赖可用性**探测，不是配置探测：线上 FC 镜像按
+    requirements-cloud.txt 构建，不含 faster-whisper，本地引擎根本跑不起来。
+    前端据此决定是否显示「本地 / 云端」选择器。
+    """
 
     cloudAsrConfigured: bool
     summarizeConfigured: bool
+    localAsrAvailable: bool = False
 
 
 class TaskDetailResponse(BaseModel):

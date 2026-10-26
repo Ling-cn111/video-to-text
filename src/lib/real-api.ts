@@ -39,8 +39,8 @@ export const realApi: ApiClient = {
     toJson(
       fetch(apiUrl('/transcribe'), {
         method: 'POST',
-        // 用户自带 ASR Key 时随请求带上（没填则空对象，后端回落站点 Key）
-        headers: { ...JSON_HEADERS, ...byokHeaderFor('asr') },
+        // 云端 ASR 用的是站点的免费模型 Key，界面不再收集用户自带的 ASR Key
+        headers: JSON_HEADERS,
         body: JSON.stringify({ videoId, video, url, engine }),
       }).catch(throwNetworkError),
     ),
@@ -53,8 +53,8 @@ export const realApi: ApiClient = {
     toJson(
       fetch(apiUrl('/summarize'), {
         method: 'POST',
-        // 用户自带 LLM Key 时随请求带上；只带 LLM 那一把，不把 ASR Key 也捎过去
-        headers: { ...JSON_HEADERS, ...byokHeaderFor('llm') },
+        // 用户自带 LLM Key 时随请求带上（没填则空对象，后端回落站点 Key）
+        headers: { ...JSON_HEADERS, ...byokHeaderFor() },
         body: JSON.stringify({
           transcript: request.transcript,
           title: request.title,

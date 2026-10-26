@@ -2,17 +2,17 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
-import { readAsrKey, readLlmKey } from '@/lib/byok'
+import { readLlmKey } from '@/lib/byok'
 
 /**
- * 用户是否已填了自己的 Key（BYOK）。
+ * 用户是否已填了自己的 LLM Key（BYOK）。
  *
- * 存在的理由：`capabilities.summarizeConfigured` / `cloudAsrConfigured` 只描述
- * **站点**有没有配 Key。BYOK 上线后「站点没配」不再等于「用不了」——用户自己
- * 填了 Key 就完全可用。若仍按 capabilities 一刀切禁用按钮，用户会看到一个
- * 灰掉的「生成 AI 总结」和「未配置」提示，而他刚在设置里填好了 Key。
+ * 存在的理由：`capabilities.summarizeConfigured` 只描述**站点**有没有配 Key。
+ * BYOK 上线后「站点没配」不再等于「用不了」——用户自己填了 Key 就完全可用。
+ * 若仍按 capabilities 一刀切禁用按钮，用户会看到一个灰掉的「生成 AI 总结」
+ * 和「未配置」提示，而他刚在设置里填好了 Key。
  *
- * 因此所有能力门禁都要变成：`站点未配 && 用户未填` 才禁用。
+ * 因此总结相关的能力门禁是：`站点未配 && 用户未填` 才禁用。
  *
  * 实现细节：
  * - 初值 false，挂载后再读 localStorage（服务端没有 localStorage，直接读会让
@@ -30,16 +30,15 @@ export function notifyByokChanged(): void {
 
 export interface ByokStatus {
   hasLlmKey: boolean
-  hasAsrKey: boolean
-  /** 已挂载并读过一次 localStorage；此前两个布尔都不可信 */
+  /** 已挂载并读过一次 localStorage；此前布尔不可信 */
   ready: boolean
 }
 
 export function useByokStatus(): ByokStatus {
-  const [status, setStatus] = useState<ByokStatus>({ hasLlmKey: false, hasAsrKey: false, ready: false })
+  const [status, setStatus] = useState<ByokStatus>({ hasLlmKey: false, ready: false })
 
   const refresh = useCallback(() => {
-    setStatus({ hasLlmKey: Boolean(readLlmKey()), hasAsrKey: Boolean(readAsrKey()), ready: true })
+    setStatus({ hasLlmKey: Boolean(readLlmKey()), ready: true })
   }, [])
 
   useEffect(() => {

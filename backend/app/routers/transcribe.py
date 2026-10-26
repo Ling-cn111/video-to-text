@@ -7,10 +7,11 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, Header
 
-from app.config import ASR_ENGINE, CLOUD_ASR_API_KEY
+from app.config import CLOUD_ASR_API_KEY
 from app.errors import CloudNotConfiguredError, InvalidUrlError, TaskNotFoundError, UnsupportedPlatformError
 from app.platforms import detect_platform
 from app.schemas import StartTaskResponse, StartTranscribeRequest, TaskDetailResponse
+from app.services.asr import local_engine_available
 from app.services.byok import HEADER_ASR_KEY, normalize_key
 from app.services.dispatcher import TranscribeJob, enqueue
 from app.services.tasks import create_task, get_task, update_task
@@ -25,16 +26,30 @@ _URL_TEMPLATES = {"bilibili": "https://www.bilibili.com/video/{videoId}"}
 
 
 def _resolve_engine(payload: StartTranscribeRequest, byok_key: str | None = None) -> str:
-    """解析本次任务的 ASR 引擎：请求字段优先，缺省跟随后端 ASR_ENGINE 环境变量。
+    """解析本次任务的 ASR 引擎。
 
-    云端模式在提交时预检 Key：用户自带 Key 或站点已配 Key 均可放行；两者都没有时
-    直接报 CLOUD_NOT_CONFIGURED（明确中文提示），不创建任务、不静默降级；
-    运行期云端故障仍由 ASR_ENGINE_FALLBACK 降级本地。
+    两种情形：
+
+    1. 请求显式带了 engine（本地自建部署仍保留「本地 / 云端」选择器，见
+       capabilities.localAsrAvailable）：照它说的办，云端还要预检 Key。
+    2. 请求没带 engine（网页端与桌面端已隐藏该选择器）：按能力自动挑，即
+       「能用哪个就用哪个」——有云端 Key 走云端（快、准），没有就退本地
+       （免费、慢），两个都没有才报错。降级顺序由后端决定而不是前端猜。
+
+    不自动挑的后果很具体：线上 FC 镜像没有 faster-whisper，若前端仍发
+    engine=local，用户会在等满 40 秒后收到一句没有信息量的「转写失败」。
     """
-    engine = payload.engine or ASR_ENGINE
-    if engine == "cloud" and not CLOUD_ASR_API_KEY and not byok_key:
-        raise CloudNotConfiguredError()
-    return engine
+    if payload.engine:
+        if payload.engine == "cloud" and not CLOUD_ASR_API_KEY and not byok_key:
+            raise CloudNotConfiguredError()
+        return payload.engine
+
+    if CLOUD_ASR_API_KEY or byok_key:
+        return "cloud"
+    if local_engine_available():
+        return "local"
+    # 两个都没有：说清楚缺什么，而不是让用户去猜
+    raise CloudNotConfiguredError()
 
 
 def _resolve_target_url(payload: StartTranscribeRequest) -> str:
