@@ -26,6 +26,7 @@ pnpm start       # 以生产模式启动，默认 3000 端口
 | `e2e/platform-claims.spec.ts` | 平台宣称 1-4：首页文案 / 示例链接 / 文案函数 / `resolveVideoUrl` 与 `SUPPORTED_PLATFORMS` 一致 |
 | `e2e/pr3-progress-and-history.spec.ts` | 回归 4-6：最近转写记录、进度页离开出口、剩余时间与轮询节奏纯函数 |
 | `e2e/pr4-reading-and-export.spec.ts` | 回归 7-9：SRT/VTT 导出、目录搜索字号、总结详细度 |
+| `e2e/pr5-errors-and-theme.spec.ts` | 回归 10-13：404 页、错误边界产物、robots/sitemap、安全响应头、深色模式 |
 
 ### 2.1 关键陷阱：`NEXT_PUBLIC_USE_MOCK` 是构建期常量
 
@@ -70,6 +71,14 @@ $env:VTT_EXPECT_MODE = "real"; pnpm exec playwright test -g "锁定 7|平台宣�
 ```
 
 > **必须把 `NEXT_PUBLIC_USE_MOCK` 同时传给测试进程**，只传 `VTT_EXPECT_MODE` 会红。原因：`e2e/platform-claims.spec.ts` 在 Node 里 `import` 了 `src/lib/platforms/registry.ts` 来算「本构建该宣称哪些平台」，而 `SUPPORTED_PLATFORMS` 是构建期常量。测试进程没拿到该变量时，它按 Mock 模式期望「B站 / 抖音」，页面却按真实模式只显示「B站」，两边打架。
+
+> **另一个高频坑：端口 3000 被旧服务占用。** `playwright.config.ts` 的 `reuseExistingServer` 在非 CI 下为 true，本地若还留着一个 Mock 模式 `pnpm start`，真实模式用例会**打到那个旧服务上**，表现为「刚构建的真实产物却断言出 Mock 行为」。切换模式前先确认 3000 端口空闲：
+>
+> ```bash
+> netstat -ano | grep ":3000.*LISTENING"     # 有输出说明被占用
+> ```
+>
+> 这不是代码问题，重跑前杀掉旧进程即可。
 
 ### 2.4 CI 为什么不会遇到这个问题
 
@@ -116,5 +125,7 @@ PWA 验收需先 `pnpm build && pnpm start`；桌面端相关脚本见 [desktop-
 | --- | --- |
 | 前端 UI / 逻辑 | `pnpm lint` + `pnpm build` + Mock 模式全量 E2E |
 | 前端路由 / Mock 数据 / 平台宣称 / 导出 | 同上，另加真实模式 `-g "锁定 7\|平台宣称"`（记得同时传 `NEXT_PUBLIC_USE_MOCK=false`） |
+| 改根布局 / 主题 / Service Worker | 同上，**并确认 `public/sw.js` 的 `CACHE_NAME` 已提升**（v3 → v4），否则老客户端长期跑旧外壳 |
+| 改 `next.config.mjs`（响应头 / 重写） | `pnpm build` 后 `curl -sI http://localhost:3000/` 逐条核对头，E2E 回归 12 也会拦 |
 | 后端 | 上面的 pytest 命令（应与 CI 同为全绿，0 failed） |
 | 文档 / 构建脚本 | 若动了 `next.config.mjs`、`scripts/`，跑一次 `pnpm build` |
