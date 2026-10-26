@@ -23,15 +23,22 @@ app = FastAPI(
     description="视频链接转文字后端（当前仅实现解析）",
 )
 
+# 请求限流（任务 H）：每 IP 每分钟 POST 上限（RATE_LIMIT_PER_MINUTE，0 禁用）
+# 必须先于 CORSMiddleware 注册：Starlette 的 add_middleware 是「后注册的更靠外层」，
+# 先加限流、再加 CORS，CORS 才包在限流外面，429 响应才会带上 CORS 头。
+# 反过来写会让限流器直接返回裸 429，浏览器拿不到 access-control-allow-origin，
+# 前端只能看到 CORS 错误（S3 实测复现），用户永远看不到「请求太频繁」。
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
     allow_origin_regex=CORS_ORIGIN_REGEX,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
+    # 429 的 Retry-After 要让前端 JS 读得到（决定冷却倒计时时长）。
+    # 跨源响应里除 CORS 安全列表头之外的自定义头默认不可见，必须显式暴露。
+    expose_headers=["Retry-After"],
 )
-# 请求限流（任务 H）：每 IP 每分钟 POST 上限（RATE_LIMIT_PER_MINUTE，0 禁用）
-app.add_middleware(RateLimitMiddleware)
 
 app.include_router(parse_router)
 app.include_router(transcribe_router)

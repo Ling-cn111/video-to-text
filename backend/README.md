@@ -135,15 +135,26 @@ DEEPSEEK_API_KEY=sk-xxxx         # 二选一；qwen 用 DASHSCOPE_API_KEY
 - 长文 chunking：超 6000 字按条目边界切块（条目不拆），逐块提取要点 → 合并终稿；时间戳全程指向原 transcript
 - 成本：每次调用记录 usage tokens 与估算成本（`LLM_PRICE_TABLE`，占位单价待官网核对）→ 日志；实测数据见 [docs/llm-cost.md](../docs/llm-cost.md)
 
-## 请求限流（任务 H + S1-C）
+## 请求限流（任务 H + S1-C + S3 安全修复）
 
-令牌桶，**仅拦截 POST**（GET 轮询不限）：每 IP 每分钟 `RATE_LIMIT_PER_MINUTE` 次（默认 10，**0 = 禁用**）。IP 取 `X-Forwarded-For` 首段（同源代理场景），缺省用直连地址。超限返回 429：
+令牌桶，**仅拦截 POST**（GET 轮询不限）。两级配额：
+
+| 配额 | 变量 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| 每客户端 | `RATE_LIMIT_PER_MINUTE` | 10 | 单个客户端每分钟 POST 上限 |
+| 全站 | `RATE_LIMIT_GLOBAL_PER_MINUTE` | 120 | 所有客户端合计每分钟 POST 上限 |
+
+两者都设 **0 = 禁用**。超限返回 429（带 `Retry-After` 秒数）：
 
 ```json
 { "error": { "code": "RATE_LIMITED", "message": "请求太频繁，请稍后再试" } }
 ```
 
-存储（S1-C）：**配置 `REDIS_URL` 后使用 Redis 共享计数**（多后端实例总配额一致；`WATCH/MULTI/EXEC` 乐观事务保证读改写原子，key `ratelimit:<ip>`，TTL 120s）。未配置 `REDIS_URL`、redis 包缺失或**运行期 Redis 故障**时自动降级进程内令牌桶，服务不中断；降级警告 60 秒内同类错误只记一次，避免 Redis 宕机时日志被刷爆。多实例部署需 `pip install -r requirements-redis.txt`。
+**客户端标识（安全默认：不信任转发头）**：默认**完全忽略 `X-Forwarded-For`**，一律取 TCP 对端地址。只有配置了 `TRUSTED_PROXY_CIDRS`（逗号分隔 CIDR）且对端命中该网段时，才解析 `X-Forwarded-For`，并**从右往左跳过可信代理取第一个不可信地址**——攻击者能控制的只有链最左边，所以「取首段」是错误做法。IPv6 按 /64 归并（单机通常握有整个 /64，逐地址计桶等于不限流）。
+
+> 历史坑（S3）：旧实现取 `X-Forwarded-For` 首段。实测对线上环境轮换 14 个伪造 IP 连发 14 次 POST，**零 429**，限流被完全绕过；反之浏览器不发该头时，`scope["client"]` 在 Serverless 网关后是固定内部地址，**所有用户塌缩成同一个桶**，整站实际只有 10 次/分钟。因此必须同时具备「不信任转发头的默认值」与「全站兜底配额」两层，任一单独存在都不够。
+
+存储（S1-C）：**配置 `REDIS_URL` 后使用 Redis 共享计数**（多后端实例总配额一致；`WATCH/MULTI/EXEC` 乐观事务保证读改写原子，key `ratelimit:<客户端标识>`，TTL 120s）。未配置 `REDIS_URL`、redis 包缺失或**运行期 Redis 故障**时自动降级进程内令牌桶，服务不中断；降级警告 60 秒内同类错误只记一次，避免 Redis 宕机时日志被刷爆。多实例部署需 `pip install -r requirements-redis.txt`。
 
 实现：`app/services/rate_limit.py`（`MemoryRateLimiter` / `RedisRateLimiter` + 纯 ASR 中间件）。
 

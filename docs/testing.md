@@ -128,4 +128,6 @@ PWA 验收需先 `pnpm build && pnpm start`；桌面端相关脚本见 [desktop-
 | 改根布局 / 主题 / Service Worker | 同上，**并确认 `public/sw.js` 的 `CACHE_NAME` 已提升**（v3 → v4），否则老客户端长期跑旧外壳 |
 | 改 `next.config.mjs`（响应头 / 重写） | `pnpm build` 后 `curl -sI http://localhost:3000/` 逐条核对头，E2E 回归 12 也会拦 |
 | 后端 | 上面的 pytest 命令（应与 CI 同为全绿，0 failed） |
+| 改限流（`rate_limit.py` / `main.py` 中间件顺序） | `pytest tests/test_rate_limit.py tests/test_rate_limit_redis.py`。**中间件顺序是命门**：`add_middleware` 后注册的包在外层，必须「先限流、后 CORS」，否则 429 绕过 CORS 处理，跨源前端只看到网络错误（`test_429_response_carries_cors_headers` 会拦） |
+| 改 `s.yaml` | `pytest tests/test_deploy_manifest.py`——它会把 §5 的模板副本与真实 `s.yaml` 逐字段比对，改一处忘另一处就红 |
 | 文档 / 构建脚本 | 若动了 `next.config.mjs`、`scripts/`，跑一次 `pnpm build` |

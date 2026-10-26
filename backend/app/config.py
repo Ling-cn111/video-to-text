@@ -148,8 +148,29 @@ ASYNC_TIMEOUT_SECONDS: float = float(
     os.getenv("ASYNC_TIMEOUT_SECONDS") or os.getenv("FC_ASYNC_TIMEOUT_SECONDS") or "5"
 )
 
-# 请求限流（令牌桶，任务 H）：每 IP 每分钟 POST 请求数上限；0 = 禁用
+# 请求限流（令牌桶，任务 H）：每个客户端每分钟 POST 请求数上限；0 = 禁用
 RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "10"))
+
+# 全局兜底配额（S3 安全修复）：所有客户端合计每分钟 POST 上限；0 = 禁用。
+# 为什么必须有：本项目 API 无鉴权，限流是唯一防线。客户端标识（IP）在
+# Serverless 网关后既可能被伪造（伪造 X-Forwarded-For 换桶即无限刷），也可能
+# 全体塌缩成同一个值（网关不注入真实 IP 时所有请求共用一个桶）。任一情况下，
+# 单靠「每客户端」配额都挡不住有人把部署者的 ASR / LLM Key 烧光——
+# 只有「总量硬上限」能在标识不可信时仍然给钱包兜底。
+# 默认 120 远高于正常人类速度（一次转写约 3 次 POST），只挡机器刷量。
+RATE_LIMIT_GLOBAL_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_GLOBAL_PER_MINUTE", "120"))
+
+# 可信反向代理的地址段（CIDR，逗号分隔；留空 = 不信任任何转发头，默认）。
+# 安全语义（S3 安全修复，务必理解再改）：
+# - 留空时**完全忽略** X-Forwarded-For，客户端标识一律取 TCP 对端地址。
+#   这封死了「伪造 X-Forwarded-For 首段换桶」的绕过路径。
+# - 只有填了这里，且 TCP 对端命中其中一个网段时，才解析 X-Forwarded-For；
+#   解析方向是从右往左跳过可信代理，取第一个不可信地址（标准算法）——
+#   攻击者塞在最左边的伪造值因此永远无效。
+# - 前提是你的代理**确实会追加或覆写**该头。若代理只是原样透传，填了这里
+#   等于重新把伪造权交给攻击者。
+# 例：阿里云 FC 内部代理 → "100.64.0.0/10,127.0.0.1"
+TRUSTED_PROXY_CIDRS: str = os.getenv("TRUSTED_PROXY_CIDRS", "")
 
 # ASR 引擎：cloud（云端，默认，S1-C）| faster-whisper（本地）| qwen3（Qwen3-ASR-1.7B 本地）
 # | funasr（Fun-ASR-Nano 本地）。兼容旧值：local = faster-whisper、旧变量名 ASR_PROVIDER

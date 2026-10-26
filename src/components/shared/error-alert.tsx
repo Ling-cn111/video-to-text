@@ -17,7 +17,7 @@ interface ErrorAlertProps {
 /** 错误提示 + 重试 / 返回首页操作 */
 export function ErrorAlert({ error, onRetry, retrying = false, onBack }: ErrorAlertProps) {
   const rateLimited = error.code === 'RATE_LIMITED'
-  const cooldown = useRateLimitCooldown(rateLimited)
+  const cooldown = useRateLimitCooldown(rateLimited, error.retryAfter)
   const retryBlocked = rateLimited && cooldown > 0
 
   return (

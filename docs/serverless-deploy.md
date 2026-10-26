@@ -554,6 +554,12 @@ resources:
         # ---- Web ----
         CORS_ORIGINS: ${env('CORS_ORIGINS', 'https://your-frontend.vercel.app')}
         RATE_LIMIT_PER_MINUTE: "10"
+        # 全站兜底配额（S3）：客户端 IP 可能被伪造或全体塌缩成同一值，
+        # 只有总量硬上限能在标识不可信时给部署者的 Key 兜底。
+        RATE_LIMIT_GLOBAL_PER_MINUTE: ${env('RATE_LIMIT_GLOBAL_PER_MINUTE', '120')}
+        # 可信代理网段（S3）：留空 = 忽略 X-Forwarded-For（安全默认）。
+        # 若确认 FC 网关会追加真实客户端 IP，可填 100.64.0.0/10,127.0.0.1 恢复按用户限流。
+        TRUSTED_PROXY_CIDRS: ${env('TRUSTED_PROXY_CIDRS', '')}
         MAX_AUDIO_SIZE_MB: "100"
         EXTRACT_TIMEOUT_SECONDS: "30"
         # ---- 平台风控（B站 412）----
@@ -708,6 +714,7 @@ resources:
             # YAML 解析前做文本替换，所以这里必须保持单引号的 env 魔法变量写法。
             payload: "{\"action\":\"reap\",\"token\":\"${env('WORKER_TOKEN', '')}\"}"
 ```
+
 <!-- END:s.yaml -->
 
 关键结构速览：
@@ -837,7 +844,9 @@ s deploy -t s.yaml
 | `ASR_ENGINE_FALLBACK` | 空 | 否则云端失败后会尝试本地 faster-whisper，报「本地语音识别组件未安装」（优雅失败但无意义） |
 | `LLM_PROVIDER` | `deepseek` | 或用 `qwen` + `DASHSCOPE_API_KEY` |
 | `CORS_ORIGINS` | 你的正式域名 | 默认只放行 localhost；Vercel 预览域已由 `CORS_ORIGIN_REGEX` 覆盖 |
-| `RATE_LIMIT_PER_MINUTE` | `10`（0 = 关闭） | 配置 Redis 后为全实例共享配额 |
+| `RATE_LIMIT_PER_MINUTE` | `10`（0 = 关闭） | 单个客户端每分钟 POST 上限。配置 Redis 后为全实例共享配额 |
+| `RATE_LIMIT_GLOBAL_PER_MINUTE` | `120`（0 = 关闭） | 全站合计每分钟 POST 上限。**客户端 IP 不可信时的唯一防线**，见下方「限流与客户端 IP」 |
+| `TRUSTED_PROXY_CIDRS` | 空（不信任任何转发头） | 只有 TCP 对端命中这些 CIDR 时才解析 `X-Forwarded-For`。**留空最安全** |
 | `MAX_AUDIO_SIZE_MB` | `100` | 与 `memorySize` 匹配；过大易 OOM |
 | `TASK_TTL_SECONDS` | `604800`（7 天） | 任务 JSON 含完整文字稿；0 = 永久保留（不推荐，Redis 会无限增长） |
 | `TASK_INIT_MODE` | `recover`（API）/ `none`（Worker） | Worker 必须 `none`，否则每次冷启动会把其他实例在跑的任务判为中断 |
@@ -862,6 +871,32 @@ s deploy -t s.yaml
 `TASK_DB_PATH`、`WHISPER_*`、`ENABLE_VOCAL_SEPARATION` 在 FC 上都不需要。
 
 > **不需要** `FC_ACCOUNT_ID` / `FC_REGION` / `FC_WORKER_FUNC_NAME` / `ALIBABA_CLOUD_ACCESS_KEY_*`：这些只在走 OpenAPI `InvokeFunction`（需 ACS3 签名）时才需要。P3 走 HTTP 触发器 + `X-Fc-Invocation-Type: Async`，不签名、不常驻 AK/SK。
+
+### 6.2.1 限流与客户端 IP（S3 安全修复，务必读懂再调）
+
+本 API **无鉴权**，限流是唯一的防线。客户端标识的取法直接决定限流有没有用，这里有两条互相独立的坑：
+
+**坑一：`X-Forwarded-For` 可以伪造。** 旧实现取该头**首段**，攻击者每次请求换一个伪造 IP 就能换来一个新令牌桶。实测（2026-10，线上 FC）轮换 14 个伪造 IP 连发 14 次 `POST /api/parse`：**14 次全部放行，零 429**。阿里云官方文档也明确提示该头「可能被恶意用户伪造」。
+
+现在的取法（`app/services/rate_limit.py` 的 `_client_ip`）：
+
+1. 默认**完全忽略** `X-Forwarded-For`，只取 TCP 对端地址。
+2. 只有配置了 `TRUSTED_PROXY_CIDRS` **且**对端命中其中网段时，才解析该头。
+3. 解析方向是**从右往左**跳过可信代理，取第一个不可信地址。`X-Forwarded-For` 的语义是「客户端, 代理1, 代理2…」，越靠右越接近服务端、越可信；攻击者能控制的只有最左边，所以「取首段」是错误答案。
+4. IPv6 按 **/64** 归并（运营商给单用户分配 /64 是常态，逐地址计桶等于不限流）。
+
+**坑二：所有用户可能塌缩成同一个桶。** 若网关不注入真实客户端 IP，`scope["client"]` 对所有请求都是同一个内网地址。此时拿它当「每客户端」桶 key，等于把全站用户塞进一个 10 次/分钟的桶——**一个人刷满，所有人 429**。实测复现：中国直连打满 10 次配额后，从德国代理发 1 次请求**立刻 429**，且两个完全不同的公网 IP 共用同一个桶。
+
+现在的处理：`_should_limit_per_client()` 识别出对端是基础设施地址（私有网段 / 回环 / 链路本地 / CGNAT `100.64.0.0/10` / 未指定地址）时，**跳过每客户端配额**，只由全站配额兜底。
+
+**因此两层配额都必须开**：
+
+| 层 | 变量 | 拦住什么 |
+| --- | --- | --- |
+| 每客户端 | `RATE_LIMIT_PER_MINUTE=10` | 单个真实用户刷量（仅在标识可信时生效） |
+| 全站 | `RATE_LIMIT_GLOBAL_PER_MINUTE=120` | 标识被伪造或全体塌缩时的钱包兜底 |
+
+> **在 FC 上的现状**：实测确认 FC 网关**不会**追加真实客户端 IP（同一桶现象即证据），而 FC 的响应头里也没有任何 IP 相关头。所以线上目前实际生效的是**全站 120 次/分钟**，每客户端那层处于「标识不可信、自动跳过」状态。这是安全上的正确取舍（宁可全站限速，也不允许任何人绕过限流烧 Key），但意味着**限流粒度只能到全站**。若将来确认网关会注入真实 IP（或改走自建反代 / SLB），把对应网段填进 `TRUSTED_PROXY_CIDRS` 即可恢复按用户限流，无需改代码。
 
 ### 6.3 密钥管理：建议走 KMS
 

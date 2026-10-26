@@ -18,6 +18,8 @@ import type {
 export interface UiError {
   code: ClientErrorCode
   message: string
+  /** 服务端建议的重试等待秒数（429 的 Retry-After）；缺省时由前端兜底默认值 */
+  retryAfter?: number
 }
 
 /**
@@ -229,7 +231,7 @@ const IDLE = {
 
 function toAppError(error: unknown): UiError {
   if (error instanceof ApiError) {
-    return { code: error.code, message: error.message }
+    return { code: error.code, message: error.message, retryAfter: error.retryAfter }
   }
   return { code: 'INTERNAL_ERROR', message: '出了点问题，请稍后重试' }
 }
