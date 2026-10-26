@@ -40,16 +40,20 @@
 
 ### 2.2 `POST /api/summarize` 请求体
 
-无状态接口，真实后端只读后三个字段（`taskId` 仅 Mock 使用）：
+无状态接口，真实后端只读后四个字段（`taskId` 仅 Mock 使用）：
 
 ```jsonc
 {
   "taskId": "abc123",
   "transcript": [{ "time": 12.5, "text": "..." }],
   "title": "视频标题",
-  "duration": 1632
+  "duration": 1632,
+  "detail": "standard" // 可选：brief | standard | detailed，缺省 standard
 }
 ```
+
+`detail` 控制总结的详略（对应后端 `DETAIL_PRESETS`：要点条数上限 3 / 5 / 7，概要字数与章节说明同步收敛）。
+它是可选字段，老客户端不传也能正常调用（回落 `standard`），非法值由 pydantic 拒绝为 422。
 
 `keyPoints[].time` 的时间戳强制取自原 `transcript`（后端做就近吸附校验），LLM 不能凭空编造。
 
@@ -71,6 +75,7 @@
 | 413 | `TRANSCRIPT_TOO_LONG` | 文字稿超过 10 万字，不支持总结 |
 | 413 | `AUDIO_TOO_LARGE` | 音频超过 `MAX_AUDIO_SIZE_MB` |
 | 422 | `UNSUPPORTED_PLATFORM` | 平台未接入（当前仅 B站） |
+| 429 | `RATE_LIMITED` | 同一 IP 每分钟 POST 超过 `RATE_LIMIT_PER_MINUTE`（默认 10，0 表示禁用）。由 `RateLimitMiddleware` 直接返回，不经过业务层 |
 | 500 | `TRANSCRIBE_FAILED` | 转写流程失败（含「未识别出语音内容」） |
 | 500 | `TASK_TIMEOUT` | reaper 判定任务超时 |
 | 500 | `INTERNAL_ERROR` | 未预期异常兜底 |

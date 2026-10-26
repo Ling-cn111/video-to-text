@@ -2,8 +2,73 @@ import { AlertTriangle, BookOpenText, ListChecks, Loader2, RefreshCw, Sparkles }
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
+import { summarizeUnconfiguredMessage } from '@/lib/capability-hint'
+import { useRateLimitCooldown } from '@/hooks/use-rate-limit-cooldown'
+import { useHostname } from '@/hooks/use-hostname'
 import { formatTimestamp } from '@/lib/format'
-import type { Summary } from '@/lib/types'
+import {
+  SUMMARY_DETAILS,
+  SUMMARY_DETAIL_HINT,
+  SUMMARY_DETAIL_LABEL,
+  type Summary,
+  type SummaryDetail,
+} from '@/lib/types'
+import { cn } from '@/lib/utils'
+import type { UiError } from '@/stores/task-store'
+
+/**
+ * 总结详细度切换（P1-11）。
+ *
+ * 为什么是「切换即重新生成」而不是「本地裁剪」：精简档要的是更短的句子与更少的要点，
+ * 只有重新问一次 LLM 才做得到；本地裁 keyPoints 只会得到「详细版被砍掉一半」，
+ * 那不算精简。代价是一次额外调用，因此按档位分别缓存（见 task-store 的 summaryCacheKey）。
+ *
+ * 切换中的按钮禁用 + spinner，避免连点产生三次并发请求。
+ */
+export function SummaryDetailSwitch({
+  value,
+  onChange,
+  busy = false,
+  disabled = false,
+}: {
+  value: SummaryDetail
+  onChange: (detail: SummaryDetail) => void
+  busy?: boolean
+  disabled?: boolean
+}) {
+  return (
+    <div className="flex items-center gap-2" data-testid="summary-detail-switch">
+      <span className="text-xs text-muted-foreground">详细度</span>
+      <div role="group" aria-label="总结详细度" className="flex rounded-full border bg-muted/40 p-0.5">
+        {SUMMARY_DETAILS.map((detail) => {
+          const active = detail === value
+          return (
+            <button
+              key={detail}
+              type="button"
+              data-testid={`summary-detail-${detail}`}
+              aria-pressed={active}
+              title={SUMMARY_DETAIL_HINT[detail]}
+              disabled={disabled || busy}
+              onClick={() => {
+                if (!active) onChange(detail)
+              }}
+              className={cn(
+                'rounded-full px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+                active
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+              )}
+            >
+              {SUMMARY_DETAIL_LABEL[detail]}
+            </button>
+          )
+        })}
+      </div>
+      {busy ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-hidden /> : null}
+    </div>
+  )
+}
 
 /** AI 总结卡：一句话概要 + 要点 + 章节笔记 */
 export function SummaryCard({ summary }: { summary: Summary }) {
@@ -72,18 +137,26 @@ export function SummaryCard({ summary }: { summary: Summary }) {
 }
 
 /** 总结生成失败（P0 降级态）：错误卡 + 重试按钮；文字稿区域不受影响。
- *  retryable=false（如 LLM Key 未配置，M2-P2-A）时隐藏重试按钮，改为配置引导。 */
+ *  retryable=false（如 LLM Key 未配置，M2-P2-A）时隐藏重试按钮，改为配置引导。
+ *
+ *  为什么收整个 UiError 而不是 message 字符串：429 限流和普通服务异常的处理方式完全不同
+ *  ——限流要给冷却倒计时并临时禁用重试（重试本身也是 POST，冷却期内点必然再次 429），
+ *  而这只在拿到错误码时才做得到。 */
 export function SummaryErrorState({
-  message,
+  error,
   onRetry,
   retrying,
   retryable = true,
 }: {
-  message: string
+  error: UiError
   onRetry: () => void
   retrying: boolean
   retryable?: boolean
 }) {
+  const rateLimited = error.code === 'RATE_LIMITED'
+  const cooldown = useRateLimitCooldown(rateLimited)
+  const retryBlocked = rateLimited && cooldown > 0
+
   return (
     <div
       data-testid="summary-error"
@@ -92,12 +165,25 @@ export function SummaryErrorState({
       <div className="flex items-start gap-2">
         <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
         <div className="flex flex-col gap-0.5">
-          <p className="text-sm font-medium">总结生成失败</p>
-          <p className="text-xs leading-relaxed text-muted-foreground">{message}</p>
+          <p className="text-sm font-medium">{rateLimited ? '请求太频繁' : '总结生成失败'}</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">{error.message}</p>
+          {rateLimited ? (
+            <p data-testid="rate-limit-hint" className="text-xs leading-relaxed text-muted-foreground">
+              {retryBlocked
+                ? `为避免继续触发限制，约 ${cooldown} 秒后可重试`
+                : '冷却结束，现在可以重试了'}
+            </p>
+          ) : null}
         </div>
       </div>
       {retryable ? (
-        <Button size="sm" variant="outline" onClick={onRetry} disabled={retrying} className="gap-1.5">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onRetry}
+          disabled={retrying || retryBlocked}
+          className="gap-1.5"
+        >
           {retrying ? (
             <Loader2 className="size-3.5 animate-spin" aria-hidden />
           ) : (
@@ -114,33 +200,48 @@ export function SummaryErrorState({
   )
 }
 
-/** 未总结引导态（关闭「解析后自动 AI 总结」后）：引导文案 + 手动生成按钮。
+/** 未总结引导态（关闭「解析后自动 AI 总结」后）：引导文案 + 档位选择 + 手动生成按钮。
  *  summarizeConfigured=false（M2-P2-A）时按钮禁用并给出配置引导。 */
 export function SummaryManualPrompt({
   onGenerate,
   disabled = false,
+  detail,
+  onDetailChange,
+  busy = false,
 }: {
   onGenerate: () => void
   disabled?: boolean
+  detail?: SummaryDetail
+  onDetailChange?: (detail: SummaryDetail) => void
+  busy?: boolean
 }) {
+  const hostname = useHostname()
   return (
     <div data-testid="summary-manual-prompt" className="flex flex-col items-start gap-3">
       <p className="text-sm leading-relaxed text-muted-foreground">
         本次未生成 AI 总结。需要时可随时手动生成。
       </p>
+      {detail && onDetailChange ? (
+        <SummaryDetailSwitch value={detail} onChange={onDetailChange} busy={busy} disabled={disabled} />
+      ) : null}
       <Button
         data-testid="manual-summarize-button"
         size="sm"
         onClick={onGenerate}
-        disabled={disabled}
+        disabled={disabled || busy}
         className="gap-1.5"
       >
-        <Sparkles className="size-3.5" aria-hidden />
+        {busy ? (
+          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+        ) : (
+          <Sparkles className="size-3.5" aria-hidden />
+        )}
         生成 AI 总结
       </Button>
       {disabled ? (
         <p data-testid="manual-summarize-config-hint" className="text-xs leading-relaxed text-muted-foreground">
-          未配置 LLM Key，无法生成总结：请在 backend/.env.local 填写对应的 Key 后刷新页面。
+          {/* 文案分环境：本地给配置指引，公网只说「暂不可用 + 文字稿不受影响」 */}
+          {hostname === null ? 'AI 总结暂不可用，文字稿与导出不受影响' : summarizeUnconfiguredMessage(hostname)}
         </p>
       ) : null}
     </div>

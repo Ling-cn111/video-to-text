@@ -13,5 +13,6 @@ def create_summary(payload: SummarizeRequest) -> SummaryResponse:
         [item.model_dump() for item in payload.transcript],
         title=payload.title,
         duration=payload.duration,
+        detail=payload.detail,
     )
     return SummaryResponse(**summary)

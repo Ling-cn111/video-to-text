@@ -9,6 +9,11 @@ import { Input } from '@/components/ui/input'
 import { useTaskStore } from '@/stores/task-store'
 import { processingHref } from '@/lib/routes'
 import { resolveVideoUrl } from '@/lib/platform'
+import {
+  supportedPlatformsShortText,
+  unavailablePlatformMessage,
+  unsupportedHostMessage,
+} from '@/lib/platforms/registry'
 
 interface UrlFormProps {
   url: string
@@ -38,7 +43,9 @@ export function UrlForm({ url, onUrlChange }: UrlFormProps) {
       toast.error(
         result.reason === 'invalid'
           ? '链接格式不正确，请粘贴完整的视频页面链接'
-          : `暂不支持「${result.host}」平台，当前支持哔哩哔哩、抖音`,
+          : result.reason === 'unavailable'
+            ? unavailablePlatformMessage(result.platform)
+            : unsupportedHostMessage(result.host),
       )
       return
     }
@@ -63,7 +70,7 @@ export function UrlForm({ url, onUrlChange }: UrlFormProps) {
           ref={inputRef}
           value={url}
           onChange={(event) => onUrlChange(event.target.value)}
-          placeholder="粘贴 B站 / 抖音视频链接，例如 https://www.bilibili.com/video/BV..."
+          placeholder={`粘贴${supportedPlatformsShortText()}视频链接，例如 https://www.bilibili.com/video/BV...`}
           className="h-12 rounded-xl pl-9 text-sm sm:text-base"
           inputMode="url"
           autoComplete="off"

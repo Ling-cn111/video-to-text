@@ -7,12 +7,21 @@ import { Badge } from '@/components/ui/badge'
 import { UrlForm } from '@/components/home/url-form'
 import { AutoSummaryToggle } from '@/components/home/auto-summary-toggle'
 import { ExampleLinks } from '@/components/home/example-links'
+import { RecentTasks } from '@/components/home/recent-tasks'
 import { TranscribeMode } from '@/components/home/transcribe-mode'
 import { useTaskStore } from '@/stores/task-store'
+import { supportedPlatformsShortText } from '@/lib/platforms/registry'
+
+/** 支持平台的紧凑写法：「B站 / 抖音」或真实模式下的「B站」——随构建能力变化，不写死 */
+const PLATFORM_SHORT = supportedPlatformsShortText()
 
 const FEATURES = [
-  { icon: Link2, title: '粘贴链接', description: '支持 B站 / 抖音视频链接，无需下载视频文件' },
-  { icon: Clock, title: '带时间戳', description: '逐句时间戳，点击即可跳转对应画面' },
+  {
+    icon: Link2,
+    title: '粘贴链接',
+    description: `支持 ${PLATFORM_SHORT} 视频链接，无需下载视频文件`,
+  },
+  { icon: Clock, title: '带时间戳', description: '逐句时间戳，点一下就能连时间一起复制' },
   { icon: Sparkles, title: 'AI 总结', description: '一句话概要、核心要点与章节笔记自动生成' },
   { icon: FileDown, title: '一键导出', description: '支持导出 TXT / Markdown，笔记软件直接用' },
 ]
@@ -56,7 +65,7 @@ export function HomeView() {
           视频链接，<span className="text-primary">一键转文字</span>
         </h1>
         <p className="max-w-xl text-balance text-sm text-muted-foreground sm:text-base">
-          粘贴 B站 / 抖音视频链接，自动生成带时间戳的文字稿与 AI 总结，支持导出 TXT / Markdown。
+          粘贴{PLATFORM_SHORT}视频链接，自动生成带时间戳的文字稿与 AI 总结，支持导出 TXT / Markdown。
         </p>
       </section>
 
@@ -69,6 +78,9 @@ export function HomeView() {
         <TranscribeMode value={engine} onChange={setEngine} />
         <ExampleLinks onPick={pickExample} />
       </section>
+
+      {/* 最近转写（P1-7）：无记录时整块不渲染，保持首页单一入口 */}
+      <RecentTasks />
 
       {/* 工作流程 */}
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">

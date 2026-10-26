@@ -5,6 +5,7 @@ import { BackendHealthBanner } from "@/components/layout/backend-health-banner";
 import { PreferenceHydrator } from "@/components/layout/preference-hydrator";
 import { SiteHeader } from "@/components/layout/site-header";
 import { RegisterSw } from "@/components/pwa/register-sw";
+import { supportedPlatformsShortText } from "@/lib/platforms/registry";
 import "./globals.css";
 
 const geistSans = localFont({
@@ -18,13 +19,15 @@ const geistMono = localFont({
   weight: "100 900",
 });
 
+/** 站点描述：支持平台由构建能力决定（真实后端只接了 B站），不写死「B站 / 抖音」 */
+const SITE_DESCRIPTION = `粘贴${supportedPlatformsShortText()}视频链接，自动生成带时间戳的文字稿与 AI 总结，支持导出 TXT / Markdown。`;
+
 export const metadata: Metadata = {
   title: {
     default: "视频转文字 — 链接一键生成文字稿与 AI 总结",
     template: "%s · 视频转文字",
   },
-  description:
-    "粘贴 B站 / 抖音视频链接，自动生成带时间戳的文字稿与 AI 总结，支持导出 TXT / Markdown。",
+  description: SITE_DESCRIPTION,
   appleWebApp: {
     capable: true,
     title: "视频转文字",

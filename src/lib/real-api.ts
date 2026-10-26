@@ -56,6 +56,7 @@ export const realApi: ApiClient = {
           transcript: request.transcript,
           title: request.title,
           duration: request.duration,
+          detail: request.detail ?? 'standard',
         }),
       }).catch(throwNetworkError),
     ),

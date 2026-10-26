@@ -44,14 +44,18 @@ VALID_LLM_PAYLOAD = {
 
 
 def _mock_chat(monkeypatch, payloads: list[str], usages: list[dict] | None = None):
-    """替换 summarizer._chat：按顺序返回预设 content，记录调用次数；并注入假 Key 通过预检。"""
-    calls = {"n": 0}
+    """替换 summarizer._chat：按顺序返回预设 content，记录调用次数；并注入假 Key 通过预检。
 
-    def fake_chat(base_url, api_key, model, user_content):
+    最后一个参数 detail（P1-11 总结详细度）也一并记录，便于断言档位确实传到了调用层。
+    """
+    calls = {"n": 0, "details": []}
+
+    def fake_chat(base_url, api_key, model, user_content, detail=None):
         index = min(calls["n"], len(payloads) - 1)
         usage_list = usages or [{"prompt_tokens": 100, "completion_tokens": 50}]
         usage = usage_list[min(index, len(usage_list) - 1)]
         calls["n"] += 1
+        calls["details"].append(detail)
         return payloads[index], usage
 
     monkeypatch.setattr(summarizer_module, "DEEPSEEK_API_KEY", "test-key")
@@ -74,7 +78,7 @@ def test_qwen_provider_uses_dashscope_key(monkeypatch):
     monkeypatch.setattr(summarizer_module, "DASHSCOPE_API_KEY", "qwen-key")
     captured = {}
 
-    def fake_chat(base_url, api_key, model, user_content):
+    def fake_chat(base_url, api_key, model, user_content, detail=None):
         captured.update({"base_url": base_url, "api_key": api_key})
         return json.dumps(VALID_LLM_PAYLOAD, ensure_ascii=False), {"prompt_tokens": 10, "completion_tokens": 10}
 
@@ -215,6 +219,76 @@ def test_http_summarize_success(monkeypatch):
     assert body["summary"].startswith("本期视频")
     assert {p["time"] for p in body["keyPoints"]} <= {0.0, 30.0, 92.0, 380.0}
     assert {"title", "timeStart", "timeEnd", "note"} <= set(body["chapters"][0].keys())
+
+
+# ---- 总结详细度（P1-11）----
+
+def test_detail_presets_cap_key_points():
+    """档位决定 keyPoints 上限：brief=3 / standard=5 / detailed=7。
+
+    为什么断言上限而不是「恰好等于」：LLM 可能只给 2 条，截断是上限语义，
+    要求恰好等于会把正常输出判成失败。
+    """
+    assert summarizer_module.DETAIL_PRESETS["brief"]["maxKeyPoints"] == 3
+    assert summarizer_module.DETAIL_PRESETS["standard"]["maxKeyPoints"] == 5
+    assert summarizer_module.DETAIL_PRESETS["detailed"]["maxKeyPoints"] == 7
+
+
+def test_detail_preset_falls_back_to_standard():
+    """未知 / 缺省档位回落 standard，不因拼错而 500。"""
+    assert summarizer_module._detail_preset(None) is summarizer_module.DETAIL_PRESETS["standard"]
+    assert summarizer_module._detail_preset("nonsense") is summarizer_module.DETAIL_PRESETS["standard"]
+    assert summarizer_module._detail_preset("brief") is summarizer_module.DETAIL_PRESETS["brief"]
+
+
+def test_detail_changes_system_prompt():
+    """三档的 system prompt 必须真的不同，否则「可调」只是 UI 上的假象。"""
+    brief = summarizer_module._system_prompt("brief")
+    detailed = summarizer_module._system_prompt("detailed")
+    assert "2-3 条" in brief
+    assert "5-7 条" in detailed
+    assert brief != detailed
+    # 时间戳铁律在任何档位都不能被放宽
+    assert "禁止编造" in brief and "禁止编造" in detailed
+
+
+def test_detail_truncates_key_points(monkeypatch):
+    """detailed 档多给几条时按 7 条截断（而不是被旧常量 5 截断）。"""
+    many_points = {
+        "summary": "概要",
+        "keyPoints": [{"time": 0, "text": f"要点{i}"} for i in range(9)],
+        "chapters": [{"title": "全文", "timeStart": 0, "timeEnd": 380, "note": "n"}],
+    }
+    _mock_chat(monkeypatch, [json.dumps(many_points, ensure_ascii=False)])
+    result = summarize_transcript(TRANSCRIPT, "标题", 400, detail="detailed")
+    assert len(result["keyPoints"]) == 7
+
+    _mock_chat(monkeypatch, [json.dumps(many_points, ensure_ascii=False)])
+    brief = summarize_transcript(TRANSCRIPT, "标题", 400, detail="brief")
+    assert len(brief["keyPoints"]) == 3
+
+
+def test_http_summarize_accepts_detail(monkeypatch):
+    """契约层：detail 字段可选，缺省 standard，非法值被 pydantic 拒绝（422）。"""
+    calls = _mock_chat(monkeypatch, [json.dumps(VALID_LLM_PAYLOAD, ensure_ascii=False)])
+
+    ok = client.post(
+        "/api/summarize",
+        json={"transcript": TRANSCRIPT, "title": "t", "duration": 400, "detail": "brief"},
+    )
+    assert ok.status_code == 200
+    assert calls["details"][-1] == "brief"
+
+    # 不传 detail：回落 standard（老客户端兼容）
+    _mock_chat(monkeypatch, [json.dumps(VALID_LLM_PAYLOAD, ensure_ascii=False)])
+    legacy = client.post("/api/summarize", json={"transcript": TRANSCRIPT, "title": "t", "duration": 400})
+    assert legacy.status_code == 200
+
+    bad = client.post(
+        "/api/summarize",
+        json={"transcript": TRANSCRIPT, "title": "t", "duration": 400, "detail": "huge"},
+    )
+    assert bad.status_code == 422
 
 
 # ---- 真实集成（CI 跳过；需 backend/.env.local 配 DeepSeek Key）----
