@@ -108,12 +108,22 @@ export interface HealthResponse {
   status: string
 }
 
-/** 能力探测（任务 M2-P2-A）：只含布尔配置状态，后端不返回 Key 的任何信息 */
+/** 能力探测（任务 M2-P2-A）：只含布尔状态，后端不返回 Key 的任何信息 */
 export interface Capabilities {
   /** 云端 ASR Key（CLOUD_ASR_API_KEY）是否已配置 */
   cloudAsrConfigured: boolean
   /** LLM 总结 Key（按 LLM_PROVIDER 对应的 Key）是否已配置 */
   summarizeConfigured: boolean
+  /**
+   * 后端**是否装得上本地 ASR**（faster-whisper + PyAV 可导入）。
+   *
+   * 这是依赖可用性探测，不是配置探测：线上 FC 镜像按 requirements-cloud.txt 构建，
+   * 根本不含这两个包。前端据此决定要不要显示「本地 / 云端」选择器——线上访客
+   * 既没有本地引擎可选，也不该被要求理解这个选择。
+   *
+   * 可选：旧后端不返回该字段，缺省按 false（不显示选择器）处理。
+   */
+  localAsrAvailable?: boolean
 }
 
 export type TaskStatus = 'processing' | 'completed' | 'failed' | 'interrupted'

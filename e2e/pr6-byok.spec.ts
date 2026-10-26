@@ -179,15 +179,21 @@ test.describe("BYOK 回归", () => {
     expect(errorTitle("CLOUD_NOT_CONFIGURED")).toBe("未配置云端 ASR");
   });
 
-  test("回归 17：未配置提示指向「API 设置」这条自助出路", async ({ page }) => {
-    // 纯函数断言：公网与本地两条分支都要提到用户可以自己填 Key
+  test("回归 17：未配置提示指向用户自己能走的出路", async ({ page }) => {
+    // AI 总结是用户自带 Key 的场景：两条分支都必须提到右上角「API 设置」
     expect(summarizeUnconfiguredMessage("example.com")).toContain("API 设置");
-    expect(cloudUnconfiguredMessage("example.com")).toContain("API 设置");
+    expect(summarizeUnconfiguredMessage("localhost")).toContain("API 设置");
     // 公网分支不得暴露环境变量名（那是给部署者看的）
     expect(summarizeUnconfiguredMessage("example.com")).not.toContain("DEEPSEEK_API_KEY");
-    expect(cloudUnconfiguredMessage("example.com")).not.toContain("CLOUD_ASR_API_KEY");
     // 本地分支仍要保留可执行的配置指引
     expect(summarizeUnconfiguredMessage("localhost")).toContain("DEEPSEEK_API_KEY");
+
+    // 云端转写走的是站点的免费模型，界面不收集用户的 ASR Key：
+    // 提示里**不能**再让他去填 Key（那是一条走不通的路），只能建议换转写方式
+    expect(cloudUnconfiguredMessage("example.com")).not.toContain("API 设置");
+    expect(cloudUnconfiguredMessage("example.com")).toContain("本地模式");
+    expect(cloudUnconfiguredMessage("example.com")).not.toContain("CLOUD_ASR_API_KEY");
+    // 本地部署仍给配置指引
     expect(cloudUnconfiguredMessage("localhost")).toContain("CLOUD_ASR_API_KEY");
 
     await page.goto("/");

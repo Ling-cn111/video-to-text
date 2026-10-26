@@ -67,19 +67,20 @@
 | 全文导出一致性 | 页面全文视图、TXT、MD 三者的段落必须同源（`formatTranscriptToArticle`），改分段逻辑必须三处一起验证 |
 | 错误码表四处同步 | 新增/删除错误码必须同步：`src/lib/types.ts` 的 `ApiErrorCode`、`src/lib/api-server.ts` 的 `STATUS_BY_CODE`（穷举，漏改 TS 报错）、`src/lib/error-titles.ts` 的中文标题表、`docs/api-contract.md`。**`RATE_LIMITED`（429）必须显示「请求太频繁」并进入冷却**，冷却期内禁用重试按钮——重试本身也是 POST，冷却期点必然再 429 |
 | 限流冷却时长取 `Retry-After` | 冷却秒数必须优先用 429 响应的 `Retry-After`（`src/lib/http.ts` 解析 → `ApiError.retryAfter` → `UiError.retryAfter` → `useRateLimitCooldown(rateLimited, retryAfter)`），**不得写死 60 秒**：后端是令牌桶按 `per_minute/60` 回填，默认 10 次/分钟时 6 秒就够一个令牌，写死会让用户白等 54 秒。仅在响应缺少该头时用 `RATE_LIMIT_COOLDOWN_SECONDS=60` 兜底 |
-| 未配置提示分环境 | 云端 ASR / LLM 未配置的提示必须按 hostname 分流（`src/lib/capability-hint.ts`）：本地给配置指引（可提环境变量名），公网只说「暂不可用」。**线上访客没有 `.env` 也没有 setup.bat，暴露这些只会造成困惑**（同 §9 的 run.bat 教训）。两条分支都必须提到「右上角 API 设置」这条用户自己能走的出路（BYOK，见 §14） |
+| 未配置提示分环境 | 云端 ASR / LLM 未配置的提示必须按 hostname 分流（`src/lib/capability-hint.ts`）：本地给配置指引（可提环境变量名），公网只说「暂不可用」。**线上访客没有 `.env` 也没有 setup.bat，暴露这些只会造成困惑**（同 §9 的 run.bat 教训）。两条分支的出路**不同，不能互相抄**：AI 总结必须指向「右上角 API 设置」（BYOK，见 §14）；云端转写走站点的免费模型、界面不收集 ASR Key，公网分支只能建议改用本地模式，**不得让用户去填 Key** |
 | 偏好持久化 | `autoSummary` / `engine` / `summaryDetail` / `readingFontSize` 均存 `localStorage`，键名不得更改；`engine` 读到非法值必须回落 `local`（§6 默认本地）。新增加载期读取的偏好一律走 `hydratePreferences` 或挂载后 `useEffect`，**不要直接读 `localStorage` 初始化 state**（SSR 会 hydration mismatch） |
 
-## 6. 转写模式选择（首页，任务 D 新增）
+## 6. 转写模式选择（首页，任务 D 新增；P0-2 改为按部署显示）
 
 | 功能 | 锁定要求 |
 | --- | --- |
-| 默认本地 | 首页「转写模式」选择器默认选中**本地**（faster-whisper small），不得更改默认值 |
+| **只在能跑本地 ASR 的部署显示** | 选择器 `data-testid="transcribe-mode"` 的渲染条件是 `capabilities.localAsrAvailable === true`（后端探测 `faster_whisper` + `av` 是否可导入）。**线上（Vercel + 阿里云 FC）镜像按 `requirements-cloud.txt` 构建，不含这两个包，因此网页端与桌面端都不显示选择器**。理由：给一个必然失败的按钮，还要用户先理解「本地 / 云端」这两个词，是纯粹的负担。Mock 模式下 `/api/capabilities` 返回 `localAsrAvailable: true`，演示站仍展示完整选择器 |
+| **请求参数随能力走** | `submitUrl` / `retry` 调 `POST /api/transcribe` 时，只有 `localAsrAvailable === true` 才带 `engine`；否则传 `undefined`，由后端 `_resolve_engine` 按「有云端 Key 走云端 → 否则本地可用走本地 → 都没有报错」自动挑。**绝不能一直带 `engine: 'local'`**：线上没有本地引擎，会 `ModuleNotFoundError` 变成「转写失败」，而正确行为是走云端 |
+| 默认本地 | 选择器可见时默认选中**本地**（faster-whisper small），不得更改默认值 |
 | 模式说明常显（M2-P2-B） | 选择器下方常显说明行 `data-testid="mode-description"`，文案随选择变化：本地「本地模式：免费 · 离线 · 较慢，准确率中等」/ 云端「云端模式：更快 · 准确率更高 · 音频将上传至第三方服务」（云端态 amber + 盾牌图标，**隐私提示已并入本行**）。该说明行不得移除、不得改为仅悬停提示 |
-| 云端能力态（M2-P2-A） | 能力探测（null=检测中）时云端选项禁用并显示「云端模式检测中…」；`cloudAsrConfigured=false` 时禁用并显示配置引导；本地选项始终可用 |
+| 云端能力态（M2-P2-A） | `cloudAsrConfigured=false` 时云端选项禁用并显示配置引导；本地选项始终可用 |
 | Mock 模式小字 | Mock 模式下选择器下方显示「当前为 Mock 演示模式，此选择无实际效果」小字；**真实模式严禁出现该提示**（由 `NEXT_PUBLIC_USE_MOCK` 控制渲染） |
-| 请求透传 | `engine`（local/cloud）随 `POST /api/transcribe` 提交，失败重试沿用同一模式；Mock 模式不发送 |
-| 纯手动 | 引擎选择纯手动，禁止加入任何基于 VAD / 信噪比 / 时长的自动切换逻辑 |
+| 纯手动 | 选择器可见时引擎选择纯手动，禁止加入任何基于 VAD / 信噪比 / 时长的自动切换逻辑。**「后端按能力自动挑」与这条不冲突**：前者只在用户没有选择权（选择器不渲染）时生效，不是替用户做他看得见的选择 |
 
 ## 7. 文字稿来源标识（任务 G 新增）
 
@@ -119,7 +120,7 @@
 | 关闭行为 | 关闭后转写照常完成（后端契约不变），前端**不发起** summarize 请求；结果页显示未总结引导 +「生成 AI 总结」按钮 |
 | 持久化 | 状态存 localStorage 键 `autoSummary`（仅布尔值，**严禁存任何 Key 或隐私信息**）；刷新、重开页面保持 |
 | 两条路径一致 | 轮询完成（`pollTask`）与刷新 / 直链恢复（`recover`）都必须尊重开关 |
-| 未配置 LLM Key | `summarizeConfigured=false` 时手动按钮禁用并显示「未配置 LLM Key，无法生成总结」；自动总结路径保持既有错误卡引导（M2-P2-A） |
+| 未配置 LLM Key | 没有可用 Key（站点未配 **且** 用户未填自己的，见 §14）时：**自动总结路径不发起请求、也不报红卡**，直接落到未总结引导态（`summary-manual-prompt`）；引导态的主操作换成「填写自己的 Key」（`data-testid="summary-open-api-settings"`，点击派发 `api-settings:open` 打开设置面板），不渲染灰掉的「生成 AI 总结」——点一万次也不会成功。填完 Key 后靠 `byok:changed` 立刻恢复成可生成，不用刷新 |
 | 纯前端控制 | 开关不进入任何接口请求体，`/api/transcribe`、`/api/summarize` 契约不变 |
 | 总结详细度（P1-11） | 结果页总结卡头部三档切换 `data-testid="summary-detail-switch"`（精简 / 标准 / 详细），每档 `data-testid="summary-detail-<brief\|standard\|detailed>"` + `aria-pressed`；选择存 `localStorage` 键 `summaryDetail`，刷新保留；缺省 `standard`。**切换必须重新请求 LLM，禁止本地裁剪 keyPoints**——精简档要的是更短的句子，本地砍条数只会得到「详细版被砍一半」 |
 | 总结缓存键带档位 | 总结缓存的 key 必须是 `summary:<taskId>:<detail>`。**只按 taskId 缓存会让用户切到「详细」却拿回「精简」的旧结果，缓存反而成 bug** |
@@ -166,14 +167,17 @@
 
 | 功能 | 锁定要求 |
 | --- | --- |
-| 入口位置 | 顶栏 `data-testid="open-api-settings"`，与主题切换、PWA 安装并列。**必须是全局设置而非首页表单里的选项**：它对结果页的总结、进度页的云端转写都生效，跟着页面走会让人以为只对当前这次转写有用 |
-| 面板 | `data-testid="api-settings-dialog"`，分「AI 总结 Key」与「语音识别 Key」两组，各带 `-input` / `-save` / `-clear` / `-masked` / `-error` 五个 testid |
-| 存储位置 | 只存 **localStorage** 的 `byokLlmKey` / `byokAsrKey`，**绝不上传、不写日志、不进 URL、不进请求体**。不用 sessionStorage 的理由：桌面端与网页共用代码，关标签页就丢会让用户每次重开都要重填，实际没人会用 |
-| 传输方式 | 只走请求头 `X-Vtt-Llm-Key` / `X-Vtt-Asr-Key`，与 `backend/app/services/byok.py` 的 `HEADER_LLM_KEY` / `HEADER_ASR_KEY` **必须逐字一致**。不走请求体：请求体会被错误日志、`payload=` 打印、体积限制一整套链路碰到 |
+| 入口位置 | 顶栏 `data-testid="open-api-settings"`，与主题切换、PWA 安装并列。**必须是全局设置而非首页表单里的选项**：它对结果页的总结生效，跟着页面走会让人以为只对当前这次转写有用 |
+| 面板 | `data-testid="api-settings-dialog"`，**只收「AI 总结 Key」一组**，带 `-input` / `-save` / `-clear` / `-masked` / `-error` 五个 testid |
+| **只收 LLM Key** | 云端 ASR 用的是站点的免费模型（`XingChenAGI/XingChenASR-V3.2-Ultra` 等，刊例价 0 元），用户没有自备 Key 的必要，多一个输入框只是多一道门槛。后端仍保留 `X-Vtt-Asr-Key`（脚本 / API 调用方可用），**界面不得再收集 ASR Key**；面板文案必须说明「语音识别用的是免费模型，不需要填 Key」，否则用户会以为漏了功能 |
+| 存储位置 | 只存 **localStorage** 的 `byokLlmKey`，**不写日志、不进 URL、不进请求体**。不用 sessionStorage 的理由：桌面端与网页共用代码，关标签页就丢会让用户每次重开都要重填，实际没人会用 |
+| **文案必须如实** | 面板底部 `data-testid="byok-storage-note"` 必须写清三件事：①只保存在本机浏览器 ②生成总结时 Key 会**随请求发给本站后端**，后端用它调用服务商、用完即弃 ③不写入任务记录、不写进日志。**严禁写「不会上传到服务器」**——Key 技术上一定经过服务器，部署者能看到，写「不上传」是误导 |
+| 传输方式 | 只走请求头 `X-Vtt-Llm-Key`，与 `backend/app/services/byok.py` 的 `HEADER_LLM_KEY` **必须逐字一致**。不走请求体：请求体会被错误日志、`payload=` 打印、体积限制一整套链路碰到 |
 | 默认掩码 | 已保存的 Key 只露末 4 位（`maskKey`）。设置面板常在投屏、录屏、截图场景下打开，明文铺在屏幕上等于泄露 |
 | 本地校验边界 | `validateKeyFormat` 只拦手误（空 / 含空格换行 / 超长 / 过短）。**不校验 `sk-` 前缀**：各家格式不统一，猜错会把合法 Key 拒掉，比放过去更糟；也**不假装验证有效性**，那只有服务商能回答 |
-| 能力门禁 | 所有「未配置」禁用逻辑必须写成 **`站点未配 && 用户未填`** 才禁用。BYOK 上线后「站点没配」不再等于「用不了」，若仍按 `capabilities` 一刀切，用户刚填好 Key 却看到灰按钮（`src/hooks/use-byok-status.ts` 的 `useByokStatus`） |
+| 能力门禁 | 总结相关的「未配置」禁用逻辑必须写成 **`站点未配 && 用户未填`** 才禁用。BYOK 上线后「站点没配」不再等于「用不了」，若仍按 `capabilities` 一刀切，用户刚填好 Key 却看到灰按钮（`src/hooks/use-byok-status.ts` 的 `useByokStatus`） |
 | 变更通知 | 保存/清除后派发 `byok:changed` 事件（`notifyByokChanged()`），同页组件立刻重算门禁，不刷新。跨标签页由 `storage` 事件兜住 |
+| 任意入口 | 结果页总结卡 / 首页提示都可以通过 `openApiSettings()`（派发 `api-settings:open`，`src/hooks/use-api-settings.ts`）打开面板。用 window 事件而不是 Context：`src/app/layout.tsx` 是服务端组件，塞 Provider 会把整棵树拖成客户端 |
 | 错误归属 | 用户 Key 被 401/403 拒绝 → `BYOK_KEY_INVALID`（HTTP 401，标题「API Key 无效」，文案指向「API 设置」）；站点 Key 被拒 → `SUMMARIZE_FAILED`（502）。**两者绝不能混**：前者让用户改自己的，后者让用户找部署者，混了就是两边互相踢皮球 |
 | 不降级 | ASR 用用户 Key 被拒时**不降级到本地引擎**。降级会跑出结果，用户以为云端成功了，从此不会去改那把已失效的 Key（`asr.py` 的 `except ByokKeyInvalidError: raise` 必须排在通用 `except` 之前） |
 | 不落库 | Key 不写进任务库。`TranscribeJob.byok_key` 只随作业跨进程投递，`tasks._payload_dict` 里不得出现任何含 "key" 的字段 |
@@ -188,8 +192,8 @@
 - [ ] Mock 模式：示例链接走演示流程，演示文案恢复
 - [ ] 失败任务 → 错误卡 + 重试可用
 - [ ] 429 限流：显示「请求太频繁」+ 冷却提示，冷却期内「重试」禁用；**冷却秒数取自响应 `Retry-After`**（响应给 7 就显示约 7 秒，不给才退回 60 秒）（E2E 回归 1 / 4 / 4b）
-- [ ] 首页转写模式默认「本地」；**说明行常显且随选择变化**（云端态含「上传至第三方」）；Mock 模式下有无实际效果小字，真实模式无（E2E 锁定 4）
-- [ ] 能力态：云端选项在检测中/未配置时禁用并有提示；总结区在未配置 LLM Key 时显示引导（关闭自动总结时为手动按钮禁用 + 配置引导）（手动验收，见 PR 步骤）
+- [ ] 首页转写模式选择器**只在能跑本地 ASR 的部署显示**；显示时默认「本地」，说明行常显且随选择变化（云端态含「上传至第三方」），Mock 模式下有无实际效果小字，真实模式无（E2E 锁定 4 在 Mock 下仍生效；E2E 回归 19 / 19b 管显示条件）
+- [ ] 能力态：云端选项在未配置时禁用并有提示；总结区在没有可用 Key 时不显示红卡，而是「填写自己的 Key」引导（见下方 BYOK 与 §10 条目）
 - [ ] 字幕来源任务结果页显示「来源：B站字幕」Badge；ASR 来源任务不显示
 - [ ] 字幕分句：真实字幕稿经 `punctuate_subtitle_items` 后条数减半以上、每条有句末标点、时间戳单调不减且首条时间不变、文本中不含 `mm:ss`（后端 `test_punctuate_*` 共 11 个用例）
 - [ ] AI 总结面板：keyPoints 至少一条带时间戳徽章，chapters 带时间区间（E2E 锁定 6）
@@ -218,7 +222,11 @@
 - [ ] BYOK 格式校验：含空格的值被拦下并给出原因，且没写进 localStorage（E2E 回归 14d）
 - [ ] BYOK 传输：填了 Key 时请求头带上 `X-Vtt-Llm-Key`，**请求体里不得出现 Key**；没填时不发该头（不是发空串）（E2E 回归 15 / 15b）
 - [ ] BYOK 错误归属：用户 Key 被拒显示「API Key 无效」并指向「API 设置」，文字稿不受影响（E2E 回归 16 / 16b）
-- [ ] 未配置提示：公网分支提到「API 设置」这条自助出路且不暴露环境变量名；本地分支仍保留可执行的配置指引（E2E 回归 17）
+- [ ] 未配置提示：AI 总结的公网分支提到「API 设置」且不暴露环境变量名；云端转写的公网分支**不得**提「API 设置」（界面不收集 ASR Key），只能建议改用本地模式（E2E 回归 17 / 21b）
+- [ ] 无可用 LLM Key：结果页不出现「总结生成失败」红卡、不发 summarize 请求，而是引导态 +「填写自己的 Key」；填完 Key 后不用刷新即可生成（E2E 回归 18 / 18b / 18c）
+- [ ] 转写模式选择器按部署显示：`localAsrAvailable=false` 时首页不渲染选择器与说明行；为 true 时仍默认本地（E2E 回归 19 / 19b）
+- [ ] 设置面板只收 AI 总结 Key（无 ASR Key 输入框），且文案说明语音识别免填（E2E 回归 20）
+- [ ] 面板存储说明如实：含「随请求发给本站后端」「不写入任务记录」，**不得出现「不会上传到服务器」**（E2E 回归 21）
 - [ ] 站点未配 Key 但用户填了自己的：云端转写与 AI 总结都必须可用（后端 `test_byok.py` 的 `test_summarize_byok_works_without_site_key` / `test_transcribe_cloud_with_byok_key_passes_precheck`）
 - [ ] `pnpm lint && pnpm build` 通过
 

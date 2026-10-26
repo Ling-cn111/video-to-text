@@ -37,9 +37,7 @@ const mockApi: ApiClient = {
     toJson(
       fetch('/api/transcribe', {
         method: 'POST',
-        // Mock 不消费 Key，但请求头要照常带上：E2E 靠它验证「前端确实把 Key 发出去了」，
-        // 若只在 real-api 里接，这条链路在 Mock 模式下就是断的、测不到。
-        headers: { ...JSON_HEADERS, ...byokHeaderFor('asr') },
+        headers: JSON_HEADERS,
         body: JSON.stringify({ videoId, video }),
       }).catch(throwNetworkError),
     ),
@@ -53,8 +51,8 @@ const mockApi: ApiClient = {
     toJson(
       fetch('/api/summarize', {
         method: 'POST',
-        // 同上：Mock 路由不读这个头，但要保证「填了 Key → 请求头带上」这条链路可被测到
-        headers: { ...JSON_HEADERS, ...byokHeaderFor('llm') },
+        // Mock 路由不读这个头，但要保证「填了 Key → 请求头带上」这条链路可被测到
+        headers: { ...JSON_HEADERS, ...byokHeaderFor() },
         body: JSON.stringify(request),
       }).catch(throwNetworkError),
     ),

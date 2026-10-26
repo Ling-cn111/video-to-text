@@ -1,8 +1,9 @@
-import { AlertTriangle, BookOpenText, ListChecks, Loader2, RefreshCw, Sparkles } from 'lucide-react'
+import { AlertTriangle, BookOpenText, KeyRound, ListChecks, Loader2, RefreshCw, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
 import { summarizeUnconfiguredMessage } from '@/lib/capability-hint'
+import { openApiSettings } from '@/hooks/use-api-settings'
 import { useRateLimitCooldown } from '@/hooks/use-rate-limit-cooldown'
 import { useHostname } from '@/hooks/use-hostname'
 import { formatTimestamp } from '@/lib/format'
@@ -192,16 +193,33 @@ export function SummaryErrorState({
           重试总结
         </Button>
       ) : (
-        <p data-testid="summary-config-hint" className="text-xs text-muted-foreground">
-          配置完成后刷新页面即可生成总结。
-        </p>
+        <div className="flex flex-col items-start gap-2">
+          {/* 未配置 Key 不是「等等就好」的错误，重试一万次也一样。
+              给一条用户自己走得通的路：打开设置填自己的 Key。 */}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={openApiSettings}
+            data-testid="summary-open-api-settings"
+            className="gap-1.5"
+          >
+            <KeyRound className="size-3.5" aria-hidden />
+            填写自己的 Key
+          </Button>
+          <p data-testid="summary-config-hint" className="text-xs text-muted-foreground">
+            填完回到这里点「重试总结」即可，文字稿与导出不受影响。
+          </p>
+        </div>
       )}
     </div>
   )
 }
 
-/** 未总结引导态（关闭「解析后自动 AI 总结」后）：引导文案 + 档位选择 + 手动生成按钮。
- *  summarizeConfigured=false（M2-P2-A）时按钮禁用并给出配置引导。 */
+/** 未总结引导态（关闭「解析后自动 AI 总结」后 / 没有可用 Key 时）：
+ *  引导文案 + 档位选择 + 手动生成按钮。
+ *
+ *  disabled=true 表示「没有可用 Key」：此时按钮换成「填写自己的 Key」，
+ *  因为重试永远不会成功，唯一出路是让用户去填一把自己的。 */
 export function SummaryManualPrompt({
   onGenerate,
   disabled = false,
@@ -219,25 +237,39 @@ export function SummaryManualPrompt({
   return (
     <div data-testid="summary-manual-prompt" className="flex flex-col items-start gap-3">
       <p className="text-sm leading-relaxed text-muted-foreground">
-        本次未生成 AI 总结。需要时可随时手动生成。
+        {disabled
+          ? '还没有可用的 AI 总结 Key，填一把自己的就能生成。'
+          : '本次未生成 AI 总结。需要时可随时手动生成。'}
       </p>
       {detail && onDetailChange ? (
         <SummaryDetailSwitch value={detail} onChange={onDetailChange} busy={busy} disabled={disabled} />
       ) : null}
-      <Button
-        data-testid="manual-summarize-button"
-        size="sm"
-        onClick={onGenerate}
-        disabled={disabled || busy}
-        className="gap-1.5"
-      >
-        {busy ? (
-          <Loader2 className="size-3.5 animate-spin" aria-hidden />
-        ) : (
-          <Sparkles className="size-3.5" aria-hidden />
-        )}
-        生成 AI 总结
-      </Button>
+      {disabled ? (
+        <Button
+          data-testid="summary-open-api-settings"
+          size="sm"
+          onClick={openApiSettings}
+          className="gap-1.5"
+        >
+          <KeyRound className="size-3.5" aria-hidden />
+          填写自己的 Key
+        </Button>
+      ) : (
+        <Button
+          data-testid="manual-summarize-button"
+          size="sm"
+          onClick={onGenerate}
+          disabled={busy}
+          className="gap-1.5"
+        >
+          {busy ? (
+            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          ) : (
+            <Sparkles className="size-3.5" aria-hidden />
+          )}
+          生成 AI 总结
+        </Button>
+      )}
       {disabled ? (
         <p data-testid="manual-summarize-config-hint" className="text-xs leading-relaxed text-muted-foreground">
           {/* 文案分环境：本地给配置指引，公网只说「暂不可用 + 文字稿不受影响」 */}

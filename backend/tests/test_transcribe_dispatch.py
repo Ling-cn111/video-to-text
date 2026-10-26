@@ -26,8 +26,7 @@ BODY = {"videoId": "BV1GJ411x7h7", "video": VIDEO_META, "engine": "local"}
 
 @pytest.fixture(autouse=True)
 def _local_engine(monkeypatch):
-    """固定走 local：避免云端 Key 预检干扰分发断言。"""
-    monkeypatch.setattr("app.routers.transcribe.ASR_ENGINE", "local")
+    """固定走 local：避免云端 Key 预检干扰分发断言（BODY 里已显式带 engine=local）。"""
     monkeypatch.setattr("app.routers.transcribe.CLOUD_ASR_API_KEY", "")
 
 

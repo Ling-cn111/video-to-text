@@ -12,28 +12,36 @@
  * 那等于把 Key 公开发布：任何人 F12 打开 Network 就能拿走，然后无限盗刷。
  * 所以这个面板里只能填**用户自己的** Key，站点 Key 永远不出后端。
  *
+ * ## 只收 LLM Key，不收 ASR Key
+ *
+ * 云端 ASR 用的是硅基流动的免费模型（`XingChenAGI/XingChenASR-V3.2-Ultra` 等，
+ * 刊例价 0 元/千字符），用户没有自备 Key 的必要；多一个输入框只会多一道门槛。
+ * 后端仍保留 `X-Vtt-Asr-Key` 支持（脚本 / API 调用方可用），界面不再收集。
+ *
  * ## 存储位置与风险边界
  *
  * - 存 localStorage：桌面端（Tauri）与网页共用一套代码，sessionStorage 关标签页就丢，
  *   用户每次重开都要重填，实际没人会用。
  * - localStorage 的代价：同源脚本可读。本项目没有第三方脚本（CSP `script-src 'self'`），
  *   也没有 UGC 内容，XSS 面很小；即便如此也要在界面上明确告知，让用户自己决定。
- * - **只在浏览器本地**，不上传、不写日志、不进 URL、不进请求体。
+ * - **Key 会经过服务器**：浏览器把 Key 放进请求头发给后端，后端用它去调服务商，
+ *   用完即弃、不落库、不写日志。但「不落库」不等于「部署者看不到」——技术上
+ *   部署者可以在进程里打印任何东西。这一点必须在界面上如实说，不能写「不上传」。
  *
  * ## 传输方式
  *
- * 只走请求头（`X-Vtt-Llm-Key` / `X-Vtt-Asr-Key`），与后端
+ * 只走请求头（`X-Vtt-Llm-Key`），与后端
  * `backend/app/services/byok.py` 的常量必须逐字一致。
  * 不走请求体：请求体会被错误日志、`payload=` 打印、体积限制等一整套链路碰到。
  */
 
 /** 与后端 services/byok.py 的 HEADER_LLM_KEY / HEADER_ASR_KEY 必须一致 */
 export const HEADER_LLM_KEY = 'X-Vtt-Llm-Key'
+/** 后端仍支持（脚本 / API 调用方），界面已不再收集：云端 ASR 是免费模型 */
 export const HEADER_ASR_KEY = 'X-Vtt-Asr-Key'
 
 /** localStorage 键名（偏好持久化统一前缀风格，见 task-store 的 autoSummary 等） */
 export const BYOK_LLM_KEY = 'byokLlmKey'
-export const BYOK_ASR_KEY = 'byokAsrKey'
 
 /** 与后端 MAX_KEY_LENGTH 对齐 */
 const MAX_KEY_LENGTH = 512
@@ -62,16 +70,6 @@ export const LLM_KEY_PROVIDERS: KeyProvider[] = [
     usage: 'llm',
     hint: '以 sk- 开头，在「API-KEY 管理」创建',
     url: 'https://bailian.console.aliyun.com/?apiKey=1',
-  },
-]
-
-export const ASR_KEY_PROVIDERS: KeyProvider[] = [
-  {
-    id: 'siliconflow',
-    name: '硅基流动',
-    usage: 'asr',
-    hint: '以 sk- 开头，在「API 密钥」页面创建',
-    url: 'https://cloud.siliconflow.cn/account/ak',
   },
 ]
 
@@ -107,44 +105,25 @@ export function readLlmKey(): string | null {
   return readKey(BYOK_LLM_KEY)
 }
 
-export function readAsrKey(): string | null {
-  return readKey(BYOK_ASR_KEY)
-}
-
 export function saveLlmKey(value: string | null): void {
   writeKey(BYOK_LLM_KEY, value)
 }
 
-export function saveAsrKey(value: string | null): void {
-  writeKey(BYOK_ASR_KEY, value)
-}
-
-export function clearAllKeys(): void {
+export function clearLlmKey(): void {
   writeKey(BYOK_LLM_KEY, null)
-  writeKey(BYOK_ASR_KEY, null)
 }
 
 /**
- * 请求头片段：没填就返回空对象，调用方直接展开即可。
+ * LLM Key 的请求头片段：没填就返回空对象，调用方直接展开即可。
  *
  * 为什么每次请求现读 localStorage 而不缓存到模块变量：用户可能开两个标签页，
  * 在其中一个改了 Key；缓存会让另一个标签页继续用旧 Key 发请求，然后拿到
  * 「Key 无效」却看到设置里明明是对的。
  */
-export function byokHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {}
-  const llm = readLlmKey()
-  const asr = readAsrKey()
-  if (llm) headers[HEADER_LLM_KEY] = llm
-  if (asr) headers[HEADER_ASR_KEY] = asr
-  return headers
-}
-
-/** 只带某一个 Key（总结只需要 LLM Key，别把 ASR Key 也捎上） */
-export function byokHeaderFor(kind: 'llm' | 'asr'): Record<string, string> {
-  const key = kind === 'llm' ? readLlmKey() : readAsrKey()
+export function byokHeaderFor(): Record<string, string> {
+  const key = readLlmKey()
   if (!key) return {}
-  return { [kind === 'llm' ? HEADER_LLM_KEY : HEADER_ASR_KEY]: key }
+  return { [HEADER_LLM_KEY]: key }
 }
 
 /** 界面展示用的掩码：只露末 4 位，且不足以反推全文 */

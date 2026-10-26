@@ -149,8 +149,11 @@
 
 | 场景 | 推荐配置 | 绝对 CER 依据 |
 | --- | --- | --- |
-| 无字幕 + 强 BGM / 快节奏解说 | **前端「转写模式」选云端**（默认 XingChenASR-V3.2-Ultra：带时间戳、免费）；追求极致准确用 `CLOUD_ASR_MODEL=Qwen/Qwen3-ASR-1.7B`（无时间戳） | 讲解 14.60-17.49% vs 本地 21.83-97.23% |
-| 无字幕 + 清晰口播（默认） | `ASR_ENGINE=faster-whisper` + `WHISPER_MODEL=small`（本地，隐私友好） | 教程 6.29%、讲解 21.83% |
+| 无字幕 + 强 BGM / 快节奏解说 | 云端 ASR（默认 XingChenASR-V3.2-Ultra：带时间戳、免费）；追求极致准确用 `CLOUD_ASR_MODEL=Qwen/Qwen3-ASR-1.7B`（无时间戳） | 讲解 14.60-17.49% vs 本地 21.83-97.23% |
+| 无字幕 + 清晰口播（自建部署） | `ASR_ENGINE=faster-whisper` + `WHISPER_MODEL=small`（本地，隐私友好） | 教程 6.29%、讲解 21.83% |
+
+> 网页端与桌面端**没有**「转写模式」选择器：云端镜像不含本地 ASR，只有字幕快路径与云端 ASR 两级，
+> 走哪条由后端按 `capabilities.localAsrAvailable` 自动决定。上表的引擎切换是自建部署的配置项。
 | 无字幕 + 喊叫/背景人声多 | 云端（Qwen3 云端科普 6.05% vs small 43.95%） | — |
 | 教程/清晰口播 + 本地高准确 | `ASR_ENGINE=qwen3`（仅限清晰音频；强 BGM 会静默失败）或 whisper medium | 教程 5.35% |
 
