@@ -1,0 +1,19 @@
+name: probe-ffmpeg
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    name: ffmpeg availability probe
+    runs-on: ubuntu-latest
+    steps:
+      - name: Which ffmpeg
+        run: |
+          echo "== runner image =="
+          echo "$ImageOS / $ImageVersion"
+          cat /etc/os-release | head -3
+          echo "== which =="
+          command -v ffmpeg && ffmpeg -version | head -2 || echo "NOT PREINSTALLED"
+          echo "== dpkg =="
+          dpkg -l ffmpeg 2>/dev/null | tail -2 || true
