@@ -10,18 +10,26 @@
 | | 入口 |
 | --- | --- |
 | 在线体验 | <https://video-to-text-six.vercel.app> |
-| 桌面端下载（Windows） | [最新 Release](https://github.com/Ling-cn111/video-to-text/releases/latest) |
+| 桌面端下载（Windows） | [**v0.1.1 · .exe 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.1/video-to-text_0.1.1_x64-setup.exe) ／ [全部 Release](https://github.com/Ling-cn111/video-to-text/releases/latest) |
 | 手机端 | **暂未提供安装包**，见下方说明 |
 
 ### 桌面端下载
 
-点上面「最新 Release」进下载页，在 **Assets** 里选一个：
+当前版本 **v0.1.1**，点文件名直接下载（无需先进 Release 页找）：
 
-- **`视频转文字_0.1.1_x64-setup.exe`** — NSIS，普通用户双击安装，**无需管理员权限**（推荐）
-- **`视频转文字_0.1.1_x64_zh-CN.msi`** — WiX，适合企业组策略 / 静默分发
+- [**video-to-text_0.1.1_x64-setup.exe**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.1/video-to-text_0.1.1_x64-setup.exe) — 2.3 MB，NSIS，普通用户双击安装，**无需管理员权限**（推荐）
+- [**video-to-text_0.1.1_x64_zh-CN.msi**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.1/video-to-text_0.1.1_x64_zh-CN.msi) — 3.3 MB，WiX，适合企业组策略 / 静默分发
+
+校验和（`certutil -hashfile <文件> SHA256`）：
+
+```
+d211058bd5f2414c1f7e56e0c7b59d1fba4b5da7af9c159290802d229cadfc96  video-to-text_0.1.1_x64-setup.exe
+71f0bbd3070645454d249a59ed1d02942ddfff4eef3e45c8a089411602d5ea91  video-to-text_0.1.1_x64_zh-CN.msi
+```
 
 > 安装包未做代码签名，Windows SmartScreen 会提示「未知发布者」，点「更多信息 → 仍要运行」即可。
 > 安装后不依赖域名可达性：桌面端直接连后端 API，不受 `*.vercel.app` 被墙影响。
+> `github.com` 在国内可能连不上，若下载失败需自备代理；网页端本身不受此影响。
 
 ### 手机端
 
