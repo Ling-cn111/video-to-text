@@ -163,6 +163,7 @@ def run_transcription_pipeline(
     hotwords: list[str] | None = None,
     engine: str | None = None,
     on_heartbeat: Callable[[], None] | None = None,
+    byok_key: str | None = None,
 ) -> None:
     """后台转写主流程。任何异常都收敛为任务 failed + 友好信息。
 
@@ -170,6 +171,7 @@ def run_transcription_pipeline(
     云端运行期故障由 asr.transcribe_audio 内的 ASR_ENGINE_FALLBACK 降级本地。
 
     on_heartbeat：心跳回调（S2-P2），Worker 用它续期执行锁；同步上下文调用。
+    byok_key：用户自带的云端 ASR Key（见 services/byok.py），只对 cloud 引擎有意义。
     """
     reporter = ProgressReporter(task_id, on_heartbeat=on_heartbeat)
     try:
@@ -224,6 +226,7 @@ def run_transcription_pipeline(
             initial_prompt=initial_prompt,
             hotwords=hotwords,
             engine=engine,
+            byok_key=byok_key,
         )
         if not transcript:
             raise AppException("TRANSCRIBE_FAILED", "未能识别出语音内容", 500)

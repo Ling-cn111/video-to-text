@@ -174,7 +174,7 @@ def test_cloud_failure_falls_back_to_local(monkeypatch, tmp_path):
     monkeypatch.setattr(asr_module.httpx, "post", fail_post)
     monkeypatch.setattr(
         asr_module.LocalWhisperEngine, "transcribe",
-        lambda self, audio_path, language="zh", progress_callback=None, initial_prompt=None, hotwords=None: [
+        lambda self, audio_path, language="zh", progress_callback=None, initial_prompt=None, hotwords=None, byok_key=None: [
             {"time": 0.0, "text": "本地降级结果"}
         ],
     )

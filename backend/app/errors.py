@@ -58,6 +58,17 @@ class SummarizeNotConfiguredError(AppException):
         super().__init__(code="SUMMARIZE_NOT_CONFIGURED", message=message, status_code=400)
 
 
+class ByokKeyInvalidError(AppException):
+    """用户自带的 Key 被上游拒绝（401/403）。
+
+    与 `SummarizeNotConfiguredError` 分开：那条是「站点没配 Key，请联系部署者」，
+    这条是「你填的 Key 不对，请改你自己的」——动作主体不同，合并会让用户找错人。
+    """
+
+    def __init__(self, message: str = "你填写的 API Key 无效或已过期，请在右上角「API 设置」中更换"):
+        super().__init__(code="BYOK_KEY_INVALID", message=message, status_code=401)
+
+
 class TranscriptTooLongError(AppException):
     """总结请求的文字稿超过长度上限。"""
 

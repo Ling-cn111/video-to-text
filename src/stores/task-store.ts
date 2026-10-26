@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { api, ApiError, type ClientErrorCode } from '@/lib/api'
+import { readLlmKey } from '@/lib/byok'
 import { summarizeUnconfiguredMessage } from '@/lib/capability-hint'
 import { ensureRecentTask, recordRecentTask, removeRecentTask, updateRecentTaskStatus } from '@/lib/recent-tasks'
 import type { RecentTaskStatus } from '@/lib/recent-tasks'
@@ -379,8 +380,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           return
         }
         set({ phase: 'summarizing', summaryError: null, ...transcriptReady })
-        // 能力前置：未配置 LLM Key 时不发起无用请求，直接给出引导（M2-P2-A）
-        if (get().capabilities?.summarizeConfigured === false) {
+        // 能力前置：站点未配 LLM Key 且用户也没填自己的 Key 时，不发起无用请求，
+        // 直接给出引导（M2-P2-A）。BYOK 上线后「站点没配」不再等于「用不了」。
+        if (get().capabilities?.summarizeConfigured === false && !readLlmKey()) {
           set({ phase: 'done', summary: null, summaryError: { code: 'SUMMARIZE_NOT_CONFIGURED', message: summarizeUnconfiguredMessage(currentHostname()) } })
           return
         }
@@ -456,8 +458,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         return
       }
       set({ phase: 'summarizing', transcript: readyTranscript, plainText: task.plainText ?? null, transcriptSource: task.transcriptSource ?? null, summaryError: null })
-      // 能力前置（M2-P2-A）：未配置 LLM Key 时不发起无用请求
-      if (get().capabilities?.summarizeConfigured === false) {
+      // 能力前置（M2-P2-A）：站点未配 LLM Key 且用户也没填自己的，才不发起请求
+      if (get().capabilities?.summarizeConfigured === false && !readLlmKey()) {
         set({ phase: 'done', summary: null, summaryError: { code: 'SUMMARIZE_NOT_CONFIGURED', message: summarizeUnconfiguredMessage(currentHostname()) } })
         return
       }

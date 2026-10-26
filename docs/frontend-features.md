@@ -65,9 +65,9 @@
 | ASR 文本后处理 | 繁→简统一（zhconv）、重复词折叠（3 次以上）、按语言补句末标点——backend 侧实现，前端文案展示依赖其输出 |
 | PWA | manifest + Service Worker（仅生产注册），顶栏安装按钮。**改动 SW 策略或发布影响外壳的变更时必须提升 `CACHE_NAME` 版本号**（`vtt-shell-vN`）：`activate` 只清理非当前版本缓存，不升版本会让老客户端长期运行旧版 JS（2026-10 线上旧文案问题即此因） |
 | 全文导出一致性 | 页面全文视图、TXT、MD 三者的段落必须同源（`formatTranscriptToArticle`），改分段逻辑必须三处一起验证 |
-| 错误码表四处同步 | 新增/删除错误码必须同步：`src/lib/types.ts` 的 `ApiErrorCode`、`src/lib/api-server.ts` 的 `STATUS_BY_CODE`（穷举，漏改 TS 报错）、`src/components/shared/error-alert.tsx` 的中文标题表、`docs/api-contract.md`。**`RATE_LIMITED`（429）必须显示「请求太频繁」并进入冷却**，冷却期内禁用重试按钮——重试本身也是 POST，冷却期点必然再 429 |
+| 错误码表四处同步 | 新增/删除错误码必须同步：`src/lib/types.ts` 的 `ApiErrorCode`、`src/lib/api-server.ts` 的 `STATUS_BY_CODE`（穷举，漏改 TS 报错）、`src/lib/error-titles.ts` 的中文标题表、`docs/api-contract.md`。**`RATE_LIMITED`（429）必须显示「请求太频繁」并进入冷却**，冷却期内禁用重试按钮——重试本身也是 POST，冷却期点必然再 429 |
 | 限流冷却时长取 `Retry-After` | 冷却秒数必须优先用 429 响应的 `Retry-After`（`src/lib/http.ts` 解析 → `ApiError.retryAfter` → `UiError.retryAfter` → `useRateLimitCooldown(rateLimited, retryAfter)`），**不得写死 60 秒**：后端是令牌桶按 `per_minute/60` 回填，默认 10 次/分钟时 6 秒就够一个令牌，写死会让用户白等 54 秒。仅在响应缺少该头时用 `RATE_LIMIT_COOLDOWN_SECONDS=60` 兜底 |
-| 未配置提示分环境 | 云端 ASR / LLM 未配置的提示必须按 hostname 分流（`src/lib/capability-hint.ts`）：本地给配置指引（可提环境变量名），公网只说「暂不可用」。**线上访客没有 `.env` 也没有 setup.bat，暴露这些只会造成困惑**（同 §9 的 run.bat 教训） |
+| 未配置提示分环境 | 云端 ASR / LLM 未配置的提示必须按 hostname 分流（`src/lib/capability-hint.ts`）：本地给配置指引（可提环境变量名），公网只说「暂不可用」。**线上访客没有 `.env` 也没有 setup.bat，暴露这些只会造成困惑**（同 §9 的 run.bat 教训）。两条分支都必须提到「右上角 API 设置」这条用户自己能走的出路（BYOK，见 §14） |
 | 偏好持久化 | `autoSummary` / `engine` / `summaryDetail` / `readingFontSize` 均存 `localStorage`，键名不得更改；`engine` 读到非法值必须回落 `local`（§6 默认本地）。新增加载期读取的偏好一律走 `hydratePreferences` 或挂载后 `useEffect`，**不要直接读 `localStorage` 初始化 state**（SSR 会 hydration mismatch） |
 
 ## 6. 转写模式选择（首页，任务 D 新增）
@@ -162,7 +162,24 @@
 | 深色可读性 | 深色态下 `body` 前景亮度必须高于背景（E2E 回归 13b 用亮度公式断言）。新增带底色的高亮（如搜索结果）必须成对给 `dark:` 变体，否则深色下会是刺眼的浅黄块 |
 | PWA 缓存版本 | 改动根布局（如本次挂 `ThemeProvider`）属于「影响外壳的变更」，**必须提升 `public/sw.js` 的 `CACHE_NAME`**（v3 → v4），见 §5 |
 
-## 14. 回归检查清单（改前端后必跑）
+## 14. 用户自带 Key（BYOK，新增）
+
+| 功能 | 锁定要求 |
+| --- | --- |
+| 入口位置 | 顶栏 `data-testid="open-api-settings"`，与主题切换、PWA 安装并列。**必须是全局设置而非首页表单里的选项**：它对结果页的总结、进度页的云端转写都生效，跟着页面走会让人以为只对当前这次转写有用 |
+| 面板 | `data-testid="api-settings-dialog"`，分「AI 总结 Key」与「语音识别 Key」两组，各带 `-input` / `-save` / `-clear` / `-masked` / `-error` 五个 testid |
+| 存储位置 | 只存 **localStorage** 的 `byokLlmKey` / `byokAsrKey`，**绝不上传、不写日志、不进 URL、不进请求体**。不用 sessionStorage 的理由：桌面端与网页共用代码，关标签页就丢会让用户每次重开都要重填，实际没人会用 |
+| 传输方式 | 只走请求头 `X-Vtt-Llm-Key` / `X-Vtt-Asr-Key`，与 `backend/app/services/byok.py` 的 `HEADER_LLM_KEY` / `HEADER_ASR_KEY` **必须逐字一致**。不走请求体：请求体会被错误日志、`payload=` 打印、体积限制一整套链路碰到 |
+| 默认掩码 | 已保存的 Key 只露末 4 位（`maskKey`）。设置面板常在投屏、录屏、截图场景下打开，明文铺在屏幕上等于泄露 |
+| 本地校验边界 | `validateKeyFormat` 只拦手误（空 / 含空格换行 / 超长 / 过短）。**不校验 `sk-` 前缀**：各家格式不统一，猜错会把合法 Key 拒掉，比放过去更糟；也**不假装验证有效性**，那只有服务商能回答 |
+| 能力门禁 | 所有「未配置」禁用逻辑必须写成 **`站点未配 && 用户未填`** 才禁用。BYOK 上线后「站点没配」不再等于「用不了」，若仍按 `capabilities` 一刀切，用户刚填好 Key 却看到灰按钮（`src/hooks/use-byok-status.ts` 的 `useByokStatus`） |
+| 变更通知 | 保存/清除后派发 `byok:changed` 事件（`notifyByokChanged()`），同页组件立刻重算门禁，不刷新。跨标签页由 `storage` 事件兜住 |
+| 错误归属 | 用户 Key 被 401/403 拒绝 → `BYOK_KEY_INVALID`（HTTP 401，标题「API Key 无效」，文案指向「API 设置」）；站点 Key 被拒 → `SUMMARIZE_FAILED`（502）。**两者绝不能混**：前者让用户改自己的，后者让用户找部署者，混了就是两边互相踢皮球 |
+| 不降级 | ASR 用用户 Key 被拒时**不降级到本地引擎**。降级会跑出结果，用户以为云端成功了，从此不会去改那把已失效的 Key（`asr.py` 的 `except ByokKeyInvalidError: raise` 必须排在通用 `except` 之前） |
+| 不落库 | Key 不写进任务库。`TranscribeJob.byok_key` 只随作业跨进程投递，`tasks._payload_dict` 里不得出现任何含 "key" 的字段 |
+| 服务地址 | 面板里**只让用户填 Key，不让填 base_url**。接受用户输入的服务地址等于 SSRF，并且能把用户的 Key 骗到攻击者服务器 |
+
+## 15. 回归检查清单（改前端后必跑）
 
 - [ ] 结果页默认显示「全文阅读」，文章排版无时间戳
 - [ ] Tab 可切换到「时间戳定位」，列表 + 复制功能正常
@@ -197,6 +214,12 @@
 - [ ] 深色模式：顶栏可切三档，`<html>` 正确增删 `.dark`，背景色真的变化，刷新后保留（E2E 回归 13）
 - [ ] 深色可读性：深色态下 `body` 前景亮度高于背景；搜索结果高亮在深色下不刺眼（E2E 回归 13b）
 - [ ] 改动根布局后 `public/sw.js` 的 `CACHE_NAME` 已提升（本次 v3 → v4）
+- [ ] BYOK 面板：可从顶栏打开，保存后立刻掩码（明文不再出现在页面上），刷新后仍是掩码态，清除后回到输入框（E2E 回归 14 / 14b / 14c）
+- [ ] BYOK 格式校验：含空格的值被拦下并给出原因，且没写进 localStorage（E2E 回归 14d）
+- [ ] BYOK 传输：填了 Key 时请求头带上 `X-Vtt-Llm-Key`，**请求体里不得出现 Key**；没填时不发该头（不是发空串）（E2E 回归 15 / 15b）
+- [ ] BYOK 错误归属：用户 Key 被拒显示「API Key 无效」并指向「API 设置」，文字稿不受影响（E2E 回归 16 / 16b）
+- [ ] 未配置提示：公网分支提到「API 设置」这条自助出路且不暴露环境变量名；本地分支仍保留可执行的配置指引（E2E 回归 17）
+- [ ] 站点未配 Key 但用户填了自己的：云端转写与 AI 总结都必须可用（后端 `test_byok.py` 的 `test_summarize_byok_works_without_site_key` / `test_transcribe_cloud_with_byok_key_passes_precheck`）
 - [ ] `pnpm lint && pnpm build` 通过
 
 > 修改本文件（新增/放宽锁定项）需要用户明确确认。

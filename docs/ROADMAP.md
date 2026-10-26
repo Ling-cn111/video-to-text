@@ -36,7 +36,7 @@
 - 接口扩展（契约见 `src/lib/types.ts`）：
   - `POST /api/transcribe` 支持 `{ kind: 'file', fileName, size, mimeType }`（真实后端可走 multipart / 分片直传）
   - 任务来源标记 `source: 'url' | 'file'`
-  - 新增错误分支：`FILE_TOO_LARGE`、`FILE_FORMAT_UNSUPPORTED`（M3 落地时一并引入：前端 `types.ts` / `api-server.ts` / `error-alert.tsx` + 后端 `errors.py`，四处同步，见 `docs/api-contract.md` §3）
+  - 新增错误分支：`FILE_TOO_LARGE`、`FILE_FORMAT_UNSUPPORTED`（M3 落地时一并引入：前端 `types.ts` / `api-server.ts` / `error-titles.ts` + 后端 `errors.py`，四处同步，见 `docs/api-contract.md` §3）
 - 限制：格式 mp4 / mov / webm，大小上限建议 500MB（前端预校验 + 后端强校验）
 - 已预留：任务模型以 taskId 为中心、来源无关（错误码不再预留——P2 已清理无生产者的 `FILE_TOO_LARGE` / `FILE_FORMAT_UNSUPPORTED`，做 M3 时再加，避免契约里挂着没人产出的码）
 
