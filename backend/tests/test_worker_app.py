@@ -103,7 +103,8 @@ def test_worker_completes_task(new_task, subtitle_ok, store):
 
     task = asyncio.run(store.get(new_task))
     assert task.status == "completed"
-    assert task.plain_text == "Worker 跑通"
+    # 字幕命中后经 punctuate_subtitle_items 补句末标点（P0-1）
+    assert task.plain_text == "Worker 跑通。"
     assert task.transcript_source == "subtitle_ai"
 
 
@@ -419,7 +420,7 @@ def test_invoke_runs_job_from_raw_body(new_task, subtitle_ok, store):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "task_id": new_task, "task_status": "completed"}
-    assert asyncio.run(store.get(new_task)).plain_text == "Worker 跑通"
+    assert asyncio.run(store.get(new_task)).plain_text == "Worker 跑通。"
 
 
 def test_invoke_shares_idempotency_with_main_path(new_task, pipeline_calls, store):

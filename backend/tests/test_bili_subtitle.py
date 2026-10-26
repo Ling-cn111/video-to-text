@@ -12,7 +12,11 @@ import pytest
 import app.services.bili_player_api as bili
 import app.services.subtitles as subtitles
 from app.services.bili_player_api import BiliSubtitleTrack, get_subtitle_tracks, get_video_info
-from app.services.subtitles import is_allowed_subtitle_url, try_extract_subtitle_transcript
+from app.services.subtitles import (
+    is_allowed_subtitle_url,
+    punctuate_subtitle_items,
+    try_extract_subtitle_transcript,
+)
 
 # ---- 测试数据（与真实响应结构一致，见侦察报告）----
 
@@ -203,6 +207,105 @@ def test_download_track_items_upgrades_to_https(monkeypatch):
     assert captured["url"].startswith("https://aisubtitle.hdslb.com/")
 
 
+# ---- 字幕分句（punctuate_subtitle_items）----
+
+def test_punctuate_merges_fragments_into_sentences():
+    """零标点碎片按停顿合并成句，并补句末句号。"""
+    items = [
+        {"time": 0.08, "text": "短的发布会"},
+        {"time": 1.50, "text": "多恩的发布会会唠这一场"},
+        {"time": 3.20, "text": "离退休老头库克最后精神家园"},
+        {"time": 6.20, "text": "库克复刻复刻"},  # 停顿 3s ≥ 1.2s 且已累计 22+ 字 → 断句
+    ]
+    out = punctuate_subtitle_items(items)
+    assert len(out) == 2
+    assert out[0]["time"] == 0.08  # 句首时间 = 该句第一条的时间
+    assert out[0]["text"] == "短的发布会多恩的发布会会唠这一场离退休老头库克最后精神家园。"
+    assert out[1]["time"] == 6.20
+    assert out[1]["text"] == "库克复刻复刻。"
+
+
+def test_punctuate_keeps_short_gap_merged():
+    """停顿短于阈值时继续合并，不产生「短的发布会。」这种碎句。"""
+    items = [
+        {"time": 0.0, "text": "短的发布会"},
+        {"time": 0.9, "text": "多恩的发布会会唠这一场"},  # gap 0.9 < 1.2
+        {"time": 2.0, "text": "离退休老头库克最后精神家园"},  # 累计 22 字仍 < 24，继续吞
+    ]
+    out = punctuate_subtitle_items(items)
+    assert len(out) == 1
+    assert out[0]["text"] == "短的发布会多恩的发布会会唠这一场离退休老头库克最后精神家园。"
+
+
+def test_punctuate_breaks_on_existing_terminator():
+    """已带句末标点的条目立即断句，不再向后合并。"""
+    items = [
+        {"time": 0.0, "text": "第一句已经完整。"},
+        {"time": 0.5, "text": "第二句"},
+        {"time": 2.0, "text": "也完整了。"},
+    ]
+    out = punctuate_subtitle_items(items)
+    assert [o["text"] for o in out] == ["第一句已经完整。", "第二句也完整了。"]
+    assert [o["time"] for o in out] == [0.0, 0.5]
+
+
+def test_punctuate_strips_soft_punctuation_before_period():
+    """句尾是逗号/顿号时先剥掉再补句号，避免「，。」这种拼接痕迹。
+
+    注意：句**内部**的逗号要保留（它是语义停顿），只剥句尾那一个。
+    """
+    items = [{"time": 0.0, "text": "先说了半句，"}, {"time": 0.2, "text": "又接了半句、"}]
+    out = punctuate_subtitle_items(items)
+    assert out[0]["text"] == "先说了半句，又接了半句。"
+    assert "，。" not in out[0]["text"]
+    assert "、。" not in out[0]["text"]
+    assert "，又接了半句。" in out[0]["text"]  # 内部逗号保留
+
+
+def test_punctuate_respects_max_chars():
+    """无停顿的长串也会在 max_chars 处强制断句，避免一句无界膨胀。"""
+    items = [{"time": i * 0.5, "text": "一二三四五六七八九十"} for i in range(10)]  # 每 0.5s 一条，共 100 字
+    out = punctuate_subtitle_items(items, gap_seconds=1.2, min_chars=24, max_chars=60)
+    assert len(out) >= 2
+    assert all(len(o["text"]) <= 61 for o in out)  # 60 字 + 句号
+
+
+def test_punctuate_english_gets_period():
+    """纯英文补英文句点，不补中文句号。"""
+    out = punctuate_subtitle_items([{"time": 0.0, "text": "hello world"}])
+    assert out[0]["text"] == "hello world."
+
+
+def test_punctuate_preserves_trailing_closer():
+    """句末引号/括号要接回标点之后，不吞掉收尾符号。"""
+    out = punctuate_subtitle_items([{"time": 0.0, "text": "他说“好”"}])
+    assert out[0]["text"] == "他说“好”。"
+
+
+def test_punctuate_empty_and_single():
+    """空输入与单条输入都不崩。"""
+    assert punctuate_subtitle_items([]) == []
+    single = punctuate_subtitle_items([{"time": 3.0, "text": "只有一句"}])
+    assert single == [{"time": 3.0, "text": "只有一句。"}]
+
+
+def test_punctuate_skips_blank_items():
+    """空白条目被跳过，不产生空句子。"""
+    items = [{"time": 0.0, "text": "  "}, {"time": 1.0, "text": "有内容"}, {"time": 2.0, "text": ""}]
+    out = punctuate_subtitle_items(items)
+    assert out == [{"time": 1.0, "text": "有内容。"}]
+
+
+def test_punctuate_does_not_introduce_timestamps():
+    """铁律：分句只改文本内容，绝不把时间戳写进文本（前端全文阅读零时间戳）。"""
+    import re
+
+    items = [{"time": float(i * 2), "text": "片段%d" % i} for i in range(20)]
+    out = punctuate_subtitle_items(items)
+    for item in out:
+        assert not re.search(r"\d{1,2}:\d{2}", item["text"])
+
+
 # ---- 真实集成（CI 跳过）：未登录 AI 字幕全链路 ----
 
 @pytest.mark.network
@@ -218,3 +321,26 @@ def test_dm_view_real_ai_subtitle_end_to_end():
     assert source in ("subtitle_ai", "subtitle_cc")
     assert len(items) > 50  # 150 秒发布会实测 171 条
     assert all("time" in item and "text" in item for item in items[:10])
+
+
+@pytest.mark.network
+def test_punctuate_real_ai_subtitle_shrinks_item_count():
+    """真实数据验证：171 条零标点碎片合并成约 58 句，句句有句末标点。
+
+    这是 P0-1 的核心指标 —— 合并后前端 article.ts 才能正常分段
+    （未合并时 171 条 → 4 段 500 字硬切长墙；合并后 → 12 段 160-190 字正常段落）。
+    """
+    result = try_extract_subtitle_transcript("https://www.bilibili.com/video/BV1S6aB63Er7")
+    assert result is not None
+    raw_items, _source = result
+    merged = punctuate_subtitle_items(raw_items)
+    assert len(merged) < len(raw_items) / 2, "合并后条数应显著少于原始碎片数"
+    terminators = "。！？!?…"
+    for item in merged:
+        stripped = item["text"].rstrip().rstrip("”\"』」)）】》〉")
+        assert stripped and stripped[-1] in terminators, f"未补句末标点：{item['text']}"
+    # 时间戳必须单调不减，且首条保持原始起点
+    times = [item["time"] for item in merged]
+    assert times == sorted(times)
+    assert times[0] == raw_items[0]["time"]
+

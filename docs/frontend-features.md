@@ -85,6 +85,8 @@
 | 功能 | 锁定要求 |
 | --- | --- |
 | 字幕快路径优先 | 有字幕的视频优先走字幕快路径（降级链：yt-dlp CC → dm/view AI → 预留 Cookie 层 → ASR），后端标记 `transcriptSource`（subtitle_cc / subtitle_ai / asr），降级链不得移除 |
+| 字幕分句（P0-1） | 字幕命中后必须经 `backend/app/services/subtitles.py` 的 `punctuate_subtitle_items` 合并分句并补句末标点。B站 AI 字幕按口播节奏切成 11 字一条、零标点（实测 171/171 条无句末标点），不合并会让 `src/lib/article.ts` 的 `SENTENCE_END` 永不命中，全文阅读退化成 500 字一堵的硬切长墙。**参数 `gap=1.2s / min=24 / max=60` 实测把 171 条压到 58 句、前端分段从 4 段恢复到 12 段**，改动需重跑 `test_punctuate_*` |
+| 分句不得引入时间戳 | 分句只改 `text` 内容，**绝不允许把时间戳写进文本**（§2 全文导出零时间戳铁律，回归 `test_punctuate_does_not_introduce_timestamps`）。句首时间取该句第一条的时间，保证时间戳定位仍准确 |
 | 来源 Badge | 结果页 `data-testid="source-badge"` 按 `transcriptSource` 渲染：**字幕来源（subtitle_cc / subtitle_ai）显示「来源：B站字幕」；ASR 来源显示「来源：语音识别」；缺省不显示**。三个分支均不得移除（用户需据此区分字幕快路径与 ASR，任务 M2-P1 变更） |
 | 增量原则 | Badge 为头部元信息行增量，不得借机改动 Tab 结构 / 导出 / 进度页等已锁定功能 |
 
@@ -152,6 +154,7 @@
 - [ ] 首页转写模式默认「本地」；**说明行常显且随选择变化**（云端态含「上传至第三方」）；Mock 模式下有无实际效果小字，真实模式无（E2E 锁定 4）
 - [ ] 能力态：云端选项在检测中/未配置时禁用并有提示；总结区在未配置 LLM Key 时显示引导（关闭自动总结时为手动按钮禁用 + 配置引导）（手动验收，见 PR 步骤）
 - [ ] 字幕来源任务结果页显示「来源：B站字幕」Badge；ASR 来源任务不显示
+- [ ] 字幕分句：真实字幕稿经 `punctuate_subtitle_items` 后条数减半以上、每条有句末标点、时间戳单调不减且首条时间不变、文本中不含 `mm:ss`（后端 `test_punctuate_*` 共 11 个用例）
 - [ ] AI 总结面板：keyPoints 至少一条带时间戳徽章，chapters 带时间区间（E2E 锁定 6）
 - [ ] 总结失败降级：文字稿可见 + 错误卡与重试按钮；**summary 为 null 时导出 TXT/MD 仍与页面全文同源**（E2E 锁定 8）
 - [ ] 首页模式标识：Mock 构建显示「演示模式 · Mock 数据」徽章与说明段；真实构建两者均不出现（E2E 锁定 7，CI 双模式各跑一次）

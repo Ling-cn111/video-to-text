@@ -337,7 +337,11 @@ def test_get_unknown_task_returns_404():
 
 
 def test_pipeline_subtitle_fast_path(monkeypatch):
-    """字幕快路径：注入字幕轨道后任务秒级完成（不下载音频），来源标记为字幕。"""
+    """字幕快路径：注入字幕轨道后任务秒级完成（不下载音频），来源标记为字幕。
+
+    字幕命中后会经 punctuate_subtitle_items 分句（B站 AI 字幕零标点、11 字一条，
+    不合并会让前端分段逻辑失效），因此两条短句被合并成一句并补句号。
+    """
     monkeypatch.setattr(
         "app.services.transcribe.try_extract_subtitle_transcript",
         lambda url: ([{"time": 0.5, "text": "你好"}, {"time": 2.0, "text": "世界"}], "subtitle_cc"),
@@ -349,8 +353,9 @@ def test_pipeline_subtitle_fast_path(monkeypatch):
     task = get_task(task_id)
     assert task is not None and task.status == "completed"
     assert task.progress == 100
-    assert [(i.time, i.text) for i in task.transcript] == [(0.5, "你好"), (2.0, "世界")]
-    assert task.plain_text == "你好世界"
+    # 合并后时间取句首那条（0.5），句末补句号
+    assert [(i.time, i.text) for i in task.transcript] == [(0.5, "你好世界。")]
+    assert task.plain_text == "你好世界。"
     assert task.transcript_source == "subtitle_cc"
 
 
@@ -396,9 +401,10 @@ def test_http_subtitle_flow(monkeypatch):
     data = detail.json()
     assert data["status"] == "completed"
     assert data["video"]["title"] == "测试视频"  # 元数据透传（刷新恢复用）
-    assert data["transcript"] == [{"time": 1.0, "text": "接口级字幕"}]
+    # 单条字幕经分句后补句末标点（时间戳不变）
+    assert data["transcript"] == [{"time": 1.0, "text": "接口级字幕。"}]
     assert data["transcriptSource"] == "subtitle_ai"
-    assert data["plainText"] == "接口级字幕"
+    assert data["plainText"] == "接口级字幕。"
 
 
 @pytest.mark.network
