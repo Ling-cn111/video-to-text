@@ -107,7 +107,8 @@ def test_post_inline_mode_still_completes_subtitle_flow(monkeypatch):
     detail = client.get(f"/api/transcribe/{created.json()['taskId']}")
     assert detail.status_code == 200
     assert detail.json()["status"] == "completed"
-    assert detail.json()["plainText"] == "分发后仍能完成"
+    # 字幕命中后经 punctuate_subtitle_items 补句末标点（P0-1）
+    assert detail.json()["plainText"] == "分发后仍能完成。"
 
 
 # ---- ENQUEUE_MODE=fc：投递到 FC 异步（S2-P3）----

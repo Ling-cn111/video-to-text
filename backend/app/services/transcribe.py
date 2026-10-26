@@ -21,7 +21,7 @@ from app.errors import AppException
 from app.schemas import TranscriptItem, VideoInfo
 from app.services import asr
 from app.services.audio import convert_to_wav_16k_mono, download_audio
-from app.services.subtitles import try_extract_subtitle_transcript
+from app.services.subtitles import punctuate_subtitle_items, try_extract_subtitle_transcript
 from app.services.tasks import update_task
 
 logger = logging.getLogger(__name__)
@@ -182,6 +182,10 @@ def run_transcription_pipeline(
                 subtitle_result = None  # 字幕路径失败不阻断，回退 ASR
             if subtitle_result:
                 subtitle_items, subtitle_source = subtitle_result
+                # 字幕分句：B站 AI 字幕按口播节奏切成 11 字一条、零标点，
+                # 不合并的话前端分段逻辑失效（见 punctuate_subtitle_items 注释）。
+                # 放后端做，网页 / 桌面端 / SRT·VTT 导出 / plain_text 一次全受益。
+                subtitle_items = punctuate_subtitle_items(subtitle_items)
                 reporter.set("asr", PROGRESS_ASR_START)
                 reporter.close()
                 _finish(task_id, subtitle_items, subtitle_source)
