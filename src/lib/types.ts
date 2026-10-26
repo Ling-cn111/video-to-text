@@ -202,6 +202,8 @@ export type ApiErrorCode =
   | 'TASK_INTERRUPTED'
   | 'TASK_TIMEOUT'
   | 'RATE_LIMITED'
+  // 用户自带的 Key（BYOK）被服务商拒绝：401/403，见 backend/app/errors.py
+  | 'BYOK_KEY_INVALID'
   | 'INTERNAL_ERROR'
 
 export interface AppError {

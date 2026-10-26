@@ -1112,7 +1112,7 @@ LUA
 | C 等 5 分钟仍无日志 | 定时触发器没建成功（`s info` 查 `reapTimer`），或 `enable: false` |
 | C 有日志但报 `422 事件体无法解析` | `/invoke` 分流没生效——检查 `_looks_like_timer_event` 与 event 字段名 |
 | C 日志里是 `POST /invoke 401 Unauthorized`（每 5 分钟一条） | 定时事件被拒。**先查 `reapTimer.payload` 里有没有 token**（`s info` 看触发器配置）——它必须是 `{"action":"reap","token":"<WORKER_TOKEN>"}`。注意 payload 在**部署时**渲染，改过 `WORKER_TOKEN` 却没重新 `s deploy` 就会对不上 |
-| 任务变 `failed` 但前端只显示「出了点问题」 | `error-alert.tsx` 的 `ERROR_TITLES` 缺该错误码。P2 已改成 `Record<ClientErrorCode, string>` 强制穷举，漏一个就编译不过；若仍出现，检查后端是否返回了契约外的码 |
+| 任务变 `failed` 但前端只显示「出了点问题」 | `src/lib/error-titles.ts` 的 `ERROR_TITLES` 缺该错误码。P2 已改成 `Record<ClientErrorCode, string>` 强制穷举，漏一个就编译不过；若仍出现，检查后端是否返回了契约外的码 |
 
 > **不要**把 `WORKER_PATH` 配成 `/internal/worker/reap`——那是人工入口，定时触发器永远打不到自定义路径。
 

@@ -57,6 +57,24 @@
 
 `keyPoints[].time` 的时间戳强制取自原 `transcript`（后端做就近吸附校验），LLM 不能凭空编造。
 
+### 2.3 用户自带 Key（BYOK）请求头
+
+两个可选请求头，用于让用户用自己的额度而不是站点额度：
+
+| 请求头 | 作用 | 缺失时 |
+| --- | --- | --- |
+| `X-Vtt-Llm-Key` | `POST /api/summarize` 的 LLM Key | 回落站点 `DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` |
+| `X-Vtt-Asr-Key` | `POST /api/transcribe`（`engine=cloud`）的云端 ASR Key | 回落站点 `CLOUD_ASR_API_KEY` |
+
+约定：
+
+- **只走请求头，不进请求体**。请求体会被错误日志、`payload=` 打印、体积限制一整套链路碰到；请求头是唯一不会被顺手打进日志的位置。
+- 值超过 512 字符直接丢弃并记 warning（`normalize_key`），**不做 `sk-` 前缀校验**——各家格式不统一，猜错会拒掉合法 Key。
+- 服务地址**不接受用户输入**（固定用站点配置的 base_url）。否则等于开了 SSRF，还能把用户的 Key 骗到攻击者服务器。
+- 站点未配 Key 但请求带了 BYOK Key 时**必须放行**（这正是该功能的意义）。
+- Key 不落任务库：`TranscribeJob.byok_key` 只随作业跨进程投递，`tasks._payload_dict` 里不含该字段。
+- 前后端常量必须逐字一致：`src/lib/byok.ts` 的 `HEADER_LLM_KEY` / `HEADER_ASR_KEY` ↔ `backend/app/services/byok.py` 的同名常量。名字不一致**不会报错**，只会静默回落站点 Key。
+
 ## 3. 错误契约
 
 所有非 2xx 响应统一为：
@@ -68,8 +86,9 @@
 | 状态码 | code | 触发场景 |
 | --- | --- | --- |
 | 400 | `INVALID_URL` | 链接格式非法 |
-| 400 | `CLOUD_NOT_CONFIGURED` | 选了云端引擎但未配 `CLOUD_ASR_API_KEY`（提交即报错，不静默降级） |
-| 400 | `SUMMARIZE_NOT_CONFIGURED` | 未配 `DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` |
+| 400 | `CLOUD_NOT_CONFIGURED` | 选了云端引擎但站点未配 `CLOUD_ASR_API_KEY` 且请求未带 `X-Vtt-Asr-Key`（提交即报错，不静默降级） |
+| 400 | `SUMMARIZE_NOT_CONFIGURED` | 站点未配 `DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY`，且请求未带 `X-Vtt-Llm-Key` |
+| 401 | `BYOK_KEY_INVALID` | 请求头里的用户 Key 被服务商拒绝（401/403）。**动作主体是用户自己**：文案指向「API 设置」，不要提示去找部署者 |
 | 404 | `INVALID_TASK` | taskId 不存在或已过期 |
 | 409 | `TASK_INTERRUPTED` | 服务重启导致任务中断（前端给重试按钮） |
 | 413 | `TRANSCRIPT_TOO_LONG` | 文字稿超过 10 万字，不支持总结 |
@@ -81,7 +100,7 @@
 | 500 | `INTERNAL_ERROR` | 未预期异常兜底 |
 | 502 | `SUMMARIZE_FAILED` | LLM 调用失败（网络 / HTTP / 重试耗尽） |
 
-状态码映射的代码事实来源是 [`src/lib/api-server.ts`](../src/lib/api-server.ts)（Mock 侧）与 [`backend/app/errors.py`](../backend/app/errors.py)（真实侧），两边必须一致。完整枚举定义见 `src/lib/types.ts` 的 `ApiErrorCode`——新增错误码时要同步改四处：`types.ts`、`api-server.ts` 的 `STATUS_BY_CODE`、`src/components/shared/error-alert.tsx` 的中文标题表（`Record<ClientErrorCode, string>` 会强制穷举）、本文档；漏改会类型报错。
+状态码映射的代码事实来源是 [`src/lib/api-server.ts`](../src/lib/api-server.ts)（Mock 侧）与 [`backend/app/errors.py`](../backend/app/errors.py)（真实侧），两边必须一致。完整枚举定义见 `src/lib/types.ts` 的 `ApiErrorCode`——新增错误码时要同步改四处：`types.ts`、`api-server.ts` 的 `STATUS_BY_CODE`、`src/lib/error-titles.ts` 的中文标题表（`Record<ClientErrorCode, string>` 会强制穷举）、本文档；漏改会类型报错。
 
 > `FILE_TOO_LARGE` / `FILE_FORMAT_UNSUPPORTED` 曾作为「本地视频上传」的预留码存在，但前后端都没有生产者，已于 P2 清理。M3 真正做上传时再一并引入（届时后端 `errors.py` 也要加对应异常类）。
 

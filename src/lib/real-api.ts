@@ -1,4 +1,5 @@
 import { apiUrl } from '@/lib/api-base'
+import { byokHeaderFor } from '@/lib/byok'
 import { JSON_HEADERS, toJson, throwNetworkError, type ApiClient } from '@/lib/http'
 import type {
   Capabilities,
@@ -38,7 +39,8 @@ export const realApi: ApiClient = {
     toJson(
       fetch(apiUrl('/transcribe'), {
         method: 'POST',
-        headers: JSON_HEADERS,
+        // 用户自带 ASR Key 时随请求带上（没填则空对象，后端回落站点 Key）
+        headers: { ...JSON_HEADERS, ...byokHeaderFor('asr') },
         body: JSON.stringify({ videoId, video, url, engine }),
       }).catch(throwNetworkError),
     ),
@@ -51,7 +53,8 @@ export const realApi: ApiClient = {
     toJson(
       fetch(apiUrl('/summarize'), {
         method: 'POST',
-        headers: JSON_HEADERS,
+        // 用户自带 LLM Key 时随请求带上；只带 LLM 那一把，不把 ASR Key 也捎过去
+        headers: { ...JSON_HEADERS, ...byokHeaderFor('llm') },
         body: JSON.stringify({
           transcript: request.transcript,
           title: request.title,

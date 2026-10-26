@@ -19,6 +19,7 @@ import { formatTranscriptToSections } from '@/lib/article'
 import { processingHref } from '@/lib/routes'
 import { useTaskStore } from '@/stores/task-store'
 import { useResultPolling } from '@/hooks/use-result-polling'
+import { useByokStatus } from '@/hooks/use-byok-status'
 import { cn } from '@/lib/utils'
 
 interface ResultViewProps {
@@ -47,6 +48,9 @@ export function ResultView({ taskId }: ResultViewProps) {
   const summaryDetail = useTaskStore((state) => state.summaryDetail)
   const setSummaryDetail = useTaskStore((state) => state.setSummaryDetail)
   const reset = useTaskStore((state) => state.reset)
+  const byok = useByokStatus()
+  // 站点没配 Key **且**用户没填自己的 Key 才真的不可用（BYOK 上线后「未配置」不再等于「用不了」）
+  const summarizeUnavailable = capabilities?.summarizeConfigured === false && !byok.hasLlmKey
   const [recovering, setRecovering] = useState(storeTaskId !== taskId)
   const [retrying, setRetrying] = useState(false)
   const [summaryRetrying, setSummaryRetrying] = useState(false)
@@ -224,7 +228,7 @@ export function ResultView({ taskId }: ResultViewProps) {
                     value={summaryDetail}
                     onChange={(detail) => void handleDetailChange(detail)}
                     busy={summaryRetrying}
-                    disabled={capabilities?.summarizeConfigured === false}
+                    disabled={summarizeUnavailable}
                   />
                 </div>
               ) : null}
@@ -238,7 +242,7 @@ export function ResultView({ taskId }: ResultViewProps) {
                 error={summaryError}
                 onRetry={handleSummaryRetry}
                 retrying={summaryRetrying}
-                retryable={capabilities?.summarizeConfigured !== false}
+                retryable={!summarizeUnavailable}
               />
             ) : summaryRetrying || phase === 'summarizing' ? (
               <SummarySkeleton />
@@ -246,7 +250,7 @@ export function ResultView({ taskId }: ResultViewProps) {
               /* 未总结态（关闭自动总结）：引导 + 手动生成，与 P0 错误重试共用 retrySummary 逻辑 */
               <SummaryManualPrompt
                 onGenerate={handleSummaryRetry}
-                disabled={capabilities?.summarizeConfigured === false}
+                disabled={summarizeUnavailable}
                 detail={summaryDetail}
                 onDetailChange={(detail) => setSummaryDetail(detail)}
                 busy={summaryRetrying}

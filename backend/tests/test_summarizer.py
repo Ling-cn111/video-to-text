@@ -50,7 +50,7 @@ def _mock_chat(monkeypatch, payloads: list[str], usages: list[dict] | None = Non
     """
     calls = {"n": 0, "details": []}
 
-    def fake_chat(base_url, api_key, model, user_content, detail=None):
+    def fake_chat(base_url, api_key, model, user_content, detail=None, from_user=False):
         index = min(calls["n"], len(payloads) - 1)
         usage_list = usages or [{"prompt_tokens": 100, "completion_tokens": 50}]
         usage = usage_list[min(index, len(usage_list) - 1)]
@@ -78,7 +78,7 @@ def test_qwen_provider_uses_dashscope_key(monkeypatch):
     monkeypatch.setattr(summarizer_module, "DASHSCOPE_API_KEY", "qwen-key")
     captured = {}
 
-    def fake_chat(base_url, api_key, model, user_content, detail=None):
+    def fake_chat(base_url, api_key, model, user_content, detail=None, from_user=False):
         captured.update({"base_url": base_url, "api_key": api_key})
         return json.dumps(VALID_LLM_PAYLOAD, ensure_ascii=False), {"prompt_tokens": 10, "completion_tokens": 10}
 

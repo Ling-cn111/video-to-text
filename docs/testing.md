@@ -27,6 +27,9 @@ pnpm start       # 以生产模式启动，默认 3000 端口
 | `e2e/pr3-progress-and-history.spec.ts` | 回归 4-6：最近转写记录、进度页离开出口、剩余时间与轮询节奏纯函数 |
 | `e2e/pr4-reading-and-export.spec.ts` | 回归 7-9：SRT/VTT 导出、目录搜索字号、总结详细度 |
 | `e2e/pr5-errors-and-theme.spec.ts` | 回归 10-13：404 页、错误边界产物、robots/sitemap、安全响应头、深色模式 |
+| `e2e/pr6-byok.spec.ts` | 回归 14-17：BYOK 面板存取与掩码、Key 走请求头不进请求体、错误归属、未配置提示的自助出路 |
+
+**`test_byok.py`（后端）** 与上面的 BYOK 前端用例是配套的：前端只证明「头发出去了」，后端证明「收到后按请求级覆盖、被拒时报对错误码、不落库、不降级」。改任一侧都要跑另一侧。
 
 ### 2.1 关键陷阱：`NEXT_PUBLIC_USE_MOCK` 是构建期常量
 
@@ -130,4 +133,5 @@ PWA 验收需先 `pnpm build && pnpm start`；桌面端相关脚本见 [desktop-
 | 后端 | 上面的 pytest 命令（应与 CI 同为全绿，0 failed） |
 | 改限流（`rate_limit.py` / `main.py` 中间件顺序） | `pytest tests/test_rate_limit.py tests/test_rate_limit_redis.py`。**中间件顺序是命门**：`add_middleware` 后注册的包在外层，必须「先限流、后 CORS」，否则 429 绕过 CORS 处理，跨源前端只看到网络错误（`test_429_response_carries_cors_headers` 会拦） |
 | 改 `s.yaml` | `pytest tests/test_deploy_manifest.py`——它会把 §5 的模板副本与真实 `s.yaml` 逐字段比对，改一处忘另一处就红 |
+| 改 BYOK（`src/lib/byok.ts` / `services/byok.py` / 设置面板） | 前端 `pnpm exec playwright test e2e/pr6-byok.spec.ts` + 后端 `pytest tests/test_byok.py`。**两侧必须一起跑**：前端只证明「头发出去了」，后端证明「按请求级覆盖、被拒时报对错误码」。改请求头常量时前后端两个文件都要改，名字不一致不会报错、只会静默回落站点 Key |
 | 文档 / 构建脚本 | 若动了 `next.config.mjs`、`scripts/`，跑一次 `pnpm build` |

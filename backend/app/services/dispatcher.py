@@ -70,6 +70,10 @@ class TranscribeJob:
     prefer_subtitles: bool = True
     hotwords: list[str] | None = None
     engine: str | None = None
+    # 用户自带的云端 ASR Key（见 services/byok.py）。跨进程投递必须随作业走，
+    # 否则 Worker 拿不到；但**不进任务库**（tasks._payload_dict 不含该字段），
+    # 只在「API 函数 → Worker 函数」这一跳的 HTTPS 载荷里存在。
+    byok_key: str | None = None
 
     def to_dict(self) -> dict:
         """可 JSON 序列化的作业体（P3 的 FC 事件 payload 即此结构）。"""
@@ -80,6 +84,7 @@ class TranscribeJob:
             "prefer_subtitles": self.prefer_subtitles,
             "hotwords": list(self.hotwords) if self.hotwords else None,
             "engine": self.engine,
+            "byok_key": self.byok_key,
         }
 
     @classmethod
@@ -93,6 +98,7 @@ class TranscribeJob:
             prefer_subtitles=bool(data.get("prefer_subtitles", True)),
             hotwords=data.get("hotwords") or None,
             engine=data.get("engine"),
+            byok_key=data.get("byok_key") or None,
         )
 
 
@@ -114,11 +120,14 @@ class InlineDispatcher:
     mode = "inline"
 
     def enqueue(self, job: TranscribeJob, background_tasks: "BackgroundTasks | None" = None) -> None:
+        # byok_key 用关键字传：它是 4 个位置参数之后的第 7 个形参，插在 on_heartbeat
+        # 之后，位置传递一旦漏填 None 就会把 Key 当成心跳回调传进去。
         args = (job.task_id, job.url, job.video, job.prefer_subtitles, job.hotwords, job.engine)
+        kwargs = {"byok_key": job.byok_key}
         if background_tasks is None:
-            transcribe.run_transcription_pipeline(*args)
+            transcribe.run_transcription_pipeline(*args, **kwargs)
             return
-        background_tasks.add_task(transcribe.run_transcription_pipeline, *args)
+        background_tasks.add_task(transcribe.run_transcription_pipeline, *args, **kwargs)
 
 
 class FcDispatcher:

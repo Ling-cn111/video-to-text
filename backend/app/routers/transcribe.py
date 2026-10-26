@@ -5,12 +5,13 @@ BackgroundTasks，与 S2-P1 之前逐字节一致；后续阶段可切到 FC 异
 """
 import logging
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Header
 
 from app.config import ASR_ENGINE, CLOUD_ASR_API_KEY
 from app.errors import CloudNotConfiguredError, InvalidUrlError, TaskNotFoundError, UnsupportedPlatformError
 from app.platforms import detect_platform
 from app.schemas import StartTaskResponse, StartTranscribeRequest, TaskDetailResponse
+from app.services.byok import HEADER_ASR_KEY, normalize_key
 from app.services.dispatcher import TranscribeJob, enqueue
 from app.services.tasks import create_task, get_task, update_task
 from app.url_guard import validate_public_http_url
@@ -23,14 +24,15 @@ router = APIRouter()
 _URL_TEMPLATES = {"bilibili": "https://www.bilibili.com/video/{videoId}"}
 
 
-def _resolve_engine(payload: StartTranscribeRequest) -> str:
+def _resolve_engine(payload: StartTranscribeRequest, byok_key: str | None = None) -> str:
     """解析本次任务的 ASR 引擎：请求字段优先，缺省跟随后端 ASR_ENGINE 环境变量。
 
-    云端模式在提交时预检 Key：未配置直接报 CLOUD_NOT_CONFIGURED（明确中文提示），
-    不创建任务、不静默降级；运行期云端故障仍由 ASR_ENGINE_FALLBACK 降级本地。
+    云端模式在提交时预检 Key：用户自带 Key 或站点已配 Key 均可放行；两者都没有时
+    直接报 CLOUD_NOT_CONFIGURED（明确中文提示），不创建任务、不静默降级；
+    运行期云端故障仍由 ASR_ENGINE_FALLBACK 降级本地。
     """
     engine = payload.engine or ASR_ENGINE
-    if engine == "cloud" and not CLOUD_ASR_API_KEY:
+    if engine == "cloud" and not CLOUD_ASR_API_KEY and not byok_key:
         raise CloudNotConfiguredError()
     return engine
 
@@ -59,9 +61,14 @@ def _resolve_target_url(payload: StartTranscribeRequest) -> str:
 
 
 @router.post("/api/transcribe", response_model=StartTaskResponse)
-def create_transcription(payload: StartTranscribeRequest, background_tasks: BackgroundTasks) -> StartTaskResponse:
+def create_transcription(
+    payload: StartTranscribeRequest,
+    background_tasks: BackgroundTasks,
+    x_vtt_asr_key: str | None = Header(default=None, alias=HEADER_ASR_KEY),
+) -> StartTaskResponse:
     url = _resolve_target_url(payload)
-    engine = _resolve_engine(payload)
+    byok_key = normalize_key(x_vtt_asr_key)
+    engine = _resolve_engine(payload, byok_key)
     task_id = create_task(payload.video, engine)
     job = TranscribeJob(
         task_id=task_id,
@@ -70,6 +77,7 @@ def create_transcription(payload: StartTranscribeRequest, background_tasks: Back
         prefer_subtitles=True,
         hotwords=payload.hotwords,
         engine=engine,
+        byok_key=byok_key,
     )
     try:
         enqueue(job, background_tasks=background_tasks)

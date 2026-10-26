@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { useTaskStore } from '@/stores/task-store'
 import { cloudUnconfiguredMessage } from '@/lib/capability-hint'
 import { useHostname } from '@/hooks/use-hostname'
+import { useByokStatus } from '@/hooks/use-byok-status'
 import type { TranscribeEngine } from '@/lib/types'
 
 interface TranscribeModeProps {
@@ -34,8 +35,10 @@ const OPTIONS: Array<{ value: TranscribeEngine; label: string; description: stri
 export function TranscribeMode({ value, onChange }: TranscribeModeProps) {
   const capabilities = useTaskStore((s) => s.capabilities)
   const hostname = useHostname()
-  const detecting = capabilities === null
-  const cloudUnconfigured = capabilities?.cloudAsrConfigured === false
+  const byok = useByokStatus()
+  const detecting = capabilities === null || !byok.ready
+  // 站点没配**且**用户也没填自己的 Key 才真的用不了；用户填了 Key 就放行
+  const cloudUnconfigured = capabilities?.cloudAsrConfigured === false && !byok.hasAsrKey
   const cloudDisabled = detecting || cloudUnconfigured
 
   return (
@@ -77,7 +80,9 @@ export function TranscribeMode({ value, onChange }: TranscribeModeProps) {
       ) : cloudUnconfigured ? (
         // 文案分环境：本地给配置指引，公网只说「暂不可用 + 用哪个替代」（不暴露 Key 名）
         <p data-testid="cloud-capability-hint" className="text-xs text-amber-600 dark:text-amber-500">
-          {hostname === null ? '云端模式暂不可用' : cloudUnconfiguredMessage(hostname)}
+          {hostname === null
+            ? '云端模式暂不可用，可在右上角「API 设置」填写自己的 Key'
+            : cloudUnconfiguredMessage(hostname)}
         </p>
       ) : null}
 

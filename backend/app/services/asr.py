@@ -40,7 +40,8 @@ from app.config import (
     WHISPER_COMPUTE_TYPE,
     WHISPER_MODEL,
 )
-from app.errors import InvalidUrlError, ParseFailedError
+from app.errors import ByokKeyInvalidError, InvalidUrlError, ParseFailedError
+from app.services.byok import is_auth_failure
 from app.url_guard import validate_public_http_url
 
 ProgressCallback = None | object  # callable(ratio: float)
@@ -95,7 +96,9 @@ class BaseASREngine:
         progress_callback: ProgressCallback = None,
         initial_prompt: str | None = None,
         hotwords: list[str] | None = None,
+        byok_key: str | None = None,
     ) -> list[dict]:
+        """byok_key 为用户自带的云端 Key（见 services/byok.py），本地引擎忽略该参数。"""
         raise NotImplementedError
 
 
@@ -154,6 +157,7 @@ class LocalWhisperEngine(BaseASREngine):
         progress_callback: ProgressCallback = None,
         initial_prompt: str | None = None,
         hotwords: list[str] | None = None,
+        byok_key: str | None = None,
     ) -> list[dict]:
         model = self._get_model()
         decoded = decode_audio_16k_mono(audio)
@@ -199,8 +203,9 @@ class CloudASREngine(BaseASREngine):
         progress_callback: ProgressCallback = None,
         initial_prompt: str | None = None,
         hotwords: list[str] | None = None,
+        byok_key: str | None = None,
     ) -> list[dict]:
-        if not CLOUD_ASR_API_KEY:
+        if not CLOUD_ASR_API_KEY and not byok_key:
             raise ParseFailedError(
                 "云端语音识别未配置：请先在后端设置 CLOUD_ASR_API_KEY 环境变量（默认指向硅基流动），"
                 "或在首页选择本地模式"
@@ -224,7 +229,9 @@ class CloudASREngine(BaseASREngine):
             base_data["prompt"] = prompt
 
         url = f"{CLOUD_ASR_BASE_URL.rstrip('/')}/audio/transcriptions"
-        headers = {"Authorization": f"Bearer {CLOUD_ASR_API_KEY}"}
+        # BYOK：用户自带的 Key 优先于站点配置（站点没配 Key 也能跑，见 services/byok.py）
+        api_key = byok_key or CLOUD_ASR_API_KEY
+        headers = {"Authorization": f"Bearer {api_key}"}
         files = {"file": ("audio.wav", audio_bytes)}
         try:
             response = None
@@ -241,7 +248,13 @@ class CloudASREngine(BaseASREngine):
                     break
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            raise ParseFailedError(f"云端语音识别失败（HTTP {exc.response.status_code}）") from exc
+            status = exc.response.status_code
+            if is_auth_failure(status) and byok_key:
+                raise ByokKeyInvalidError(
+                    f"你填写的语音识别 Key 被服务商拒绝（HTTP {status}），"
+                    "请在右上角「API 设置」中检查或更换"
+                ) from exc
+            raise ParseFailedError(f"云端语音识别失败（HTTP {status}）") from exc
         except httpx.HTTPError as exc:
             raise ParseFailedError("云端语音识别服务连接失败，请稍后重试") from exc
 
@@ -319,6 +332,7 @@ class Qwen3ASREngine(BaseASREngine):
         progress_callback: ProgressCallback = None,
         initial_prompt: str | None = None,
         hotwords: list[str] | None = None,
+        byok_key: str | None = None,
     ) -> list[dict]:
         model = self._get_model()
         context = build_initial_prompt(initial_prompt, hotwords)
@@ -373,6 +387,7 @@ class FunASRNanoEngine(BaseASREngine):
         progress_callback: ProgressCallback = None,
         initial_prompt: str | None = None,
         hotwords: list[str] | None = None,
+        byok_key: str | None = None,
     ) -> list[dict]:
         model = self._get_model()
         hotword_text = " ".join(w.strip() for w in (hotwords or []) if w and w.strip())
@@ -432,19 +447,27 @@ def transcribe_audio(
     initial_prompt: str | None = None,
     hotwords: list[str] | None = None,
     engine: str | None = None,
+    byok_key: str | None = None,
 ) -> list[dict]:
     """业务入口。audio 为内存音频 BytesIO。engine 为请求级手动选择（前端 local|cloud），
-    缺省跟随 ASR_ENGINE；主引擎失败时按 ASR_ENGINE_FALLBACK 自动降级（配置留空禁用）。"""
+    缺省跟随 ASR_ENGINE；主引擎失败时按 ASR_ENGINE_FALLBACK 自动降级（配置留空禁用）。
+
+    byok_key 为用户自带的云端 Key（见 services/byok.py），只对 cloud 引擎有意义。
+    """
     primary = get_engine(engine)
     try:
-        return primary.transcribe(audio, language, progress_callback, initial_prompt, hotwords)
+        return primary.transcribe(audio, language, progress_callback, initial_prompt, hotwords, byok_key)
+    except ByokKeyInvalidError:
+        # 用户自带的 Key 被拒时**不降级**：降级到本地会跑出结果，用户会以为云端
+        # 成功了，从此不会去改自己那把已经失效的 Key。宁可这次失败也要把话说清楚。
+        raise
     except Exception as exc:
         fallback_name = ASR_ENGINE_FALLBACK.strip()
         if not fallback_name or fallback_name == primary.name:
             raise
         fallback = build_engine(fallback_name)
         try:
-            return fallback.transcribe(audio, language, progress_callback, initial_prompt, hotwords)
+            return fallback.transcribe(audio, language, progress_callback, initial_prompt, hotwords, byok_key)
         except Exception:
             raise exc  # 降级也失败：抛主引擎的原始错误
 

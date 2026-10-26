@@ -24,7 +24,13 @@ from app.config import (
     LLM_PRICE_TABLE,
     LLM_PROVIDER,
 )
-from app.errors import SummarizeFailedError, SummarizeNotConfiguredError, TranscriptTooLongError
+from app.errors import (
+    ByokKeyInvalidError,
+    SummarizeFailedError,
+    SummarizeNotConfiguredError,
+    TranscriptTooLongError,
+)
+from app.services.byok import is_auth_failure, key_source
 
 logger = logging.getLogger(__name__)
 
@@ -83,14 +89,20 @@ def _system_prompt(detail: str | None) -> str:
 _SYSTEM_PROMPT = _system_prompt(DEFAULT_DETAIL)
 
 
-def _resolve_provider() -> tuple[str, str, str]:
-    """按 LLM_PROVIDER 返回 (base_url, api_key, model)；未配 Key 报错。"""
+def _resolve_provider(byok_key: str | None = None) -> tuple[str, str, str]:
+    """按 LLM_PROVIDER 返回 (base_url, api_key, model)。
+
+    byok_key 为用户自带的 Key（来自请求头，见 services/byok.py）：给了就用它，
+    站点没配 Key 也不算错——这正是 BYOK 的用途（站点不承担任何费用）。
+    base_url 与 model 一律来自服务端配置，不接受用户输入（否则等于开放 SSRF）。
+    """
     preset = LLM_PRESETS.get(LLM_PROVIDER)
     if preset is None:
         raise SummarizeFailedError(f"未知 LLM_PROVIDER：{LLM_PROVIDER}")
-    api_key = DEEPSEEK_API_KEY if preset["key_env"] == "DEEPSEEK_API_KEY" else DASHSCOPE_API_KEY
+    api_key = byok_key or (DEEPSEEK_API_KEY if preset["key_env"] == "DEEPSEEK_API_KEY" else DASHSCOPE_API_KEY)
     if not api_key:
         raise SummarizeNotConfiguredError()
+    logger.info("LLM 总结使用 %s Key（provider=%s）", key_source(byok_key, api_key), LLM_PROVIDER)
     return preset["base_url"], api_key, LLM_MODEL or preset["default_model"]
 
 
@@ -140,8 +152,35 @@ def _snap_summary_times(
     return payload
 
 
-def _chat(base_url: str, api_key: str, model: str, user_content: str, detail: str | None = None) -> tuple[str, dict]:
-    """单次 chat.completions 调用（json_object），返回 (content, usage)；记录成本。"""
+def _auth_error(status: int, from_user: bool):
+    """401/403 的归属判断：用户自带的 Key 出问题，提示他改自己的；站点 Key 出问题，提示联系部署者。
+
+    为什么必须分开：BYOK 上线后「Key 无效」有两种完全不同的责任方。若不区分，
+    自带 Key 的用户会被告知「AI 总结未配置」并去找站点管理员，而管理员这边
+    配置明明是好的——两边互相踢皮球。反之站点 Key 失效时也不能让用户去翻自己的设置。
+    """
+    if from_user:
+        return ByokKeyInvalidError(
+            f"你填写的 API Key 被服务商拒绝（HTTP {status}），请在右上角「API 设置」中检查或更换"
+        )
+    return SummarizeFailedError(
+        f"站点配置的 AI 总结 Key 被服务商拒绝（HTTP {status}），请联系部署者更换"
+    )
+
+
+def _chat(
+    base_url: str,
+    api_key: str,
+    model: str,
+    user_content: str,
+    detail: str | None = None,
+    from_user: bool = False,
+) -> tuple[str, dict]:
+    """单次 chat.completions 调用（json_object），返回 (content, usage)；记录成本。
+
+    from_user：本次用的是用户自带的 Key。401/403 时据此区分该由谁去修
+    （用户改自己的 Key / 部署者换站点 Key），见 `_auth_error`。
+    """
     try:
         response = httpx.post(
             f"{base_url.rstrip('/')}/chat/completions",
@@ -159,7 +198,10 @@ def _chat(base_url: str, api_key: str, model: str, user_content: str, detail: st
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise SummarizeFailedError(f"AI 总结服务返回错误（HTTP {exc.response.status_code}）") from exc
+        status = exc.response.status_code
+        if is_auth_failure(status):
+            raise _auth_error(status, from_user) from exc
+        raise SummarizeFailedError(f"AI 总结服务返回错误（HTTP {status}）") from exc
     except httpx.HTTPError as exc:
         raise SummarizeFailedError("AI 总结服务连接失败，请稍后重试") from exc
 
@@ -213,13 +255,18 @@ def _parse_payload(content: str) -> dict:
 
 
 def _chat_summary_with_retry(
-    base_url: str, api_key: str, model: str, user_content: str, detail: str | None = None
+    base_url: str,
+    api_key: str,
+    model: str,
+    user_content: str,
+    detail: str | None = None,
+    from_user: bool = False,
 ) -> dict:
     """调用 + 解析，失败把错误反馈给模型重试（最多 MAX_RETRIES 次）。"""
     last_error: ValueError | None = None
     feedback = ""
     for attempt in range(MAX_RETRIES + 1):
-        content, _ = _chat(base_url, api_key, model, user_content + feedback, detail)
+        content, _ = _chat(base_url, api_key, model, user_content + feedback, detail, from_user)
         try:
             return _parse_payload(content)
         except (json.JSONDecodeError, ValueError) as exc:
@@ -247,15 +294,24 @@ def _split_chunks(transcript: list[dict]) -> list[list[dict]]:
 
 
 def summarize_transcript(
-    transcript: list[dict], title: str, duration: int, detail: str | None = None
+    transcript: list[dict],
+    title: str,
+    duration: int,
+    detail: str | None = None,
+    byok_key: str | None = None,
 ) -> dict:
-    """业务入口：{transcript, title, duration, detail} → Summary dict（含时间戳吸附）。"""
+    """业务入口：{transcript, title, duration, detail, byok_key} → Summary dict（含时间戳吸附）。
+
+    byok_key 为用户自带的 Key（请求头，见 services/byok.py）：非空时优先于站点配置，
+    站点没配 Key 也能正常总结。
+    """
     total_chars = sum(len(str(item.get("text", ""))) for item in transcript)
     if total_chars > MAX_TRANSCRIPT_CHARS:
         raise TranscriptTooLongError()
 
     preset = _detail_preset(detail)
-    base_url, api_key, model = _resolve_provider()
+    base_url, api_key, model = _resolve_provider(byok_key)
+    from_user = bool(byok_key)
     sorted_times = sorted({float(item.get("time") or 0) for item in transcript})
 
     chunks = _split_chunks(transcript)
@@ -264,7 +320,7 @@ def summarize_transcript(
             f"视频标题：{title or '（无标题）'}\n时长：{duration} 秒\n\n"
             f"文字稿（每行 [mm:ss] 文本）：\n{format_transcript(transcript)}"
         )
-        payload = _chat_summary_with_retry(base_url, api_key, model, user_content, detail)
+        payload = _chat_summary_with_retry(base_url, api_key, model, user_content, detail, from_user)
     else:
         # 多块：逐块提取候选要点（时间戳即原 transcript 时间，无需重映射），再合并终稿
         block_notes: list[str] = []
@@ -275,7 +331,7 @@ def summarize_transcript(
                 '"digest": "该块内容摘要（2-3 句）"}。time 必须取自本块文字稿的时间戳。'
                 f"\n\n文字稿：\n{format_transcript(chunk)}"
             )
-            content, _ = _chat(base_url, api_key, model, block_prompt, detail)
+            content, _ = _chat(base_url, api_key, model, block_prompt, detail, from_user)
             try:
                 block = json.loads(content)
             except json.JSONDecodeError:
@@ -293,7 +349,7 @@ def summarize_transcript(
             "chapters 覆盖全片）：\n\n"
             + "\n\n".join(block_notes)
         )
-        payload = _chat_summary_with_retry(base_url, api_key, model, merge_prompt, detail)
+        payload = _chat_summary_with_retry(base_url, api_key, model, merge_prompt, detail, from_user)
 
     payload = _snap_summary_times(payload, sorted_times, duration, preset["maxKeyPoints"])
     logger.info(

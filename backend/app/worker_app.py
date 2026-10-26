@@ -382,6 +382,7 @@ async def _run_job(job: TranscribeJob) -> dict:
             job.hotwords,
             job.engine,
             on_heartbeat=_lock_renewer(job.task_id, token, loop),
+            byok_key=job.byok_key,
         )
     except Exception as exc:
         logger.exception("Worker 执行失败（task_id=%s）", job.task_id)
