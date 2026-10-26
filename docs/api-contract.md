@@ -75,7 +75,7 @@
 | 413 | `TRANSCRIPT_TOO_LONG` | 文字稿超过 10 万字，不支持总结 |
 | 413 | `AUDIO_TOO_LARGE` | 音频超过 `MAX_AUDIO_SIZE_MB` |
 | 422 | `UNSUPPORTED_PLATFORM` | 平台未接入（当前仅 B站） |
-| 429 | `RATE_LIMITED` | 同一 IP 每分钟 POST 超过 `RATE_LIMIT_PER_MINUTE`（默认 10，0 表示禁用）。由 `RateLimitMiddleware` 直接返回，不经过业务层 |
+| 429 | `RATE_LIMITED` | 触发限流：单个客户端每分钟 POST 超过 `RATE_LIMIT_PER_MINUTE`（默认 10），或全站合计超过 `RATE_LIMIT_GLOBAL_PER_MINUTE`（默认 120），0 表示禁用。响应带 `Retry-After` 秒数。由 `RateLimitMiddleware` 直接返回，不经过业务层 |
 | 500 | `TRANSCRIBE_FAILED` | 转写流程失败（含「未识别出语音内容」） |
 | 500 | `TASK_TIMEOUT` | reaper 判定任务超时 |
 | 500 | `INTERNAL_ERROR` | 未预期异常兜底 |

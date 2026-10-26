@@ -96,6 +96,45 @@ test.describe("P0 回归", () => {
     await expect(cloud).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByTestId("mode-description")).toContainText("云端模式");
   });
+
+  test("回归 4：429 的 Retry-After 决定冷却时长，不再一律 60 秒", async ({ page }) => {
+    // 后端是令牌桶，按 per_minute/60 回填：默认 10 次/分钟时 6 秒就够一个令牌。
+    // 固定 60 秒会让用户白等 54 秒（S3 修复顺带补上 Retry-After 后前端才用得上）。
+    await page.route("**/api/summarize", (route) =>
+      route.fulfill({
+        status: 429,
+        headers: { "retry-after": "7" },
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "RATE_LIMITED", message: "请求太频繁，请稍后再试" },
+        }),
+      }),
+    );
+
+    await page.goto(`/result?id=${mockTaskId()}`);
+    await expect(page.getByTestId("summary-error")).toBeVisible();
+
+    const hint = page.getByTestId("rate-limit-hint");
+    await expect(hint).toBeVisible();
+    // 显示的是服务端给的 7 秒（倒数中可能已跳到 6），而不是兜底的 60
+    await expect(hint).toContainText(/约 [67] 秒后可重试/);
+    await expect(hint).not.toContainText("60 秒");
+  });
+
+  test("回归 4b：缺少 Retry-After 时退回 60 秒兜底", async ({ page }) => {
+    await page.route("**/api/summarize", (route) =>
+      route.fulfill({
+        status: 429,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "RATE_LIMITED", message: "请求太频繁，请稍后再试" },
+        }),
+      }),
+    );
+
+    await page.goto(`/result?id=${mockTaskId()}`);
+    await expect(page.getByTestId("rate-limit-hint")).toContainText(/约 (59|60) 秒后可重试/);
+  });
 });
 
 test.describe("未配置提示的文案分环境", () => {

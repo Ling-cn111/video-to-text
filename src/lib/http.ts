@@ -43,6 +43,8 @@ export class ApiError extends Error {
     public code: ClientErrorCode,
     message: string,
     public status: number,
+    /** 服务端建议的重试等待秒数（429 的 Retry-After）；缺省表示服务端没给 */
+    public retryAfter?: number,
   ) {
     super(message)
     this.name = 'ApiError'
@@ -55,6 +57,27 @@ export const JSON_HEADERS = { 'Content-Type': 'application/json' }
 export function throwNetworkError(error: unknown): never {
   if (error instanceof ApiError) throw error
   throw new ApiError('NETWORK_ERROR', '网络异常，请检查网络连接后重试', 0)
+}
+
+/**
+ * 读取 429 的 `Retry-After`（秒）。
+ *
+ * 为什么不用固定值：后端是令牌桶，按 `per_minute/60` 每秒回填，实际等到「攒够
+ * 1 个令牌」的时间取决于当时的配额，写死 60 秒会让用户白等（默认 10 次/分钟时
+ * 只需 6 秒）。服务端既然给了准确值就用它，只在缺失时由调用方兜底。
+ * 同时容忍 HTTP-date 格式（RFC 9110 允许），解析失败返回 undefined。
+ */
+function parseRetryAfter(response: Response): number | undefined {
+  const raw = response.headers.get('retry-after')
+  if (!raw) return undefined
+  const seconds = Number(raw)
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds)
+  const at = Date.parse(raw)
+  if (!Number.isNaN(at)) {
+    const delta = Math.ceil((at - Date.now()) / 1000)
+    return delta > 0 ? delta : 0
+  }
+  return undefined
 }
 
 /** 非 2xx 响应 → ApiError（解析 { error: { code, message } } 形状） */
@@ -73,7 +96,7 @@ export async function parseErrorResponse(
   } catch {
     // 错误体不是 JSON，保留默认提示
   }
-  return new ApiError(code, message, response.status)
+  return new ApiError(code, message, response.status, parseRetryAfter(response))
 }
 
 /** 响应 → 数据；请求目标由调用方以字面量路径给出 */

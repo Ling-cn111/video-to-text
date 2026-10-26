@@ -154,7 +154,7 @@ export function SummaryErrorState({
   retryable?: boolean
 }) {
   const rateLimited = error.code === 'RATE_LIMITED'
-  const cooldown = useRateLimitCooldown(rateLimited)
+  const cooldown = useRateLimitCooldown(rateLimited, error.retryAfter)
   const retryBlocked = rateLimited && cooldown > 0
 
   return (
