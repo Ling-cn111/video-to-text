@@ -38,6 +38,67 @@ const nextConfig = {
             { source: "/result/:taskId", destination: "/result?id=:taskId", permanent: true },
           ];
         },
+        async headers() {
+          // 安全响应头。只加在 web 分支：静态导出（桌面端）由 Tauri asset 协议
+          // 加载本地文件，没有 HTTP 响应头可加，写了也不生效。
+          //
+          // CSP 说明：
+          // - script-src 需要 'unsafe-inline'：next-themes 在 <head> 内联一段脚本，
+          //   用于在首帧前把 .dark 类写进 <html>（否则深色用户会看到白闪）。
+          //   非 random 的 nonce 方案在静态预渲染下拿不到，暂不引入。
+          // - img-src 允许 https:：视频封面来自 B站 CDN，域名不固定。
+          // - connect-src 允许 https:：客户端只发同源 /backend-api/*，但桌面端
+          //   同构代码在 web 构建里不会执行跨域请求，收紧到 'self' 会误伤预览环境。
+          const csp = [
+            "default-src 'self'",
+            "script-src 'self' 'unsafe-inline'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob: https:",
+            "font-src 'self' data:",
+            "connect-src 'self' https:",
+            "media-src 'self' https:",
+            "worker-src 'self'",
+            "manifest-src 'self'",
+            "object-src 'none'",
+            "base-uri 'self'",
+            "form-action 'self'",
+            "frame-ancestors 'none'",
+            // 站点无任何外部来源，升级不安全请求即可
+            "upgrade-insecure-requests",
+          ].join("; ");
+
+          return [
+            {
+              source: "/:path*",
+              headers: [
+                { key: "Content-Security-Policy", value: csp },
+                // 防点击劫持（CSP frame-ancestors 已覆盖，这里给老浏览器兜底）
+                { key: "X-Frame-Options", value: "DENY" },
+                { key: "X-Content-Type-Options", value: "nosniff" },
+                // 任务页 URL 含 taskId，跨站跳转时不泄露给第三方
+                { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+                { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+                { key: "X-DNS-Prefetch-Control", value: "off" },
+                {
+                  key: "Strict-Transport-Security",
+                  value: "max-age=63072000; includeSubDomains",
+                },
+              ],
+            },
+            {
+              // 静态资源带内容哈希，可长期缓存
+              source: "/_next/static/:path*",
+              headers: [
+                { key: "Cache-Control", value: "public, max-age=31536000, immutable" },
+              ],
+            },
+            {
+              // Service Worker 必须每次校验，否则老客户端长期跑旧外壳
+              source: "/sw.js",
+              headers: [{ key: "Cache-Control", value: "no-cache, no-store, must-revalidate" }],
+            },
+          ];
+        },
       }),
 };
 

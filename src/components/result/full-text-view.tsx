@@ -182,7 +182,7 @@ export function ArticleView({ sections, paragraphs }: ArticleViewProps) {
                     FONT_SIZE_CLASS[fontSize],
                     // 搜索时非命中段落淡出：比只给命中段落加背景更容易扫读
                     matched && !isHit && 'opacity-40',
-                    isHit && 'rounded-md bg-yellow-200/40 px-1 -mx-1',
+                    isHit && 'rounded-md bg-yellow-200/40 px-1 -mx-1 dark:bg-yellow-400/15',
                   )}
                 >
                   {normalizedQuery ? highlight(paragraph, normalizedQuery) : paragraph}
@@ -208,7 +208,10 @@ function highlight(text: string, query: string): React.ReactNode {
   while (found !== -1) {
     if (found > cursor) nodes.push(text.slice(cursor, found))
     nodes.push(
-      <mark key={`mark-${key}`} className="rounded bg-yellow-300/70 px-0.5 text-inherit">
+      <mark
+        key={`mark-${key}`}
+        className="rounded bg-yellow-300/70 px-0.5 text-inherit dark:bg-yellow-400/30 dark:text-yellow-50"
+      >
         {text.slice(found, found + query.length)}
       </mark>,
     )

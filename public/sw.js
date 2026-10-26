@@ -7,8 +7,9 @@
  *
  * 版本变更需同步提升 CACHE_NAME：activate 时会删除所有非当前版本的缓存，
  * 老客户端因此能拿到新策略。v3：修复旧外壳缓存不失效导致线上长期运行旧版 JS。
+ * v4：根布局挂了 ThemeProvider（深色模式），外壳 JS 变了，必须升版本。
  */
-const CACHE_NAME = 'vtt-shell-v3'
+const CACHE_NAME = 'vtt-shell-v4'
 const PRECACHE_URLS = [
   '/',
   '/manifest.webmanifest',

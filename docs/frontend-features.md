@@ -143,7 +143,25 @@
 | 示例链接同步 | 首页示例链接只列 `SUPPORTED_PLATFORMS` 内的平台；「不支持平台演示」「转写失败演示」两条固定演示项始终保留（属 Mock 教学用途） |
 | 禁止虚假功能承诺 | 特性卡与 Hero 不得承诺未实现的行为（历史教训：「点击时间戳即可跳转对应画面」曾与「只复制不跳转」的实际行为不符） |
 
-## 13. 回归检查清单（改前端后必跑）
+## 13. 错误边界与站点元信息（P1-2 新增）
+
+| 功能 | 锁定要求 |
+| --- | --- |
+| 404 页 | `src/app/not-found.tsx`，`data-testid="not-found"`，中文文案 + 返回首页出口。**不得回退到 Next 默认的英文 "This page could not be found"** |
+| 路由错误边界 | `src/app/error.tsx`，`data-testid="route-error"`，必须同时给「重试」（调 `reset()`）与「返回首页」两条出路，并显示 `error.digest`——生产环境 Next 只保留 digest，用户截图报障时这是唯一线索 |
+| 根级错误边界 | `src/app/global-error.tsx`，**必须自带 `<html>` / `<body>` 且只用内联样式**：根布局已渲染失败时不能依赖 `layout.tsx` 与 Tailwind 类，样式表也可能没加载。文案与 `error.tsx` 必须不同（E2E 回归 10b 靠文案区分两者是否都在产物里） |
+| robots.txt | `src/app/robots.ts` 生成。**必须 Disallow `/processing` 与 `/result`**：任务页靠 `?id=` 定位，抓下来是空壳，且任务 7 天后过期（`TASK_TTL_SECONDS=604800`），收录了就是死链。必须给出 `Sitemap:` |
+| sitemap.xml | `src/app/sitemap.ts` 生成，**只列首页**。任务页同上理由不得收录 |
+| 站点绝对地址 | `src/lib/site.ts` 的 `SITE_URL` 是唯一来源，`metadataBase` / robots / sitemap 共用。换域名只改这里（或用 `NEXT_PUBLIC_SITE_URL` 覆盖），**不要在多个文件里各写一遍域名** |
+| 安全响应头 | `next.config.mjs` 的 `headers()`，**只加在 web 分支**（静态导出由 Tauri asset 协议加载，没有 HTTP 头可加）。必须含 CSP（`default-src 'self'` / `object-src 'none'` / `frame-ancestors 'none'` / `base-uri 'self'`）、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: strict-origin-when-cross-origin`（任务页 URL 含 taskId，不能整条泄露给第三方） |
+| CSP 的 `'unsafe-inline'` | `script-src` 必须保留 `'unsafe-inline'`：next-themes 在 `<head>` 内联一段脚本，用于首帧前把 `.dark` 写进 `<html>`。**不要为了「更严格」去掉它**，那会让深色用户每次刷新看到白闪 |
+| 缓存策略 | `/_next/static/*` 长缓存 `immutable`（文件名带内容哈希）；`/sw.js` 必须 `no-cache, no-store`，否则老客户端长期跑旧外壳（与 §5 的 `CACHE_NAME` 提升是两道独立的防线，都要） |
+| 深色模式 | 根布局挂 `ThemeProvider`（`attribute="class"`、`defaultTheme="system"`、`enableSystem`、`disableTransitionOnChange`）。`globals.css` 的 `.dark` 变量早于开关存在，**开关缺失时那套变量等于死代码**。顶栏 `data-testid="theme-toggle"`，三档 `theme-light` / `theme-dark` / `theme-system`，选择存 localStorage 的 `theme` 键（next-themes 自管，不进 `hydratePreferences`） |
+| 主题图标防闪烁 | `ThemeToggle` 必须 `mounted` 之后才画确定图标：服务端不知道用户主题，首帧就画「太阳」会让深色用户看到闪一下 |
+| 深色可读性 | 深色态下 `body` 前景亮度必须高于背景（E2E 回归 13b 用亮度公式断言）。新增带底色的高亮（如搜索结果）必须成对给 `dark:` 变体，否则深色下会是刺眼的浅黄块 |
+| PWA 缓存版本 | 改动根布局（如本次挂 `ThemeProvider`）属于「影响外壳的变更」，**必须提升 `public/sw.js` 的 `CACHE_NAME`**（v3 → v4），见 §5 |
+
+## 14. 回归检查清单（改前端后必跑）
 
 - [ ] 结果页默认显示「全文阅读」，文章排版无时间戳
 - [ ] Tab 可切换到「时间戳定位」，列表 + 复制功能正常
@@ -169,6 +187,14 @@
 - [ ] 总结详细度：三档切换真的换一份结果（精简档要点条数更少），选择刷新后保留（E2E 回归 9 / 9b）
 - [ ] 最近转写：首页列出本机最近任务，相对时间正确，点击可回到进度页或结果页；失败/中断的任务不出现在列表里（E2E 回归 4）
 - [ ] 进度页：「不等了」按钮可回首页且提示任务会继续跑；页面不可见时暂停轮询、10 秒后降频（E2E 回归 5）
+- [ ] 404 页：未知路径返回 404 且显示中文「页面不存在」，不出现 Next 默认英文文案，有返回首页链接（E2E 回归 10）
+- [ ] 错误边界：`error.tsx` 与 `global-error.tsx` 的文案都在构建产物里（E2E 回归 10b，删文件即红）
+- [ ] robots.txt / sitemap.xml 可达，robots 含 `Disallow: /processing` 与 `Disallow: /result`，sitemap 只含 1 个 `<loc>`（E2E 回归 11 / 11b）
+- [ ] 安全响应头：CSP 含 `default-src 'self'` / `object-src 'none'` / `frame-ancestors 'none'`，`X-Frame-Options: DENY`，`X-Content-Type-Options: nosniff`，`Referrer-Policy: strict-origin-when-cross-origin`（E2E 回归 12）
+- [ ] `/sw.js` 返回 `no-cache, no-store`，`/_next/static/*` 返回 `immutable` 长缓存（E2E 回归 12b）
+- [ ] 深色模式：顶栏可切三档，`<html>` 正确增删 `.dark`，背景色真的变化，刷新后保留（E2E 回归 13）
+- [ ] 深色可读性：深色态下 `body` 前景亮度高于背景；搜索结果高亮在深色下不刺眼（E2E 回归 13b）
+- [ ] 改动根布局后 `public/sw.js` 的 `CACHE_NAME` 已提升（本次 v3 → v4）
 - [ ] `pnpm lint && pnpm build` 通过
 
 > 修改本文件（新增/放宽锁定项）需要用户明确确认。
