@@ -10,6 +10,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  probe-ffmpeg:
+    name: probe ffmpeg
+    runs-on: ubuntu-latest
+    steps:
+      - name: Which ffmpeg
+        run: |
+          echo "== image =="; echo "$ImageOS / $ImageVersion"
+          echo "== which =="; command -v ffmpeg && ffmpeg -version | head -1 || echo "NOT PREINSTALLED"
+          echo "== apt list =="; apt-cache policy ffmpeg | head -5
+
   quality:
     name: lint & build
     runs-on: ubuntu-latest
