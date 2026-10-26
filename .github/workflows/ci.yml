@@ -61,8 +61,31 @@ jobs:
       # test_audio_memory.py 的 FFmpeg 管道用例由 skipif(check_ffmpeg()) 守卫：
       # ubuntu runner 默认无 ffmpeg 时会被静默跳过 = 假绿（S1-E 实测 130 passed, 1 skipped）。
       # 固定安装 ffmpeg，并在测试前断言可用，防止该用例再次退化为 skip。
+      #
+      # 为什么要缓存 .deb：runner 镜像不预装 ffmpeg（实测 `Installed: (none)`），
+      # 而 `apt-get install ffmpeg` 要拉 72 个包。慢的时候单个 libavcodec60（5.8 MB）
+      # 就要 3 分钟，整步实测跑过 24 分 42 秒和 39 分 33 秒；而 `apt-get update`
+      # 本身只用 1 秒（12.6 MB 索引 @ 11.2 MB/s）。所以慢的是包下载，不是索引。
+      # 把 .deb 存到工作区缓存，命中时直接本地安装，不再走网络。
+      - name: Cache FFmpeg .deb
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.apt-debs
+          # key 带上 ffmpeg 版本：Ubuntu 镜像升级导致版本变化时会自动失效重建
+          key: apt-debs-ffmpeg-${{ runner.os }}-7:6.1.1-3ubuntu5
+
       - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        run: |
+          set -uo pipefail
+          DEBS="$GITHUB_WORKSPACE/.apt-debs"
+          mkdir -p "$DEBS/partial"
+          sudo apt-get update
+          # 先用缓存里的 .deb 装；缺包时 apt 会失败，再退回正常下载（同时回填缓存）
+          if ! sudo apt-get install -y --no-download -o Dir::Cache::archives="$DEBS" ffmpeg; then
+            echo "缓存未命中，改为在线下载（首次会慢，之后命中缓存）"
+            sudo apt-get install -y -o Dir::Cache::archives="$DEBS" ffmpeg
+          fi
+          echo "缓存目录大小：$(du -sh "$DEBS" | cut -f1)"
 
       - name: Verify FFmpeg is available
         run: python -c "from app.services.audio import check_ffmpeg; raise SystemExit(0 if check_ffmpeg() else 'ffmpeg not on PATH')"
