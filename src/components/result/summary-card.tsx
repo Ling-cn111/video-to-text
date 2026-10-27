@@ -157,6 +157,9 @@ export function SummaryErrorState({
   const rateLimited = error.code === 'RATE_LIMITED'
   const cooldown = useRateLimitCooldown(rateLimited, error.retryAfter)
   const retryBlocked = rateLimited && cooldown > 0
+  // 这两种码的责任在用户自己的配置上：重试之前得先去改，光重试没用。
+  // 与 retryable 不冲突——改完回来点重试是正常路径，所以两个按钮都留着。
+  const userConfigFault = error.code === 'BYOK_KEY_INVALID' || error.code === 'BYOK_ENDPOINT_INVALID'
 
   return (
     <div
@@ -178,20 +181,34 @@ export function SummaryErrorState({
         </div>
       </div>
       {retryable ? (
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={onRetry}
-          disabled={retrying || retryBlocked}
-          className="gap-1.5"
-        >
-          {retrying ? (
-            <Loader2 className="size-3.5 animate-spin" aria-hidden />
-          ) : (
-            <RefreshCw className="size-3.5" aria-hidden />
-          )}
-          重试总结
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onRetry}
+            disabled={retrying || retryBlocked}
+            className="gap-1.5"
+          >
+            {retrying ? (
+              <Loader2 className="size-3.5 animate-spin" aria-hidden />
+            ) : (
+              <RefreshCw className="size-3.5" aria-hidden />
+            )}
+            重试总结
+          </Button>
+          {userConfigFault ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={openApiSettings}
+              data-testid="summary-open-api-settings"
+              className="gap-1.5"
+            >
+              <KeyRound className="size-3.5" aria-hidden />
+              打开 API 设置
+            </Button>
+          ) : null}
+        </div>
       ) : (
         <div className="flex flex-col items-start gap-2">
           {/* 未配置 Key 不是「等等就好」的错误，重试一万次也一样。
@@ -226,12 +243,21 @@ export function SummaryManualPrompt({
   detail,
   onDetailChange,
   busy = false,
+  configIssue = null,
 }: {
   onGenerate: () => void
   disabled?: boolean
   detail?: SummaryDetail
   onDetailChange?: (detail: SummaryDetail) => void
   busy?: boolean
+  /**
+   * 配置本身不自洽时的人话说明（如「填了地址却没填模型」）。
+   *
+   * 为什么单独传进来而不是这里自己读：只有结果页知道当前的门禁状态，
+   * 由它统一取 `useByokStatus().configIssue` 传下来，避免同一个面板里
+   * 出现两份可能不一致的判断。
+   */
+  configIssue?: string | null
 }) {
   const hostname = useHostname()
   return (
@@ -241,6 +267,11 @@ export function SummaryManualPrompt({
           ? '还没有可用的 AI 总结 Key，填一把自己的就能生成。'
           : '本次未生成 AI 总结。需要时可随时手动生成。'}
       </p>
+      {configIssue ? (
+        <p data-testid="summary-config-issue" className="text-xs leading-relaxed text-destructive">
+          {configIssue}
+        </p>
+      ) : null}
       {detail && onDetailChange ? (
         <SummaryDetailSwitch value={detail} onChange={onDetailChange} busy={busy} disabled={disabled} />
       ) : null}

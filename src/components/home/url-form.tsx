@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useTaskStore } from '@/stores/task-store'
 import { processingHref } from '@/lib/routes'
-import { resolveVideoUrl } from '@/lib/platform'
+import { normalizeVideoInput, resolveVideoUrl } from '@/lib/platform'
 import {
   supportedPlatformsShortText,
   unavailablePlatformMessage,
@@ -33,7 +33,7 @@ export function UrlForm({ url, onUrlChange }: UrlFormProps) {
     const trimmed = url.trim()
 
     if (!trimmed) {
-      toast.warning('请先粘贴视频链接')
+      toast.warning('请先粘贴视频链接或视频号')
       inputRef.current?.focus()
       return
     }
@@ -42,7 +42,7 @@ export function UrlForm({ url, onUrlChange }: UrlFormProps) {
     if (!result.ok) {
       toast.error(
         result.reason === 'invalid'
-          ? '链接格式不正确，请粘贴完整的视频页面链接'
+          ? '链接格式不正确，请粘贴完整的视频页面链接，或直接输入 BV 号 / av 号'
           : result.reason === 'unavailable'
             ? unavailablePlatformMessage(result.platform)
             : unsupportedHostMessage(result.host),
@@ -51,7 +51,9 @@ export function UrlForm({ url, onUrlChange }: UrlFormProps) {
     }
 
     setSubmitting(true)
-    const taskId = await submitUrl(trimmed)
+    // 裸视频号在这里补成完整链接：后端只接受公网 http(s) URL（SSRF 前提），
+    // 让后端放宽校验去接受裸号会削弱这条前提，补全放在前端更安全
+    const taskId = await submitUrl(normalizeVideoInput(trimmed))
     setSubmitting(false)
 
     if (taskId) {
@@ -70,11 +72,13 @@ export function UrlForm({ url, onUrlChange }: UrlFormProps) {
           ref={inputRef}
           value={url}
           onChange={(event) => onUrlChange(event.target.value)}
-          placeholder={`粘贴${supportedPlatformsShortText()}视频链接，例如 https://www.bilibili.com/video/BV...`}
+          placeholder={`粘贴${supportedPlatformsShortText()}视频链接，或直接输入 BV 号 / av 号`}
           className="h-12 rounded-xl pl-9 text-sm sm:text-base"
-          inputMode="url"
+          // 现在也接受裸视频号（BV1xx411c7mD / av170001），键盘不该只给 URL 布局
+          inputMode="text"
           autoComplete="off"
           aria-label="视频链接"
+          data-testid="video-url-input"
         />
       </div>
       <Button type="submit" size="lg" disabled={submitting} className="h-12 rounded-xl px-6 text-base font-medium">

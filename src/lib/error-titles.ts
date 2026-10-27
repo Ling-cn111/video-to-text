@@ -32,6 +32,8 @@ export const ERROR_TITLES: Record<ClientErrorCode, string> = {
   RATE_LIMITED: '请求太频繁',
   // 用户自带的 Key（BYOK）被服务商拒绝：动作主体是用户自己，别让人去找部署者
   BYOK_KEY_INVALID: 'API Key 无效',
+  // 用户自填的接口地址 / 模型名不合规：同样是用户自己去「API 设置」改
+  BYOK_ENDPOINT_INVALID: '接口地址不可用',
   // 兜底
   INTERNAL_ERROR: '服务异常',
   NETWORK_ERROR: '网络异常',

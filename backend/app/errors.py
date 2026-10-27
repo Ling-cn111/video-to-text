@@ -69,6 +69,18 @@ class ByokKeyInvalidError(AppException):
         super().__init__(code="BYOK_KEY_INVALID", message=message, status_code=401)
 
 
+class ByokEndpointInvalidError(AppException):
+    """用户自填的接口地址 / 模型名不合规，或与 Key 搭配不完整。
+
+    为什么单独一个码而不是复用 INVALID_URL：这条错误的动作主体是用户自己
+    （去「API 设置」改地址），而 INVALID_URL 指的是「要转写的视频链接」，
+    两者在同一个会话里可能同时出现，混用会让人不知道该改哪一个。
+    """
+
+    def __init__(self, message: str = "接口地址不可用，请在「API 设置」中检查"):
+        super().__init__(code="BYOK_ENDPOINT_INVALID", message=message, status_code=400)
+
+
 class TranscriptTooLongError(AppException):
     """总结请求的文字稿超过长度上限。"""
 

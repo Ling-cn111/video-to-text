@@ -228,6 +228,28 @@ function pruneSummaryCache(): void {
   }
 }
 
+/**
+ * 清空总结缓存。**改了 AI 服务商配置就必须调**。
+ *
+ * 为什么：缓存键是 `summary:<taskId>:<detail>`，不含服务商。用户把地址/模型/Key
+ * 换成另一家后点「重试总结」，`retrySummary` 会先命中旧缓存直接返回 —— 页面显示
+ * 一份总结，用户以为新服务商通了，实际一次请求都没发。配置真错也会显示成功，
+ * 比报错更难查。
+ */
+export function clearSummaryCache(): void {
+  if (typeof window === 'undefined') return
+  try {
+    const keys: string[] = []
+    for (let index = 0; index < window.sessionStorage.length; index += 1) {
+      const key = window.sessionStorage.key(index)
+      if (key?.startsWith(SUMMARY_CACHE_PREFIX)) keys.push(key)
+    }
+    for (const key of keys) window.sessionStorage.removeItem(key)
+  } catch {
+    // 隐私模式 / 配额受限：清不掉也不会更糟，下次请求本来就会重新算
+  }
+}
+
 /** 防止轮询重入 */
 let pollInFlight = false
 

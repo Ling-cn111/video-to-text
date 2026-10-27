@@ -1,5 +1,5 @@
 import { ApiError, JSON_HEADERS, toJson, throwNetworkError, type ApiClient, type ClientErrorCode } from '@/lib/http'
-import { byokHeaderFor } from '@/lib/byok'
+import { byokBodyFor, byokHeaderFor } from '@/lib/byok'
 import { realApi } from '@/lib/real-api'
 import type {
   Capabilities,
@@ -53,7 +53,8 @@ const mockApi: ApiClient = {
         method: 'POST',
         // Mock 路由不读这个头，但要保证「填了 Key → 请求头带上」这条链路可被测到
         headers: { ...JSON_HEADERS, ...byokHeaderFor() },
-        body: JSON.stringify(request),
+        // 地址与模型走请求体，同样为了这条链路在 Mock 模式下可被测到
+        body: JSON.stringify({ ...request, ...byokBodyFor() }),
       }).catch(throwNetworkError),
     ),
   /** GET /api/capabilities：Mock 模式恒为已配置（不阻塞演示） */

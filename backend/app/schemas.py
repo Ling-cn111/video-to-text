@@ -70,12 +70,24 @@ class SummarizeRequest(BaseModel):
     transcript 为已完成的文字稿；title/duration 作 prompt 上下文。
     detail 控制总结的详细程度（brief / standard / detailed），缺省 standard
     与旧行为一致，老客户端不传该字段也能正常调用。
+
+    llmBaseUrl / llmModel 是用户自填的接口地址与模型名（配合 `X-Vtt-Llm-Key`）：
+    这三者合起来才描述得清「任意 OpenAI 兼容服务商」。旧实现只让用户填 Key，
+    地址与模型钉死在 `LLM_PRESETS` 里，用户填了 OpenAI / Moonshot 的 Key，
+    后端仍拿它去请求 DeepSeek —— 这就是「别家的 Key 用不了」的根因。
+
+    为什么地址与模型放请求体、Key 却必须走请求头：Key 是秘密，请求体会被错误
+    日志、`payload=` 打印等链路碰到；地址与模型不是秘密，放请求体才能用
+    pydantic 校验并给出可读的错误。地址仍要过 SSRF 校验，见
+    `services/byok.py` 的 `normalize_base_url`。
     """
 
     transcript: list[TranscriptItem]
     title: str = ""
     duration: int = 0
     detail: Literal["brief", "standard", "detailed"] = "standard"
+    llmBaseUrl: str | None = None
+    llmModel: str | None = None
 
 
 class KeyPoint(BaseModel):

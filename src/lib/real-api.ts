@@ -1,5 +1,5 @@
 import { apiUrl } from '@/lib/api-base'
-import { byokHeaderFor } from '@/lib/byok'
+import { byokBodyFor, byokHeaderFor } from '@/lib/byok'
 import { JSON_HEADERS, toJson, throwNetworkError, type ApiClient } from '@/lib/http'
 import type {
   Capabilities,
@@ -60,6 +60,8 @@ export const realApi: ApiClient = {
           title: request.title,
           duration: request.duration,
           detail: request.detail ?? 'standard',
+          // 接口地址与模型走请求体：不是秘密，且需要后端校验后给出可读错误
+          ...byokBodyFor(),
         }),
       }).catch(throwNetworkError),
     ),
