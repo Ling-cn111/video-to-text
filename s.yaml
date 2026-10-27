@@ -135,7 +135,10 @@ resources:
         TASK_HEARTBEAT_SECONDS: "30"
         # ---- 外部服务（必填）----
         CLOUD_ASR_API_KEY: ${env('CLOUD_ASR_API_KEY')}
-        DEEPSEEK_API_KEY: ${env('DEEPSEEK_API_KEY')}
+        # AI 总结默认由使用者自带 Key（BYOK，右上角「API 设置」），站点不必配。
+        # 因此这里必须给空字符串默认值：serverless-devs 对「变量存在但值为空」
+        # 会报 env('DEEPSEEK_API_KEY') not found，导致整个部署失败。
+        DEEPSEEK_API_KEY: ${env('DEEPSEEK_API_KEY', '')}
         ASR_ENGINE: cloud
         # 镜像不含本地 ASR，留空禁用降级（否则云端失败后会尝试本地并报「未安装」）
         ASR_ENGINE_FALLBACK: ""

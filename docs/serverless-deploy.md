@@ -546,7 +546,10 @@ resources:
         TASK_HEARTBEAT_SECONDS: "30"
         # ---- 外部服务（必填）----
         CLOUD_ASR_API_KEY: ${env('CLOUD_ASR_API_KEY')}
-        DEEPSEEK_API_KEY: ${env('DEEPSEEK_API_KEY')}
+        # AI 总结默认由使用者自带 Key（BYOK，右上角「API 设置」），站点不必配。
+        # 因此这里必须给空字符串默认值：serverless-devs 对「变量存在但值为空」
+        # 会报 env('DEEPSEEK_API_KEY') not found，导致整个部署失败。
+        DEEPSEEK_API_KEY: ${env('DEEPSEEK_API_KEY', '')}
         ASR_ENGINE: cloud
         # 镜像不含本地 ASR，留空禁用降级（否则云端失败后会尝试本地并报「未安装」）
         ASR_ENGINE_FALLBACK: ""
@@ -833,7 +836,7 @@ s deploy -t s.yaml
 | `TASK_STORE` | `redis` | 必须。`memory` 会写实例内 SQLite（`/app/data`），实例回收即丢，且多实例互不可见 |
 | `REDIS_URL` | `redis://:password@r-xxxx.redis.rds.aliyuncs.com:6379/0` | 必须。任务状态 + 限流共享计数。未配置会**静默降级** memory 并打警告 |
 | `CLOUD_ASR_API_KEY` | `sk-xxxx` | 必须。未配置时提交云端转写直接报 `CLOUD_NOT_CONFIGURED` |
-| `DEEPSEEK_API_KEY` | `sk-xxxx` | 必须（总结）。未配置时 `/api/summarize` 报 `SUMMARIZE_NOT_CONFIGURED` |
+| `DEEPSEEK_API_KEY` | 留空 | **可选，建议留空**。本站设计为由使用者自带 Key（右上角「API 设置」→ BYOK），站点配了就等于替所有访客付钱。留空时 `/api/summarize` 对未带 Key 的请求报 `SUMMARIZE_NOT_CONFIGURED`，前端会引导用户填写自己的 Key 而不是报错。`s.yaml` 里写作 `${env('DEEPSEEK_API_KEY', '')}`，**必须带空默认值**，否则 serverless-devs 会因变量不存在而中止部署 |
 | `WORKER_URL` | worker 的 `*.fcapp.run` 地址 | **仅 API 函数、仅 `ENQUEUE_MODE=fc` 时必填**（见 §6.2） |
 
 ### 6.2 建议配置
