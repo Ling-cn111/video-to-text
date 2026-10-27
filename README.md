@@ -12,23 +12,24 @@
 | | 入口 |
 | --- | --- |
 | 在线体验 | <https://video-to-text-six.vercel.app> |
-| 桌面端下载（Windows） | [**v0.1.1 · .exe 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.1/video-to-text_0.1.1_x64-setup.exe) ／ [全部 Release](https://github.com/Ling-cn111/video-to-text/releases/latest) |
+| 桌面端下载（Windows） | [**v0.1.2 · .exe 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.2/video-to-text_0.1.2_x64-setup.exe) ／ [全部 Release](https://github.com/Ling-cn111/video-to-text/releases/latest) |
 | 手机端 | **暂未提供安装包**，见下方说明 |
 
 ### 桌面端下载
 
-当前版本 **v0.1.1**，点文件名直接下载（无需先进 Release 页找）：
+当前版本 **v0.1.2**，点文件名直接下载（无需先进 Release 页找）：
 
-- [**video-to-text_0.1.1_x64-setup.exe**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.1/video-to-text_0.1.1_x64-setup.exe) — 2.3 MB，NSIS，普通用户双击安装，**无需管理员权限**（推荐）
-- [**video-to-text_0.1.1_x64_zh-CN.msi**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.1/video-to-text_0.1.1_x64_zh-CN.msi) — 3.3 MB，WiX，适合企业组策略 / 静默分发
+- [**video-to-text_0.1.2_x64-setup.exe**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.2/video-to-text_0.1.2_x64-setup.exe) — 2.3 MB，NSIS，普通用户双击安装，**无需管理员权限**（推荐）
+- [**video-to-text_0.1.2_x64_zh-CN.msi**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.2/video-to-text_0.1.2_x64_zh-CN.msi) — 3.3 MB，WiX，适合企业组策略 / 静默分发
 
 校验和（`certutil -hashfile <文件> SHA256`）：
 
 ```
-d211058bd5f2414c1f7e56e0c7b59d1fba4b5da7af9c159290802d229cadfc96  video-to-text_0.1.1_x64-setup.exe
-71f0bbd3070645454d249a59ed1d02942ddfff4eef3e45c8a089411602d5ea91  video-to-text_0.1.1_x64_zh-CN.msi
+f079da153344430aab9b7fbe04903168f7aa3104bb5f61c1a2cadd6fa177d396  video-to-text_0.1.2_x64-setup.exe
+5636dc96cd532e6dd3685fb313b9dc546f8f87d2d6ce1ebf3b9f727e9a0ffa8a  video-to-text_0.1.2_x64_zh-CN.msi
 ```
 
+> **v0.1.1 及更早版本已失效**：站点不再内置 AI 总结 Key，旧版既没有「API 设置」入口、又始终向后端声明用本地转写引擎（线上镜像不含本地 ASR），装了之后总结永远灰着且没有出路。请升级到 v0.1.2。
 > 安装包未做代码签名，Windows SmartScreen 会提示「未知发布者」，点「更多信息 → 仍要运行」即可。
 > 安装后不依赖域名可达性：桌面端直接连后端 API，不受 `*.vercel.app` 被墙影响。
 > `github.com` 在国内可能连不上，若下载失败需自备代理；网页端本身不受此影响。
@@ -182,7 +183,7 @@ src-tauri/                # Tauri 桌面端壳
 
 ## 协作规范
 
-- 分支：`main`（受保护）← 功能分支，一个功能一个 PR（squash 合并）
+- 分支：`main`（已开分支保护：禁止强推与删除，三组 CI 必须通过才能合并）← 功能分支，一个功能一个 PR（squash 合并）
 - 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/)（`feat:` / `fix:` / `chore:` / `docs:` / `ci:`）
-- PR 会自动跑三组检查（[CI 配置](.github/workflows/ci.yml)）：`lint + build`、`backend tests`、`e2e locked features`，全绿才能合并
+- PR 会自动跑三组检查（[CI 配置](.github/workflows/ci.yml)）：`lint + build`、`backend tests`、`e2e locked features`。这三项是 GitHub 分支保护里的必需检查，未通过时合并按钮是灰的
 - 改前端前请先读 [前端功能锁定协议](docs/frontend-features.md)，模板位于 `.github/`
