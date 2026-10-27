@@ -254,6 +254,7 @@ export function ResultView({ taskId }: ResultViewProps) {
                 detail={summaryDetail}
                 onDetailChange={(detail) => setSummaryDetail(detail)}
                 busy={summaryRetrying}
+                configIssue={byok.configIssue}
               />
             )}
           </CardContent>

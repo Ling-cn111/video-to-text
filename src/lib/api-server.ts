@@ -24,6 +24,9 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   // 用户自带的 Key 被上游拒绝（后端 backend/app/errors.py 的 ByokKeyInvalidError）；
   // Mock 路径永不产生该码，此处补齐映射只为让穷举成立
   BYOK_KEY_INVALID: 401,
+  // 用户自填的接口地址 / 模型名不合规（后端 backend/app/errors.py 的
+  // ByokEndpointInvalidError）；同样只在真实后端出现，此处补齐映射让穷举成立
+  BYOK_ENDPOINT_INVALID: 400,
   INTERNAL_ERROR: 500,
 }
 

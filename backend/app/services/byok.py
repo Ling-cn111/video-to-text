@@ -14,9 +14,16 @@ Key 发给浏览器（那等于公开发布，任何人 F12 就能拿走盗刷�
 2. **绝不回显**。响应体、错误信息、日志里都不出现 Key 本身，连前缀和长度都不给
    （与 `routers/capabilities.py` 同一条红线）。日志里只用 `<byok>` / `<server>`
    这种标记区分来源。
-3. **服务地址不接受用户输入**。BYOK 只覆盖 Key，`base_url` 仍然来自
-   `config.py` 的 `LLM_PRESETS` / `CLOUD_ASR_BASE_URL`。否则浏览器就能让后端
-   去请求任意地址（SSRF），也能把用户的 Key 骗到攻击者的服务器上。
+3. **服务地址走请求体，且必须过 SSRF 校验**。Key 是秘密、地址不是：地址放请求体
+   才能用 pydantic 校验并给出可读的错误。放行用户自填地址是为了让 BYOK 真的
+   「支持任意 OpenAI 兼容服务商」——旧实现把 `base_url` 钉死在 `LLM_PRESETS` 里，
+   用户填了 OpenAI / Moonshot / 智谱的 Key，后端仍拿它去请求 DeepSeek，必然 401。
+   但放行不等于放任：`normalize_base_url` 会拦掉环回 / 私有 / 保留地址
+   （云厂商 metadata `169.254.169.254`、内网管理面等），否则浏览器就能借后端
+   去访问它自己够不着的地方。
+
+   **只对 AI 总结放行**：云端 ASR 的地址仍固定（`CLOUD_ASR_BASE_URL`），
+   语音识别用的是站点的免费模型，界面不收集。
 
 ## 传给下游的方式
 
@@ -32,6 +39,10 @@ Key 需要跨函数层传到真正发请求的地方（`summarizer._chat` / `asr
 """
 
 import logging
+from urllib.parse import urlparse
+
+from app.errors import ByokEndpointInvalidError
+from app.url_guard import is_blocked_host
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +53,14 @@ HEADER_ASR_KEY = "X-Vtt-Asr-Key"
 # 上限：真实 Key 都在 100 字符以内；放宽到 512 只为容忍将来厂商加长，
 # 同时挡住「把整个文件塞进请求头」这种明显的误用（也防日志被撑爆）。
 MAX_KEY_LENGTH = 512
+
+# 用户自填接口地址的上限。OpenAI 兼容服务的 base_url 都很短
+# （`https://api.deepseek.com/v1` 才 27 字符），留 512 足够宽松。
+MAX_BASE_URL_LENGTH = 512
+
+# 模型名上限。真实模型名最长的是 OpenRouter 那种带组织前缀的
+# （`anthropic/claude-3.5-sonnet-20241022` 共 38 字符），128 绰绰有余。
+MAX_MODEL_LENGTH = 128
 
 
 def normalize_key(raw: str | None) -> str | None:
@@ -77,3 +96,56 @@ def is_auth_failure(status_code: int) -> bool:
     后者是上游故障，让用户改 Key 只会白折腾。
     """
     return status_code in (401, 403)
+
+
+def normalize_base_url(raw: str | None) -> str | None:
+    """校验用户自填的 OpenAI 兼容接口地址；不合规抛 `ByokEndpointInvalidError`。
+
+    为什么必须校验而不是直接用：这段字符串会原样拼进 `httpx.post` 的目标 URL。
+    不校验就等于给浏览器开了一个「让后端替我请求任意地址」的接口（SSRF）——
+    云厂商 metadata（`169.254.169.254`）、内网管理面、`file://` 之类都会被摸到。
+
+    规则（与 `app/url_guard.py` 同一套判断，但错误码不同）：
+    - 必须 http/https；空值视为未提供（返回 None，回落到站点配置）
+    - 拒绝环回 / 私有 / 链路本地 / 保留地址，拒绝 `.local` / `.internal` 等内网域
+    - 长度上限 `MAX_BASE_URL_LENGTH`
+    - **不要求以 `/v1` 结尾**：有的服务商是 `/openai/v1`，有的直接用根路径
+    """
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    if len(value) > MAX_BASE_URL_LENGTH:
+        raise ByokEndpointInvalidError(f"接口地址过长（超过 {MAX_BASE_URL_LENGTH} 字符）")
+
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https"):
+        raise ByokEndpointInvalidError("接口地址必须以 http:// 或 https:// 开头")
+    if not parsed.hostname:
+        raise ByokEndpointInvalidError("接口地址缺少主机名，例如 https://api.deepseek.com/v1")
+    if is_blocked_host(parsed.hostname):
+        raise ByokEndpointInvalidError("接口地址不能指向本机或内网地址")
+
+    # 去掉末尾斜杠：调用方统一用 f"{base_url}/chat/completions" 拼接，
+    # 留着双斜杠有些网关会 404（`//chat/completions` 被当成不同路径）
+    return value.rstrip("/")
+
+
+def normalize_model(raw: str | None) -> str | None:
+    """清洗用户自填的模型名：去空白，空串视为未提供。
+
+    只做长度与空白检查，不猜命名规范：各家差异极大（`deepseek-chat`、
+    `qwen-plus`、`moonshot-v1-8k`、`anthropic/claude-3.5-sonnet`），
+    校验越严越容易把合法模型名拒掉。是否可用由服务商回答。
+    """
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    if len(value) > MAX_MODEL_LENGTH:
+        raise ByokEndpointInvalidError(f"模型名过长（超过 {MAX_MODEL_LENGTH} 字符）")
+    if any(ch.isspace() for ch in value):
+        raise ByokEndpointInvalidError("模型名里不能有空格")
+    return value

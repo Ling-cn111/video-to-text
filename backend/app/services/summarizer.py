@@ -25,6 +25,7 @@ from app.config import (
     LLM_PROVIDER,
 )
 from app.errors import (
+    ByokEndpointInvalidError,
     ByokKeyInvalidError,
     SummarizeFailedError,
     SummarizeNotConfiguredError,
@@ -89,21 +90,54 @@ def _system_prompt(detail: str | None) -> str:
 _SYSTEM_PROMPT = _system_prompt(DEFAULT_DETAIL)
 
 
-def _resolve_provider(byok_key: str | None = None) -> tuple[str, str, str]:
-    """按 LLM_PROVIDER 返回 (base_url, api_key, model)。
+def _resolve_provider(
+    byok_key: str | None = None,
+    byok_base_url: str | None = None,
+    byok_model: str | None = None,
+) -> tuple[str, str, str]:
+    """返回 (base_url, api_key, model)。
+
+    三者各自独立回落，优先级从高到低：
+
+    | 项 | 用户填了 | 用户没填 |
+    | --- | --- | --- |
+    | base_url | 用户填的（已过 SSRF 校验） | `LLM_PRESETS[LLM_PROVIDER].base_url` |
+    | api_key | 用户填的（请求头） | 站点环境变量里的 Key |
+    | model | 用户填的 | `LLM_MODEL` 或 `LLM_PRESETS[LLM_PROVIDER].default_model` |
+
+    为什么允许三者独立回落、而不是「要么全填要么全不填」：最常见的用法是
+    「站点配了 DeepSeek，我只想换成自己的 DeepSeek Key」——这时只需要 Key，
+    地址和模型用站点的就对了。强行要求全填会把最简单的场景也变复杂。
+
+    但有一个组合必须拒绝：**填了地址却没填模型**。站点默认模型（如
+    `deepseek-flash`）在别家服务商那里不存在，发过去只会得到一句
+    「model not found」，用户还得自己猜是哪里错了。这里提前拦住并说清楚。
 
     byok_key 为用户自带的 Key（来自请求头，见 services/byok.py）：给了就用它，
     站点没配 Key 也不算错——这正是 BYOK 的用途（站点不承担任何费用）。
-    base_url 与 model 一律来自服务端配置，不接受用户输入（否则等于开放 SSRF）。
     """
     preset = LLM_PRESETS.get(LLM_PROVIDER)
     if preset is None:
         raise SummarizeFailedError(f"未知 LLM_PROVIDER：{LLM_PROVIDER}")
+
+    if byok_base_url and not byok_model:
+        raise ByokEndpointInvalidError(
+            "填写了自定义接口地址，还需要填写模型名（例如 deepseek-chat / gpt-4o-mini）"
+        )
+
+    base_url = byok_base_url or preset["base_url"]
+    model = byok_model or LLM_MODEL or preset["default_model"]
     api_key = byok_key or (DEEPSEEK_API_KEY if preset["key_env"] == "DEEPSEEK_API_KEY" else DASHSCOPE_API_KEY)
     if not api_key:
         raise SummarizeNotConfiguredError()
-    logger.info("LLM 总结使用 %s Key（provider=%s）", key_source(byok_key, api_key), LLM_PROVIDER)
-    return preset["base_url"], api_key, LLM_MODEL or preset["default_model"]
+    logger.info(
+        "LLM 总结使用 %s Key（provider=%s，地址=%s，模型=%s）",
+        key_source(byok_key, api_key),
+        LLM_PROVIDER,
+        "custom" if byok_base_url else "preset",
+        model,
+    )
+    return base_url, api_key, model
 
 
 def _format_timestamp(seconds: float) -> str:
@@ -299,18 +333,21 @@ def summarize_transcript(
     duration: int,
     detail: str | None = None,
     byok_key: str | None = None,
+    byok_base_url: str | None = None,
+    byok_model: str | None = None,
 ) -> dict:
-    """业务入口：{transcript, title, duration, detail, byok_key} → Summary dict（含时间戳吸附）。
+    """业务入口：{transcript, title, duration, detail, byok_*} → Summary dict（含时间戳吸附）。
 
     byok_key 为用户自带的 Key（请求头，见 services/byok.py）：非空时优先于站点配置，
-    站点没配 Key 也能正常总结。
+    站点没配 Key 也能正常总结。byok_base_url / byok_model 是同一份用户配置里的
+    接口地址与模型名，三者一起描述「用哪个服务商、哪个模型、哪把 Key」。
     """
     total_chars = sum(len(str(item.get("text", ""))) for item in transcript)
     if total_chars > MAX_TRANSCRIPT_CHARS:
         raise TranscriptTooLongError()
 
     preset = _detail_preset(detail)
-    base_url, api_key, model = _resolve_provider(byok_key)
+    base_url, api_key, model = _resolve_provider(byok_key, byok_base_url, byok_model)
     from_user = bool(byok_key)
     sorted_times = sorted({float(item.get("time") or 0) for item in transcript})
 

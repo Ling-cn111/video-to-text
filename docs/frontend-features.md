@@ -168,20 +168,25 @@
 | 功能 | 锁定要求 |
 | --- | --- |
 | 入口位置 | 顶栏 `data-testid="open-api-settings"`，与主题切换、PWA 安装并列。**必须是全局设置而非首页表单里的选项**：它对结果页的总结生效，跟着页面走会让人以为只对当前这次转写有用 |
-| 面板 | `data-testid="api-settings-dialog"`，**只收「AI 总结 Key」一组**，带 `-input` / `-save` / `-clear` / `-masked` / `-error` 五个 testid |
+| 面板 | `data-testid="api-settings-dialog"`，收「AI 总结服务」一组：**Key + 接口地址 + 模型名**三项，testid 分别为 `byok-llm-input` / `byok-llm-base-url-input` / `byok-llm-model-input`，配 `byok-llm-save` / `byok-llm-clear` / `byok-llm-masked` / `byok-llm-error` |
+| **三项必须都能配** | 只让用户填 Key 是不够的：Key 属于某个服务商，请求要打到**那个服务商**的地址、用**那个服务商**的模型名。旧实现把地址与模型钉死在后端 `LLM_PRESETS`，用户填 OpenAI / Moonshot 的 Key，后端仍拿它去请求 DeepSeek → 必然 401。这就是「别家的 Key 用不了」的根因，**不得回退成只收 Key** |
+| 服务商预设 | `byok-preset-<id>` 一排按钮（`LLM_PROVIDER_PRESETS`：DeepSeek / 百炼 / Moonshot / 智谱 / 硅基流动 / OpenAI / 其他）。**预设只是填空助手，不是白名单**——点一下把地址与常用模型填进输入框，用户仍可改成任意值。不做「拉取 /models 列表」：那需要后端代持 Key 去请求，与「Key 不进后端存储」冲突 |
+| 预设选中态由值反推 | `matchPreset(config)` 比对地址得出当前高亮哪个预设，**不单独存「用户选了哪个服务商」**。存了会不一致：用户选了 DeepSeek 又把地址改成自己的中转，界面还显示 DeepSeek，会让人以为请求打到了官方 |
+| **填了地址就必须填模型** | `llmConfigIssue()` 与后端 `_resolve_provider` 两处都拦。站点默认模型（如 `deepseek-flash`）在别家服务商那里不存在，发过去只会得到一句 `model not found`，用户还得猜是哪里错了。**不得为了「更宽松」去掉这条** |
 | **只收 LLM Key** | 云端 ASR 用的是站点的免费模型（`XingChenAGI/XingChenASR-V3.2-Ultra` 等，刊例价 0 元），用户没有自备 Key 的必要，多一个输入框只是多一道门槛。后端仍保留 `X-Vtt-Asr-Key`（脚本 / API 调用方可用），**界面不得再收集 ASR Key**；面板文案必须说明「语音识别用的是免费模型，不需要填 Key」，否则用户会以为漏了功能 |
-| 存储位置 | 只存 **localStorage** 的 `byokLlmKey`，**不写日志、不进 URL、不进请求体**。不用 sessionStorage 的理由：桌面端与网页共用代码，关标签页就丢会让用户每次重开都要重填，实际没人会用 |
+| 存储位置 | 只存 **localStorage**：`byokLlmKey` / `byokLlmBaseUrl` / `byokLlmModel` 三个键，**不写日志、不进 URL**。Key 不进请求体（只走请求头）；地址与模型**走请求体**（见下条）。不用 sessionStorage 的理由：桌面端与网页共用代码，关标签页就丢会让用户每次重开都要重填，实际没人会用 |
 | **文案必须如实** | 面板底部 `data-testid="byok-storage-note"` 必须写清三件事：①只保存在本机浏览器 ②生成总结时 Key 会**随请求发给本站后端**，后端用它调用服务商、用完即弃 ③不写入任务记录、不写进日志。**严禁写「不会上传到服务器」**——Key 技术上一定经过服务器，部署者能看到，写「不上传」是误导 |
-| 传输方式 | 只走请求头 `X-Vtt-Llm-Key`，与 `backend/app/services/byok.py` 的 `HEADER_LLM_KEY` **必须逐字一致**。不走请求体：请求体会被错误日志、`payload=` 打印、体积限制一整套链路碰到 |
+| 传输方式 | **Key 只走请求头** `X-Vtt-Llm-Key`，与 `backend/app/services/byok.py` 的 `HEADER_LLM_KEY` **必须逐字一致**。不走请求体：请求体会被错误日志、`payload=` 打印、体积限制一整套链路碰到。**地址与模型走请求体**（`llmBaseUrl` / `llmModel`）：它们不是秘密，放请求体才能让后端用 pydantic 校验并给出可读错误 |
 | 默认掩码 | 已保存的 Key 只露末 4 位（`maskKey`）。设置面板常在投屏、录屏、截图场景下打开，明文铺在屏幕上等于泄露 |
 | 本地校验边界 | `validateKeyFormat` 只拦手误（空 / 含空格换行 / 超长 / 过短）。**不校验 `sk-` 前缀**：各家格式不统一，猜错会把合法 Key 拒掉，比放过去更糟；也**不假装验证有效性**，那只有服务商能回答 |
 | 能力门禁 | 总结相关的「未配置」禁用逻辑必须写成 **`站点未配 && 用户未填`** 才禁用。BYOK 上线后「站点没配」不再等于「用不了」，若仍按 `capabilities` 一刀切，用户刚填好 Key 却看到灰按钮（`src/hooks/use-byok-status.ts` 的 `useByokStatus`） |
 | 变更通知 | 保存/清除后派发 `byok:changed` 事件（`notifyByokChanged()`），同页组件立刻重算门禁，不刷新。跨标签页由 `storage` 事件兜住 |
 | 任意入口 | 结果页总结卡 / 首页提示都可以通过 `openApiSettings()`（派发 `api-settings:open`，`src/hooks/use-api-settings.ts`）打开面板。用 window 事件而不是 Context：`src/app/layout.tsx` 是服务端组件，塞 Provider 会把整棵树拖成客户端 |
-| 错误归属 | 用户 Key 被 401/403 拒绝 → `BYOK_KEY_INVALID`（HTTP 401，标题「API Key 无效」，文案指向「API 设置」）；站点 Key 被拒 → `SUMMARIZE_FAILED`（502）。**两者绝不能混**：前者让用户改自己的，后者让用户找部署者，混了就是两边互相踢皮球 |
+| 错误归属 | 用户 Key 被 401/403 拒绝 → `BYOK_KEY_INVALID`（HTTP 401，标题「API Key 无效」，文案指向「API 设置」）；**用户自填的接口地址 / 模型名不合规 → `BYOK_ENDPOINT_INVALID`（HTTP 400，标题「接口地址不可用」，同样指向「API 设置」）**；站点 Key 被拒 → `SUMMARIZE_FAILED`（502）。三者绝不能混：前两者让用户改自己的配置，后者让用户找部署者，混了就是两边互相踢皮球。结果页的错误卡在这两种「用户自己的配置有问题」的码上，除「重试总结」外还必须给一个 `summary-open-api-settings` 入口——只让人重试等于让人白试 |
+| **服务地址必须过 SSRF 校验** | 放行用户自填地址是为了让 BYOK 真的「支持任意 OpenAI 兼容服务商」，但**放行不等于放任**：`backend/app/services/byok.py` 的 `normalize_base_url` 必须拒绝非 http(s)、环回 / 私有 / 链路本地 / 保留地址（云厂商 metadata `169.254.169.254`、内网管理面）、`.local` / `.internal` 等内网域。**这条校验不得为了「支持自建 Ollama」而放宽**——自建场景应该由部署者改服务端 `LLM_PRESETS`，而不是让公网站点能访问内网。前端 `validateBaseUrlFormat` 只做格式层，**不能当作安全边界**（可绕过） |
+| 只对总结放行 | 云端 ASR 的地址仍固定为 `CLOUD_ASR_BASE_URL`，**不开放用户自填**。语音识别用站点的免费模型，界面既不收集 Key 也不收集地址 |
 | 不降级 | ASR 用用户 Key 被拒时**不降级到本地引擎**。降级会跑出结果，用户以为云端成功了，从此不会去改那把已失效的 Key（`asr.py` 的 `except ByokKeyInvalidError: raise` 必须排在通用 `except` 之前） |
 | 不落库 | Key 不写进任务库。`TranscribeJob.byok_key` 只随作业跨进程投递，`tasks._payload_dict` 里不得出现任何含 "key" 的字段 |
-| 服务地址 | 面板里**只让用户填 Key，不让填 base_url**。接受用户输入的服务地址等于 SSRF，并且能把用户的 Key 骗到攻击者服务器 |
 
 ## 15. 回归检查清单（改前端后必跑）
 
@@ -228,6 +233,11 @@
 - [ ] 设置面板只收 AI 总结 Key（无 ASR Key 输入框），且文案说明语音识别免填（E2E 回归 20）
 - [ ] 面板存储说明如实：含「随请求发给本站后端」「不写入任务记录」，**不得出现「不会上传到服务器」**（E2E 回归 21）
 - [ ] 站点未配 Key 但用户填了自己的：云端转写与 AI 总结都必须可用（后端 `test_byok.py` 的 `test_summarize_byok_works_without_site_key` / `test_transcribe_cloud_with_byok_key_passes_precheck`）
+- [ ] 自定义服务商：面板三项（Key / 接口地址 / 模型名）都能填能存，刷新后保留；点预设按钮会把地址与模型填进输入框（E2E 回归 22 / 22b）
+- [ ] 自定义服务商真的生效：填了地址与模型后，请求体带 `llmBaseUrl` / `llmModel`（不是发到站点预设），且 **Key 仍只在请求头、请求体里没有 Key**（E2E 回归 23）
+- [ ] 只填地址不填模型：面板保存时被拦下并说明「还需要填写模型名」，不写进 localStorage（E2E 回归 23b）
+- [ ] 内网地址被拦：`http://169.254.169.254/...` / `http://127.0.0.1/...` 这类地址后端返回 `BYOK_ENDPOINT_INVALID` 400（后端 `test_normalize_base_url_rejects_private_and_non_http` 共 9 个参数化用例 + `test_summarize_rejects_ssrf_base_url_at_http_layer`）
+- [ ] 直接输入 AV/BV 号：`BV1xx411c7mD` / `av170001` 能直接解析并补成完整链接，小写 `bv` 也能识别且规范成大写；纯数字（抖音号）不被误认成 av 号（E2E 回归 24 / 24b / 24c）
 - [ ] `pnpm lint && pnpm build` 通过
 
 > 修改本文件（新增/放宽锁定项）需要用户明确确认。

@@ -47,7 +47,7 @@
 
 ### 2.2 `POST /api/summarize` 请求体
 
-无状态接口，真实后端只读后四个字段（`taskId` 仅 Mock 使用）：
+无状态接口，真实后端读后五个字段（`taskId` 仅 Mock 使用）：
 
 ```jsonc
 {
@@ -55,12 +55,22 @@
   "transcript": [{ "time": 12.5, "text": "..." }],
   "title": "视频标题",
   "duration": 1632,
-  "detail": "standard" // 可选：brief | standard | detailed，缺省 standard
+  "detail": "standard", // 可选：brief | standard | detailed，缺省 standard
+  "llmBaseUrl": "https://api.moonshot.cn/v1", // 可选：用户自填的 OpenAI 兼容接口地址
+  "llmModel": "moonshot-v1-8k" // 可选：用户自填的模型名
 }
 ```
 
 `detail` 控制总结的详略（对应后端 `DETAIL_PRESETS`：要点条数上限 3 / 5 / 7，概要字数与章节说明同步收敛）。
 它是可选字段，老客户端不传也能正常调用（回落 `standard`），非法值由 pydantic 拒绝为 422。
+
+`llmBaseUrl` / `llmModel` 是「自定义服务商」的两半（第三半是请求头 `X-Vtt-Llm-Key`）：
+
+- **缺省即回落**：不传就用站点配置的 `LLM_PRESETS[LLM_PROVIDER]` 的地址与模型，行为与旧版完全一致。
+- **填了地址就必须填模型**：站点默认模型（如 `deepseek-flash`）在别家服务商那里不存在，发过去只会得到 `model not found`。该组合直接 400 `BYOK_ENDPOINT_INVALID`。
+- **地址必须过 SSRF 校验**（`normalize_base_url`）：非 http(s)、环回 / 私有 / 链路本地 / 保留地址（含云厂商 metadata `169.254.169.254`）、`.local` / `.internal` 等内网域一律拒绝。这是放行用户输入的唯一安全前提。
+- 地址末尾斜杠会被去掉（调用方统一 `f"{base_url}/chat/completions"`，双斜杠有的网关会 404）。
+- **为什么地址与模型走请求体、Key 走请求头**：Key 是秘密，请求体会被错误日志与 `payload=` 打印碰到；地址与模型不是秘密，放请求体才能用 pydantic 校验并给出可读错误。
 
 `keyPoints[].time` 的时间戳强制取自原 `transcript`（后端做就近吸附校验），LLM 不能凭空编造。
 
@@ -81,7 +91,7 @@ API 调用方，前端不再发送。
 
 - **只走请求头，不进请求体**。请求体会被错误日志、`payload=` 打印、体积限制一整套链路碰到；请求头是唯一不会被顺手打进日志的位置。
 - 值超过 512 字符直接丢弃并记 warning（`normalize_key`），**不做 `sk-` 前缀校验**——各家格式不统一，猜错会拒掉合法 Key。
-- 服务地址**不接受用户输入**（固定用站点配置的 base_url）。否则等于开了 SSRF，还能把用户的 Key 骗到攻击者服务器。
+- **服务地址与模型由请求体的 `llmBaseUrl` / `llmModel` 指定，且必须过 SSRF 校验**（见 §2.2）。旧版把地址钉死在站点配置里，导致用户填了别家 Key 必然 401；现在放行输入，但只放行公网 http(s) 地址。**云端 ASR 的地址仍不接受用户输入**。
 - 站点未配 Key 但请求带了 BYOK Key 时**必须放行**（这正是该功能的意义）。
 - Key 不落任务库：`TranscribeJob.byok_key` 只随作业跨进程投递，`tasks._payload_dict` 里不含该字段。
 - 前后端常量必须逐字一致：`src/lib/byok.ts` 的 `HEADER_LLM_KEY` / `HEADER_ASR_KEY` ↔ `backend/app/services/byok.py` 的同名常量。名字不一致**不会报错**，只会静默回落站点 Key。

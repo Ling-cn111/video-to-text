@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ExternalLink, KeyRound, ShieldCheck, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -17,153 +17,40 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useApiSettingsOpenSignal } from '@/hooks/use-api-settings'
 import { notifyByokChanged } from '@/hooks/use-byok-status'
-import { LLM_KEY_PROVIDERS, maskKey, readLlmKey, saveLlmKey, validateKeyFormat } from '@/lib/byok'
+import {
+  EMPTY_LLM_CONFIG,
+  LLM_PROVIDER_PRESETS,
+  maskKey,
+  readLlmConfig,
+  saveLlmConfig,
+  validateBaseUrlFormat,
+  validateKeyFormat,
+  validateModelFormat,
+  type LlmConfig,
+  type LlmProviderPreset,
+} from '@/lib/byok'
 
 /**
- * 一个 Key 字段。三条界面约束，改之前先想清楚：
+ * 识别当前配置对应哪个预设：地址与模型都对得上才算。
  *
- * 1. **默认遮住**：填完立刻变掩码。投屏、录屏、截图、旁边有人看一眼，都不该泄露。
- * 2. **保存前不做有效性判断**：只有服务商知道 Key 能不能用，本地瞎猜会把合法 Key 拒掉。
- *    真正的校验发生在第一次调用，错误码 `BYOK_KEY_INVALID` 会把用户指回这个面板。
- * 3. **必须写清存储位置与边界**：见面板底部说明，不能含糊成「不会上传」。
+ * 为什么不存「用户选了哪个服务商」：服务商只是填空助手，真正生效的是地址与
+ * 模型这两个值。存了反而会不一致——用户选了 DeepSeek 又把地址改成自己的代理，
+ * 界面还显示 DeepSeek，会让人以为请求打到了官方。这里由值反推，永远不会骗人。
  */
-function KeyField({
-  id,
-  title,
-  description,
-  providers,
-  stored,
-  onSave,
-  testId,
-}: {
-  id: string
-  title: string
-  description: string
-  providers: typeof LLM_KEY_PROVIDERS
-  stored: string | null
-  onSave: (value: string | null) => void
-  testId: string
-}) {
-  const [draft, setDraft] = useState('')
-  const [editing, setEditing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  // 已保存且没在编辑 → 显示掩码；点「更换」才露出输入框
-  const showingStored = Boolean(stored) && !editing
-
-  function handleSave() {
-    const result = validateKeyFormat(draft)
-    if (!result.ok) {
-      setError(result.reason)
-      return
-    }
-    setError(null)
-    onSave(result.value)
-    setDraft('')
-    setEditing(false)
-    toast.success(`${title} 已保存，只存在这台设备的浏览器里`)
-  }
-
-  function handleClear() {
-    onSave(null)
-    setDraft('')
-    setEditing(false)
-    setError(null)
-    toast.success(`${title} 已清除`)
-  }
-
+function matchPreset(config: LlmConfig): LlmProviderPreset | null {
+  if (!config.baseUrl) return null
+  const normalized = config.baseUrl.replace(/\/+$/, '')
   return (
-    <div className="space-y-2 rounded-lg border p-4" data-testid={testId}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="space-y-0.5">
-          <Label htmlFor={id} className="text-sm font-medium">
-            {title}
-          </Label>
-          <p className="text-xs text-muted-foreground">{description}</p>
-        </div>
-        {stored ? (
-          <span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-600 dark:text-emerald-400">
-            已启用
-          </span>
-        ) : (
-          <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-            未填写
-          </span>
-        )}
-      </div>
+    LLM_PROVIDER_PRESETS.find((preset) => preset.baseUrl && preset.baseUrl.replace(/\/+$/, '') === normalized) ?? null
+  )
+}
 
-      {showingStored ? (
-        <div className="flex items-center gap-2">
-          <code
-            className="flex-1 truncate rounded-md border bg-muted/40 px-3 py-1.5 font-mono text-sm"
-            data-testid={`${testId}-masked`}
-          >
-            {maskKey(stored as string)}
-          </code>
-          <Button type="button" variant="outline" size="sm" onClick={() => setEditing(true)}>
-            更换
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={handleClear}
-            data-testid={`${testId}-clear`}
-            aria-label={`清除 ${title}`}
-          >
-            <Trash2 className="size-4" />
-          </Button>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          <Input
-            id={id}
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="粘贴你的 API Key"
-            value={draft}
-            onChange={(event) => {
-              setDraft(event.target.value)
-              setError(null)
-            }}
-            data-testid={`${testId}-input`}
-            aria-invalid={error ? true : undefined}
-            aria-describedby={error ? `${testId}-error` : undefined}
-          />
-          {error ? (
-            <p className="text-xs text-destructive" data-testid={`${testId}-error`} role="alert">
-              {error}
-            </p>
-          ) : null}
-          <div className="flex items-center gap-2">
-            <Button type="button" size="sm" onClick={handleSave} data-testid={`${testId}-save`}>
-              保存
-            </Button>
-            {stored ? (
-              <Button type="button" variant="ghost" size="sm" onClick={() => setEditing(false)}>
-                取消
-              </Button>
-            ) : null}
-          </div>
-        </div>
-      )}
-
-      <div className="flex flex-wrap gap-x-3 gap-y-1 pt-1">
-        {providers.map((provider) => (
-          <a
-            key={provider.id}
-            href={provider.url}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-          >
-            {provider.name} 取 Key
-            <ExternalLink className="size-3" aria-hidden />
-          </a>
-        ))}
-      </div>
-    </div>
+/** 面板里的一行说明文字 */
+function FieldHint({ children, testId }: { children: React.ReactNode; testId?: string }) {
+  return (
+    <p className="text-xs text-muted-foreground" data-testid={testId}>
+      {children}
+    </p>
   )
 }
 
@@ -173,9 +60,15 @@ export interface ApiSettingsDialogProps {
 }
 
 export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps) {
-  // 初始 null，挂载后再读 localStorage：服务端没有 localStorage，
+  // 初始为空配置，挂载后再读 localStorage：服务端没有 localStorage，
   // 直接在 useState 初值里读会导致 hydration 前后 DOM 不一致
-  const [llmKey, setLlmKey] = useState<string | null>(null)
+  const [config, setConfig] = useState<LlmConfig>(EMPTY_LLM_CONFIG)
+  // 草稿态：用户正在编辑但还没点保存。切到已保存态时清空。
+  const [draftKey, setDraftKey] = useState('')
+  const [draftBaseUrl, setDraftBaseUrl] = useState('')
+  const [draftModel, setDraftModel] = useState('')
+  const [editingKey, setEditingKey] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   // 任意位置（结果页总结卡、首页提示）都能把这个面板叫起来
   const handleExternalOpen = useCallback(() => onOpenChange(true), [onOpenChange])
@@ -183,47 +76,251 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
 
   useEffect(() => {
     if (!open) return
-    setLlmKey(readLlmKey())
+    const stored = readLlmConfig()
+    setConfig(stored)
+    setDraftBaseUrl(stored.baseUrl ?? '')
+    setDraftModel(stored.model ?? '')
+    setDraftKey('')
+    setEditingKey(false)
+    setError(null)
   }, [open])
 
-  function handleSaveLlm(value: string | null) {
-    saveLlmKey(value)
-    setLlmKey(value)
-    // 通知同页的能力门禁重算：刚填了 Key，结果页那个灰掉的「生成总结」应当立刻可用
-    notifyByokChanged()
+  const activePreset = useMemo(() => matchPreset(config), [config])
+  const keyUrl = activePreset?.keyUrl || 'https://platform.deepseek.com/api_keys'
+  const keyUrlName = activePreset?.name || 'DeepSeek'
+
+  function applyPreset(preset: LlmProviderPreset) {
+    setError(null)
+    // 选「其他 / 自建」时不清空用户已填的地址与模型：他多半是想继续改，
+    // 清空反而要重新打一遍
+    if (preset.id === 'custom') return
+    setDraftBaseUrl(preset.baseUrl)
+    setDraftModel(preset.models[0] ?? '')
   }
 
-  function handleClearAll() {
-    saveLlmKey(null)
-    setLlmKey(null)
+  function handleSave() {
+    const keyResult = config.key && !editingKey ? { ok: true as const, value: config.key } : validateKeyFormat(draftKey)
+    if (!keyResult.ok) {
+      setError(keyResult.reason)
+      return
+    }
+    const urlResult = validateBaseUrlFormat(draftBaseUrl)
+    if (!urlResult.ok) {
+      setError(urlResult.reason)
+      return
+    }
+    const modelResult = validateModelFormat(draftModel)
+    if (!modelResult.ok) {
+      setError(modelResult.reason)
+      return
+    }
+    // 填了地址却没填模型：站点默认模型（如 deepseek-flash）在别家服务商那里
+    // 不存在，发过去只会得到一句「model not found」。这里就拦住。
+    if (urlResult.value && !modelResult.value) {
+      setError('填写了自定义接口地址，还需要填写模型名（例如 deepseek-chat / gpt-4o-mini）')
+      return
+    }
+
+    const next: LlmConfig = {
+      key: keyResult.value,
+      baseUrl: urlResult.value || null,
+      model: modelResult.value || null,
+    }
+    saveLlmConfig(next)
+    setConfig(next)
+    setDraftKey('')
+    setEditingKey(false)
+    setError(null)
+    // 通知同页的能力门禁重算：刚填了配置，结果页那个灰掉的「生成总结」应当立刻可用
     notifyByokChanged()
-    toast.success('已清除 API Key')
+    toast.success('配置已保存，只存在这台设备的浏览器里')
   }
+
+  function handleClear() {
+    saveLlmConfig(EMPTY_LLM_CONFIG)
+    setConfig(EMPTY_LLM_CONFIG)
+    setDraftKey('')
+    setDraftBaseUrl('')
+    setDraftModel('')
+    setEditingKey(false)
+    setError(null)
+    notifyByokChanged()
+    toast.success('已清除 API 配置')
+  }
+
+  // 已保存且没在改 Key → 显示掩码；点「更换」才露出输入框
+  const showingStoredKey = Boolean(config.key) && !editingKey
+  const hasAnyConfig = Boolean(config.key || config.baseUrl || config.model)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl" data-testid="api-settings-dialog">
+      <DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto" data-testid="api-settings-dialog">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <KeyRound className="size-4" aria-hidden />
             API 设置
           </DialogTitle>
           <DialogDescription>
-            填自己的 AI 总结 Key，就用你自己的额度，不占用站点配额。不填则走站点额度（本站默认不提供，
-            需要自己填）。语音识别用的是免费模型，不需要填 Key。
+            填自己的 AI 总结服务，就用你自己的额度，不占用站点配额。本站默认不提供总结
+            Key，需要自己填。语音识别用的是免费模型，不需要填。
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3">
-          <KeyField
-            id="byok-llm"
-            title="AI 总结 Key"
-            description="用于生成一句话概要、核心要点与章节笔记"
-            providers={LLM_KEY_PROVIDERS}
-            stored={llmKey}
-            onSave={handleSaveLlm}
-            testId="byok-llm"
-          />
+          <div className="space-y-2 rounded-lg border p-4" data-testid="byok-llm">
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-0.5">
+                <span className="text-sm font-medium">AI 总结服务</span>
+                <FieldHint>兼容 OpenAI chat/completions 协议的服务商都支持</FieldHint>
+              </div>
+              {config.key ? (
+                <span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-600 dark:text-emerald-400">
+                  已启用
+                </span>
+              ) : (
+                <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                  未填写
+                </span>
+              )}
+            </div>
+
+            {/* 服务商预设：只是填空助手，不是白名单 */}
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">服务商</Label>
+              <div className="flex flex-wrap gap-1.5" data-testid="byok-provider-presets">
+                {LLM_PROVIDER_PRESETS.map((preset) => {
+                  const active = preset.id === 'custom' ? !activePreset : activePreset?.id === preset.id
+                  return (
+                    <Button
+                      key={preset.id}
+                      type="button"
+                      size="sm"
+                      variant={active ? 'default' : 'outline'}
+                      className="h-7 px-2 text-xs"
+                      onClick={() => applyPreset(preset)}
+                      data-testid={`byok-preset-${preset.id}`}
+                      aria-pressed={active}
+                    >
+                      {preset.name}
+                    </Button>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="byok-base-url" className="text-xs text-muted-foreground">
+                接口地址
+              </Label>
+              <Input
+                id="byok-base-url"
+                value={draftBaseUrl}
+                onChange={(event) => {
+                  setDraftBaseUrl(event.target.value)
+                  setError(null)
+                }}
+                placeholder="https://api.deepseek.com/v1"
+                autoComplete="off"
+                spellCheck={false}
+                className="font-mono text-xs"
+                data-testid="byok-llm-base-url-input"
+              />
+              <FieldHint testId="byok-llm-base-url-hint">
+                留空则使用本站配置的服务商。填自建 / 中转服务时注意：不要填本机或内网地址，后端会拒绝。
+              </FieldHint>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="byok-model" className="text-xs text-muted-foreground">
+                模型名
+              </Label>
+              <Input
+                id="byok-model"
+                value={draftModel}
+                onChange={(event) => {
+                  setDraftModel(event.target.value)
+                  setError(null)
+                }}
+                placeholder="deepseek-chat"
+                autoComplete="off"
+                spellCheck={false}
+                className="font-mono text-xs"
+                data-testid="byok-llm-model-input"
+              />
+              <FieldHint>填了自定义接口地址时必须填。模型名以服务商的文档为准。</FieldHint>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="byok-llm" className="text-xs text-muted-foreground">
+                API Key
+              </Label>
+              {showingStoredKey ? (
+                <div className="flex items-center gap-2">
+                  <code
+                    className="flex-1 truncate rounded-md border bg-muted/40 px-3 py-1.5 font-mono text-sm"
+                    data-testid="byok-llm-masked"
+                  >
+                    {maskKey(config.key as string)}
+                  </code>
+                  <Button type="button" variant="outline" size="sm" onClick={() => setEditingKey(true)}>
+                    更换
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleClear}
+                    data-testid="byok-llm-clear"
+                    aria-label="清除 API 配置"
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <Input
+                    id="byok-llm"
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="粘贴你的 API Key"
+                    value={draftKey}
+                    onChange={(event) => {
+                      setDraftKey(event.target.value)
+                      setError(null)
+                    }}
+                    data-testid="byok-llm-input"
+                    aria-invalid={error ? true : undefined}
+                    aria-describedby={error ? 'byok-llm-error' : undefined}
+                  />
+                  {config.key ? (
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setEditingKey(false)}>
+                      取消更换
+                    </Button>
+                  ) : null}
+                </>
+              )}
+              {error ? (
+                <p className="text-xs text-destructive" data-testid="byok-llm-error" role="alert">
+                  {error}
+                </p>
+              ) : null}
+              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                <a
+                  href={keyUrl}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                >
+                  {keyUrlName} 取 Key
+                  <ExternalLink className="size-3" aria-hidden />
+                </a>
+                {activePreset?.keyHint ? (
+                  <span className="text-xs text-muted-foreground">{activePreset.keyHint}</span>
+                ) : null}
+              </div>
+            </div>
+          </div>
         </div>
 
         <div className="flex gap-2 rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
@@ -239,15 +336,20 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
             type="button"
             variant="ghost"
             size="sm"
-            onClick={handleClearAll}
+            onClick={handleClear}
             data-testid="byok-clear-all"
-            disabled={!llmKey}
+            disabled={!hasAnyConfig}
           >
             清除
           </Button>
-          <Button type="button" onClick={() => onOpenChange(false)} data-testid="byok-done">
-            完成
-          </Button>
+          <div className="flex gap-2">
+            <Button type="button" onClick={handleSave} data-testid="byok-llm-save">
+              保存
+            </Button>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid="byok-done">
+              完成
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

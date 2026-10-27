@@ -197,7 +197,7 @@ export interface GetTaskResponse {
  * 错误码契约（以后端 `backend/app/errors.py` 为准）。
  *
  * 新增/删除错误码要同步四处：本文件、`src/lib/api-server.ts` 的 STATUS_BY_CODE、
- * `src/components/shared/error-alert.tsx` 的中文标题表、`docs/api-contract.md`。
+ * `src/lib/error-titles.ts` 的中文标题表、`docs/api-contract.md`。
  */
 export type ApiErrorCode =
   | 'INVALID_URL'
@@ -214,6 +214,8 @@ export type ApiErrorCode =
   | 'RATE_LIMITED'
   // 用户自带的 Key（BYOK）被服务商拒绝：401/403，见 backend/app/errors.py
   | 'BYOK_KEY_INVALID'
+  // 用户自填的接口地址 / 模型名不合规（含 SSRF 拦截、填了地址没填模型）：400
+  | 'BYOK_ENDPOINT_INVALID'
   | 'INTERNAL_ERROR'
 
 export interface AppError {
