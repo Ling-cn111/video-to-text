@@ -34,9 +34,12 @@ if (!existsSync(MSI_DIR)) {
   process.exit(process.exitCode ?? 0)
 }
 
-const msi = readdirSync(MSI_DIR).find((name) => name.endsWith('.msi'))
+// 只校验**当前版本**的产物：目录里通常还留着旧版本的 .msi，取第一个会校验到
+// 上一次构建的结果，从而在新版本 ProductName 真的坏掉时给出「[ok] 正确」。
+const allMsi = readdirSync(MSI_DIR).filter((name) => name.endsWith('.msi'))
+const msi = allMsi.find((name) => name.includes(`_${config.version}_`))
 if (!msi) {
-  console.log('[info] msi 目录里没有 .msi 文件')
+  console.log(`[info] msi 目录里没有 ${config.version} 的产物（现有：${allMsi.join(', ') || '无'}）`)
   process.exit(process.exitCode ?? 0)
 }
 
