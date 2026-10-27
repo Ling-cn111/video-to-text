@@ -85,7 +85,13 @@ jobs:
             echo "缓存未命中，改为在线下载（首次会慢，之后命中缓存）"
             sudo apt-get install -y -o Dir::Cache::archives="$DEBS" ffmpeg
           fi
-          echo "缓存目录大小：$(du -sh "$DEBS" | cut -f1)"
+          # apt 以 root 写入缓存目录，而 actions/cache 的 post 步骤用 runner 用户打包。
+          # 不把属主还回来会直接报：Failed to save: "/usr/bin/tar" failed with error:
+          # The process '/usr/bin/tar' failed with exit code 2（tar 读不了 root 的 partial/）。
+          # partial/ 是下载中间态，装完就没用了，一并删掉以免把半截文件带进缓存。
+          sudo chown -R "$(id -u):$(id -g)" "$DEBS"
+          sudo rm -rf "$DEBS/partial" "$DEBS/lock"
+          echo "缓存目录大小：$(du -sh "$DEBS" | cut -f1)，文件数：$(find "$DEBS" -name '*.deb' | wc -l)"
 
       - name: Verify FFmpeg is available
         run: python -c "from app.services.audio import check_ffmpeg; raise SystemExit(0 if check_ffmpeg() else 'ffmpeg not on PATH')"
