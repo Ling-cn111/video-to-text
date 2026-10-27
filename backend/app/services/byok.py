@@ -42,7 +42,7 @@ import logging
 from urllib.parse import urlparse
 
 from app.errors import ByokEndpointInvalidError
-from app.url_guard import is_blocked_host
+from app.url_guard import is_blocked_host, resolves_to_blocked_ip
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +108,8 @@ def normalize_base_url(raw: str | None) -> str | None:
     规则（与 `app/url_guard.py` 同一套判断，但错误码不同）：
     - 必须 http/https；空值视为未提供（返回 None，回落到站点配置）
     - 拒绝环回 / 私有 / 链路本地 / 保留地址，拒绝 `.local` / `.internal` 等内网域
+    - **必须解析一次 DNS 并复检**：只查字面量挡不住 `127.0.0.1.nip.io` 这类
+      「域名指向内网」的绕过，见 `url_guard.resolves_to_blocked_ip()` 的说明
     - 长度上限 `MAX_BASE_URL_LENGTH`
     - **不要求以 `/v1` 结尾**：有的服务商是 `/openai/v1`，有的直接用根路径
     """
@@ -125,6 +127,9 @@ def normalize_base_url(raw: str | None) -> str | None:
     if not parsed.hostname:
         raise ByokEndpointInvalidError("接口地址缺少主机名，例如 https://api.deepseek.com/v1")
     if is_blocked_host(parsed.hostname):
+        raise ByokEndpointInvalidError("接口地址不能指向本机或内网地址")
+    # 字面量过关还不够：域名可能解析到内网（nip.io / localtest.me 之类）
+    if resolves_to_blocked_ip(parsed.hostname):
         raise ByokEndpointInvalidError("接口地址不能指向本机或内网地址")
 
     # 去掉末尾斜杠：调用方统一用 f"{base_url}/chat/completions" 拼接，

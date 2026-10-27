@@ -92,6 +92,8 @@ API 调用方，前端不再发送。
 - **只走请求头，不进请求体**。请求体会被错误日志、`payload=` 打印、体积限制一整套链路碰到；请求头是唯一不会被顺手打进日志的位置。
 - 值超过 512 字符直接丢弃并记 warning（`normalize_key`），**不做 `sk-` 前缀校验**——各家格式不统一，猜错会拒掉合法 Key。
 - **服务地址与模型由请求体的 `llmBaseUrl` / `llmModel` 指定，且必须过 SSRF 校验**（见 §2.2）。旧版把地址钉死在站点配置里，导致用户填了别家 Key 必然 401；现在放行输入，但只放行公网 http(s) 地址。**云端 ASR 的地址仍不接受用户输入**。
+- **填了 `llmBaseUrl` 就必须同时带 `X-Vtt-Llm-Key`**，否则 400 `BYOK_ENDPOINT_INVALID`。理由：Key 的回落目标是站点自己的 Key，若放行「地址是我的、Key 用站点的」，站点凭据会被发往用户指定的服务器。这条与「填了地址必须填模型」是同一条规则的三个部分。
+- **SSRF 校验包含 DNS 解析后复检**：只查字面量挡不住 `127.0.0.1.nip.io` / `localtest.me` 这类把 IP 编进域名的公共 DNS 服务。解析失败一律拒绝。
 - 站点未配 Key 但请求带了 BYOK Key 时**必须放行**（这正是该功能的意义）。
 - Key 不落任务库：`TranscribeJob.byok_key` 只随作业跨进程投递，`tasks._payload_dict` 里不含该字段。
 - 前后端常量必须逐字一致：`src/lib/byok.ts` 的 `HEADER_LLM_KEY` / `HEADER_ASR_KEY` ↔ `backend/app/services/byok.py` 的同名常量。名字不一致**不会报错**，只会静默回落站点 Key。

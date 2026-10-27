@@ -109,9 +109,15 @@ def _resolve_provider(
     「站点配了 DeepSeek，我只想换成自己的 DeepSeek Key」——这时只需要 Key，
     地址和模型用站点的就对了。强行要求全填会把最简单的场景也变复杂。
 
-    但有一个组合必须拒绝：**填了地址却没填模型**。站点默认模型（如
-    `deepseek-flash`）在别家服务商那里不存在，发过去只会得到一句
-    「model not found」，用户还得自己猜是哪里错了。这里提前拦住并说清楚。
+    但有两个组合必须拒绝：
+
+    1. **填了地址却没填模型**。站点默认模型（如 `deepseek-flash`）在别家服务商
+       那里不存在，发过去只会得到一句「model not found」，用户还得自己猜是哪里错了。
+    2. **填了地址却没填 Key**。这是更严重的一条：Key 的回落目标是**站点自己的
+       Key**，如果不拦，用户只要指定一个自己的地址、不带 Key，后端就会拿站点 Key
+       去敲那个地址 —— 站点凭据被送到第三方服务器。而且 `/api/summarize` 无鉴权，
+       任何人手写一个请求就能触发。所以「地址是我的」必须意味着「Key 也是我的」：
+       自己指定服务商，就得自带那把 Key，站点不替你付、也不替你暴露。
 
     byok_key 为用户自带的 Key（来自请求头，见 services/byok.py）：给了就用它，
     站点没配 Key 也不算错——这正是 BYOK 的用途（站点不承担任何费用）。
@@ -123,6 +129,10 @@ def _resolve_provider(
     if byok_base_url and not byok_model:
         raise ByokEndpointInvalidError(
             "填写了自定义接口地址，还需要填写模型名（例如 deepseek-chat / gpt-4o-mini）"
+        )
+    if byok_base_url and not byok_key:
+        raise ByokEndpointInvalidError(
+            "填写了自定义接口地址，还需要填写该服务商的 API Key：站点不会把自己的 Key 发往你指定的地址"
         )
 
     base_url = byok_base_url or preset["base_url"]

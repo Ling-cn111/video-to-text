@@ -7,7 +7,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.services.asr as asr_module
+import app.services.byok as byok_module
 import app.services.summarizer as summarizer_module
+import app.url_guard as url_guard_module
 from app.main import app
 from app.services.byok import (
     HEADER_ASR_KEY,
@@ -532,3 +534,138 @@ def test_summarize_user_base_url_does_not_leak_into_logs(monkeypatch, caplog):
         )
     assert "sk-super-secret-user-key" not in caplog.text
     assert "gpt-4o-mini" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# 安全加固：SSRF 绕过与站点 Key 外泄
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_base_url_rejects_hostname_resolving_to_loopback(monkeypatch):
+    """域名解析到环回地址也必须被拒（`is_blocked_host` 只看字面量，挡不住）。
+
+    `127.0.0.1.nip.io` / `localtest.me` 这类公共 DNS 服务会把任意 IP 编进域名，
+    攻击者不需要自己的域名就能构造出「看起来是公网域名、实际指向 127.0.0.1」的
+    地址。只查字面量等于没设防。
+    """
+    import socket
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        assert host == "evil.example.com"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+
+    monkeypatch.setattr(url_guard_module.socket, "getaddrinfo", fake_getaddrinfo)
+
+    with pytest.raises(byok_module.ByokEndpointInvalidError) as excinfo:
+        byok_module.normalize_base_url("https://evil.example.com/v1")
+    assert "内网" in str(excinfo.value)
+
+
+def test_normalize_base_url_rejects_hostname_resolving_to_private_ip(monkeypatch):
+    """解析到 10/172/192.168 等私网段同样拒绝。"""
+    import socket
+
+    monkeypatch.setattr(
+        url_guard_module.socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 0))],
+    )
+
+    with pytest.raises(byok_module.ByokEndpointInvalidError):
+        byok_module.normalize_base_url("https://looks-public.example.com/v1")
+
+
+def test_normalize_base_url_rejects_when_dns_lookup_fails(monkeypatch):
+    """解析失败按不安全处理：连不上和连到内网，宁可直接拒。"""
+
+    def boom(*args, **kwargs):
+        raise OSError("dns down")
+
+    monkeypatch.setattr(url_guard_module.socket, "getaddrinfo", boom)
+
+    with pytest.raises(byok_module.ByokEndpointInvalidError):
+        byok_module.normalize_base_url("https://unresolvable.example.com/v1")
+
+
+def test_normalize_base_url_accepts_public_hostname(monkeypatch):
+    """正常公网域名必须放行，否则功能等于不可用。"""
+    import socket
+
+    monkeypatch.setattr(
+        url_guard_module.socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("104.18.0.1", 0))],
+    )
+
+    assert byok_module.normalize_base_url("https://api.openai.com/v1") == "https://api.openai.com/v1"
+
+
+def test_shared_address_space_is_blocked():
+    """RFC 6598 共享地址段（100.64.0.0/10）必须拦。
+
+    `ipaddress` 不把这段算进 is_private，但阿里云 metadata 就在 100.100.100.200，
+    不单独处理就是一个现成的内网入口。
+    """
+    from app.url_guard import is_blocked_host
+
+    assert is_blocked_host("100.100.100.200") is True
+    assert is_blocked_host("100.64.0.1") is True
+    assert is_blocked_host("100.63.255.255") is False  # 段外边界，不该误伤
+
+
+def test_summarize_rejects_custom_base_url_without_key(monkeypatch):
+    """只填地址不填 Key → 必须拒绝，否则站点 Key 会被发往用户指定的地址。
+
+    这是本次最严重的一处：`_resolve_provider` 的 Key 回落目标是站点自己的 Key。
+    若不拦，任何人手写一个不带 `X-Vtt-Llm-Key` 的请求、只指定自己的地址，后端就会
+    拿站点 Key 去敲那台服务器。`/api/summarize` 无鉴权，等于公开泄露。
+    """
+    import socket
+
+    # 让这个地址「解析到公网」，否则会先被 DNS 复检拦下，测不到 Key 这条规则
+    monkeypatch.setattr(
+        url_guard_module.socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("104.18.0.1", 0))],
+    )
+    monkeypatch.setattr(summarizer_module, "DEEPSEEK_API_KEY", "sk-site-secret")
+    _mock_chat_capture(monkeypatch, {})
+
+    response = client.post(
+        "/api/summarize",
+        json={
+            "transcript": TRANSCRIPT,
+            "title": "标题",
+            "duration": 60,
+            "llmBaseUrl": "https://attacker.example.com/v1",
+            "llmModel": "gpt-4o-mini",
+        },
+        # 故意不带 Key 请求头
+    )
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == "BYOK_ENDPOINT_INVALID"
+    assert "Key" in error["message"]
+
+
+def test_resolve_provider_never_pairs_site_key_with_user_base_url(monkeypatch):
+    """直接测 `_resolve_provider`：任何「用户地址 + 站点 Key」的组合都不允许出现。"""
+    monkeypatch.setattr(summarizer_module, "DEEPSEEK_API_KEY", "sk-site-secret")
+
+    with pytest.raises(summarizer_module.ByokEndpointInvalidError):
+        summarizer_module._resolve_provider(
+            None, "https://attacker.example.com/v1", "gpt-4o-mini"
+        )
+
+
+def test_resolve_provider_allows_user_key_without_base_url(monkeypatch):
+    """最常见的用法必须保留：只换 Key、地址与模型用站点的。"""
+    monkeypatch.setattr(summarizer_module, "DEEPSEEK_API_KEY", "sk-site-secret")
+    base_url, api_key, model = summarizer_module._resolve_provider("sk-user-key", None, None)
+
+    assert api_key == "sk-user-key"
+    assert base_url == summarizer_module.LLM_PRESETS[summarizer_module.LLM_PROVIDER]["base_url"]
+    assert model == (
+        summarizer_module.LLM_MODEL
+        or summarizer_module.LLM_PRESETS[summarizer_module.LLM_PROVIDER]["default_model"]
+    )

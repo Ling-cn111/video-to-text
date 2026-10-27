@@ -165,6 +165,63 @@ test.describe("自定义服务商回归", () => {
     expect(validateModelFormat("has space").ok).toBe(false);
   });
 
+  test("回归 23d：只填地址不填 Key 也被拦（站点 Key 不得发往用户地址）", async () => {
+    // 这是最严重的一处：Key 的回落目标是**站点自己的** Key。若允许「地址是我的、
+    // Key 用站点的」，等于把站点凭据送到用户指定的服务器。`/api/summarize` 无鉴权，
+    // 任何人手写请求就能触发。
+    expect(
+      llmConfigIssue({ key: null, baseUrl: "https://attacker.example.com/v1", model: "gpt-4o-mini" }),
+    ).toContain("Key");
+    // 三项齐全才算自洽
+    expect(
+      llmConfigIssue({
+        key: "sk-1",
+        baseUrl: "https://attacker.example.com/v1",
+        model: "gpt-4o-mini",
+      }),
+    ).toBeNull();
+  });
+
+  test("回归 23e：界面只填地址不填 Key 时保存被拦下", async ({ page }) => {
+    await page.goto("/");
+    await page.evaluate(() => window.localStorage.clear());
+
+    await page.getByTestId("open-api-settings").click();
+    await page.getByTestId("byok-llm-base-url-input").fill("https://api.moonshot.cn/v1");
+    await page.getByTestId("byok-llm-model-input").fill("moonshot-v1-8k");
+    await page.getByTestId("byok-llm-save").click();
+
+    // 没填 Key 时 validateKeyFormat 先报「请填写 Key」，两条规则都指向同一件事：
+    // 自定义地址必须配自己的 Key
+    await expect(page.getByTestId("byok-llm-error")).toContainText("Key");
+    expect(await page.evaluate(() => window.localStorage.getItem("byokLlmBaseUrl"))).toBeNull();
+  });
+
+  test("回归 25：换服务商后旧总结缓存被清掉，不会假装成功", async ({ page }) => {
+    // 缓存键 `summary:<taskId>:<detail>` 不含服务商。若不清，用户换到新服务商后
+    // 点「重试总结」会命中旧缓存直接返回 —— 页面显示一份总结，用户以为新配置通了，
+    // 实际一次请求都没发。配置真错也会显示成功，比报错更难查。
+    await page.goto("/");
+    await page.evaluate(() => {
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+      window.sessionStorage.setItem(
+        "summary:staleTask:standard",
+        JSON.stringify({ summary: "旧服务商的结果", keyPoints: [] }),
+      );
+    });
+
+    await page.getByTestId("open-api-settings").click();
+    await page.getByTestId("byok-llm-input").fill("sk-brand-new-key-1234");
+    await page.getByTestId("byok-llm-save").click();
+
+    // 保存后缓存必须被清空
+    const remaining = await page.evaluate(() =>
+      Object.keys(window.sessionStorage).filter((key) => key.startsWith("summary:")),
+    );
+    expect(remaining).toEqual([]);
+  });
+
   test("回归 24：裸 BV 号能直接解析并补成完整链接", async ({ page }) => {
     // **BV 号正文大小写敏感**：`BV1xx411c7mD` 与 `BV1XX411C7MD` 是两个不同的号。
     // 早先这里写 toUpperCase()，会把合法号悄悄改成另一个（不存在的）号，

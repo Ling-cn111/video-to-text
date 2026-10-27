@@ -17,6 +17,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useApiSettingsOpenSignal } from '@/hooks/use-api-settings'
 import { notifyByokChanged } from '@/hooks/use-byok-status'
+import { clearSummaryCache } from '@/stores/task-store'
 import {
   EMPTY_LLM_CONFIG,
   LLM_PROVIDER_PRESETS,
@@ -120,6 +121,12 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
       setError('填写了自定义接口地址，还需要填写模型名（例如 deepseek-chat / gpt-4o-mini）')
       return
     }
+    // 填了地址却没填 Key：Key 的回落目标是站点自己的 Key，不拦就会把站点凭据
+    // 发往用户指定的地址。地址与 Key 必须同源。
+    if (urlResult.value && !keyResult.value) {
+      setError('填写了自定义接口地址，还需要填写该服务商的 API Key：站点不会把自己的 Key 发往你指定的地址')
+      return
+    }
 
     const next: LlmConfig = {
       key: keyResult.value,
@@ -131,6 +138,9 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
     setDraftKey('')
     setEditingKey(false)
     setError(null)
+    // 换了服务商/模型/Key，之前缓存的总结就不再是「这份配置的结果」了。
+    // 不清掉的话，用户点「重试总结」会命中旧缓存直接返回，看起来像新配置通了。
+    clearSummaryCache()
     // 通知同页的能力门禁重算：刚填了配置，结果页那个灰掉的「生成总结」应当立刻可用
     notifyByokChanged()
     toast.success('配置已保存，只存在这台设备的浏览器里')
@@ -144,6 +154,8 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
     setDraftModel('')
     setEditingKey(false)
     setError(null)
+    // 清配置后旧总结同样不该再被当成「当前配置的结果」复用
+    clearSummaryCache()
     notifyByokChanged()
     toast.success('已清除 API 配置')
   }

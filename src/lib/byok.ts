@@ -301,5 +301,11 @@ export function llmConfigIssue(config: LlmConfig): string | null {
   if (config.baseUrl && !config.model) {
     return '填写了自定义接口地址，还需要填写模型名（例如 deepseek-chat / gpt-4o-mini）'
   }
+  // 地址与 Key 必须同源：只填地址不填 Key，后端会回落到站点 Key 去打用户指定的
+  // 地址 —— 等于把站点凭据送到第三方服务器。后端 `_resolve_provider` 也会拦，
+  // 这里同步拦住是为了让用户在保存时就看到，而不是等一次失败的总结。
+  if (config.baseUrl && !config.key) {
+    return '填写了自定义接口地址，还需要填写该服务商的 API Key：站点不会把自己的 Key 发往你指定的地址'
+  }
   return null
 }
