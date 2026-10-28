@@ -1,6 +1,6 @@
 {
   "name": "video-to-text",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "packageManager": "pnpm@12.5.1",
   "engines": {
