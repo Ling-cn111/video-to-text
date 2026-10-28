@@ -13,24 +13,24 @@
 | | 入口 |
 | --- | --- |
 | 在线体验 | <https://video-to-text-six.vercel.app> |
-| 桌面端下载（Windows） | [**v0.1.2 · .exe 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.2/video-to-text_0.1.2_x64-setup.exe) ／ [全部 Release](https://github.com/Ling-cn111/video-to-text/releases/latest) |
+| 桌面端下载（Windows） | [**v0.1.3 · .exe 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.3/video-to-text_0.1.3_x64-setup.exe) ／ [全部 Release](https://github.com/Ling-cn111/video-to-text/releases/latest) |
 | 手机端 | **暂未提供安装包**，见下方说明 |
 
 ### 桌面端下载
 
-当前版本 **v0.1.2**，点文件名直接下载（无需先进 Release 页找）：
+当前版本 **v0.1.3**，点文件名直接下载（无需先进 Release 页找）：
 
-- [**video-to-text_0.1.2_x64-setup.exe**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.2/video-to-text_0.1.2_x64-setup.exe) — 2.3 MB，NSIS，普通用户双击安装，**无需管理员权限**（推荐）
-- [**video-to-text_0.1.2_x64_zh-CN.msi**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.2/video-to-text_0.1.2_x64_zh-CN.msi) — 3.3 MB，WiX，适合企业组策略 / 静默分发
+- [**video-to-text_0.1.3_x64-setup.exe**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.3/video-to-text_0.1.3_x64-setup.exe) — 2.3 MB，NSIS，普通用户双击安装，**无需管理员权限**（推荐）
+- [**video-to-text_0.1.3_x64_zh-CN.msi**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.3/video-to-text_0.1.3_x64_zh-CN.msi) — 3.3 MB，WiX，适合企业组策略 / 静默分发
 
 校验和（`certutil -hashfile <文件> SHA256`）：
 
 ```
-f079da153344430aab9b7fbe04903168f7aa3104bb5f61c1a2cadd6fa177d396  video-to-text_0.1.2_x64-setup.exe
-5636dc96cd532e6dd3685fb313b9dc546f8f87d2d6ce1ebf3b9f727e9a0ffa8a  video-to-text_0.1.2_x64_zh-CN.msi
+c2dcc07de48c2844c8312ba13313d7856275b15735171c55126ce8d11c9256e3  video-to-text_0.1.3_x64-setup.exe
+7ec01b6bc8761bd3c60799723ec679c9e70d39055a15f4202c56324ab1ca439e  video-to-text_0.1.3_x64_zh-CN.msi
 ```
 
-> **v0.1.1 及更早版本已失效**：站点不再内置 AI 总结 Key，旧版既没有「API 设置」入口、又始终向后端声明用本地转写引擎（线上镜像不含本地 ASR），装了之后总结永远灰着且没有出路。请升级到 v0.1.2。
+> **请使用 v0.1.3**：它支持自由配置 AI 总结服务商（接口地址 + 模型名 + Key）与直接输入 BV / av 号。v0.1.2 只能填 Key、服务商被钉死在站点预设的那一两家，填别家的 Key 会被误报「Key 无效」；v0.1.1 及更早版本更严重——没有「API 设置」入口，又始终向后端声明用本地转写引擎（线上镜像不含本地 ASR），装了之后总结永远灰着且没有出路。
 > 安装包未做代码签名，Windows SmartScreen 会提示「未知发布者」，点「更多信息 → 仍要运行」即可。
 > 安装后不依赖域名可达性：桌面端直接连后端 API，不受 `*.vercel.app` 被墙影响。
 > `github.com` 在国内可能连不上，若下载失败需自备代理；网页端本身不受此影响。
