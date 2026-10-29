@@ -8,7 +8,7 @@ export default function manifest(): MetadataRoute.Manifest {
     name: '视频转文字 — 链接一键生成文字稿与 AI 总结',
     short_name: '视频转文字',
     // 支持平台随构建能力变化（真实后端只接了 B站），与 layout.tsx 的 description 同源
-    description: `粘贴${supportedPlatformsShortText()}视频链接，自动生成带时间戳的文字稿与 AI 总结，支持导出 TXT / Markdown。`,
+    description: `粘贴${supportedPlatformsShortText()}视频链接，自动生成带时间戳的文字稿与 AI 总结，支持导出 TXT / Markdown 与 SRT / VTT 字幕。`,
     id: '/',
     start_url: '/',
     scope: '/',

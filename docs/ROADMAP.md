@@ -3,7 +3,7 @@
 > **当前状态（2026-10-07）**：核心产品链路已全部交付——
 > **阶段一** 真实解析（B站 yt-dlp）✅ → **阶段二** 真实转写（字幕快路径四层降级 + 本地/云端 ASR + 绝对 CER 基准）✅ → **阶段三** 真实 AI 总结（DeepSeek，27 分钟视频 ≈¥0.07）✅。
 > 验收报告：[阶段二](acceptance-stage-2.md) / [阶段三](acceptance-stage-3.md)；基准与成本：[asr-benchmark](asr-benchmark.md) / [llm-cost](llm-cost.md)。
-> 下文 M2 多平台 / M3 本地视频 / M4 打包 **均未启动**，为后续规划。
+> 下文 M2 多平台 / M3 本地视频 **均未启动**；M4 打包**已部分交付**（Windows 桌面端已发到 v0.1.3，macOS 与移动端未启动）。
 > 历史说明：本文成文于 M1 前端 Demo 交付时，M2-M4 编号与项目实际的「阶段一/二/三」编号相互独立；
 > 本文记录后续里程碑的设计意向与当前代码中已预留的扩展点。
 
@@ -19,14 +19,16 @@
 
 ## M2 多平台支持
 
-**目标**：在 B站 / 抖音之外支持更多平台。
+**目标**：在 B站之外支持更多平台（抖音目前只存在于前端 Mock 的演示数据里，真实后端未接入）。
 
-- 平台清单（按优先级）：YouTube、快手、西瓜视频 / 今日头条、微博、小红书、Twitter / X
+- 平台清单（按优先级）：抖音、YouTube、快手、西瓜视频 / 今日头条、微博、小红书、Twitter / X
 - 做法：
   - 在 `src/lib/platforms/registry.ts` 追加条目（host 正则、短链域名、videoId 提取规则、展示配色）——UI 层零改动
+  - **同时**在后端 `backend/app/platforms.py` 的 `PLATFORM_REGISTRY` 注册同名平台，并把平台加进 `SUPPORTED_PLATFORMS`
   - 扩充 `src/lib/mock-data.ts` 各平台示例数据与首页示例链接
   - 接真实后端时，每个平台对应一个解析器（解析视频元数据与音频流）
-- 验收：粘贴对应平台链接即可走通 Mock 全流程
+- **顺序不能反**（锁定项 §12）：先接后端、再把平台加进 `SUPPORTED_PLATFORMS`。反了就是对外虚假宣称——前端放行、后端 422
+- 验收：粘贴对应平台链接即可走通 Mock 全流程；真实构建下 `SUPPORTED_PLATFORMS` 与实际解析能力一致
 
 ## M3 本地视频转写
 
@@ -44,9 +46,12 @@
 
 **目标**：在 PWA 之外提供原生应用分发。
 
-- 桌面端（Windows / macOS）：推荐 **Tauri**——体积小，可加载线上地址或配合 Next 静态导出；系统托盘、全局快捷键可后期加入
-- 移动端（Android / iOS）：推荐 **Capacitor** 包壳 PWA，可上架应用商店
-- 结构：新增 `apps/desktop`、`apps/mobile` 目录与对应 CI job，与现有 web 应用同仓monorepo（pnpm workspace 已具备条件）
+- 桌面端（Windows）：**已交付** ✅ —— Tauri 2 + Next 静态导出，安装包走 GitHub Release（当前 v0.1.3，`.msi` / `.exe`）。打包流程与踩坑见 [desktop-packaging](desktop-packaging.md)
+- 桌面端（macOS）：**未启动** —— 同一套 `src-tauri` 配置，但需要 macOS 机器签名与公证；当前仓库无对应 CI job
+- 移动端（Android / iOS）：推荐 **Capacitor** 包壳 PWA，可上架应用商店。**未启动**
+  - 前置依赖：Android 需 JDK + Android SDK（当前开发机未安装）；iOS 打包**必须有 macOS + Xcode**
+  - 可复用：`scripts/build-desktop.mjs` 的静态导出 + `stashMockRoutes()` 逻辑，`api-base.ts` 的 `NEXT_PUBLIC_API_BASE` 分支无需改动（移动端同样无 Node 服务端）
+- 结构：新增 `apps/mobile` 目录与对应 CI job，与现有 web 应用同仓 monorepo（`pnpm-workspace.yaml` 已具备条件）
 - PWA（M1）与 M4 三端互补：PWA 即装即用，打包 App 覆盖商店分发与系统能力
 
 ## 工程预留点速览
@@ -56,5 +61,5 @@
 | 平台注册表 | `src/lib/platforms/registry.ts` | 新平台 = 新条目，UI 自动跟随 |
 | 任务来源无关 | `src/stores/task-store.ts` | 进度 / 结果页只依赖 taskId |
 | 文件类错误码 | `src/lib/types.ts` | M3 需要时新增 `FILE_TOO_LARGE` / `FILE_FORMAT_UNSUPPORTED`（P2 已清理占位码，同步四处） |
-| API 统一出口 | `src/lib/api.ts` | 换真实后端只改 `NEXT_PUBLIC_API_BASE_URL` |
+| API 统一出口 | `src/lib/api.ts` | 换真实后端只改 `BACKEND_ORIGIN`（web 同源代理）或 `NEXT_PUBLIC_API_BASE`（桌面端跨域直连），见 `src/lib/api-base.ts` |
 | URL 安全守卫 | `src/lib/url-guard.ts` | 服务端处理用户 URL 时复用同一份校验 |
