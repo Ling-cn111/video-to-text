@@ -3,7 +3,7 @@
 > **当前状态（2026-10-07）**：核心产品链路已全部交付——
 > **阶段一** 真实解析（B站 yt-dlp）✅ → **阶段二** 真实转写（字幕快路径四层降级 + 本地/云端 ASR + 绝对 CER 基准）✅ → **阶段三** 真实 AI 总结（DeepSeek，27 分钟视频 ≈¥0.07）✅。
 > 验收报告：[阶段二](acceptance-stage-2.md) / [阶段三](acceptance-stage-3.md)；基准与成本：[asr-benchmark](asr-benchmark.md) / [llm-cost](llm-cost.md)。
-> 下文 M2 多平台 / M3 本地视频 **均未启动**；M4 打包**已部分交付**（Windows 桌面端已发到 v0.1.3，macOS 与移动端未启动）。
+> 下文 M2 多平台 / M3 本地视频 **均未启动**；M4 打包**已部分交付**（Windows 桌面端与 Android 均发到 v0.1.4，macOS 与 iOS 未启动）。
 > 历史说明：本文成文于 M1 前端 Demo 交付时，M2-M4 编号与项目实际的「阶段一/二/三」编号相互独立；
 > 本文记录后续里程碑的设计意向与当前代码中已预留的扩展点。
 
@@ -46,9 +46,9 @@
 
 **目标**：在 PWA 之外提供原生应用分发。
 
-- 桌面端（Windows）：**已交付** ✅ —— Tauri 2 + Next 静态导出，安装包走 GitHub Release（当前 v0.1.3，`.msi` / `.exe`）。打包流程与踩坑见 [desktop-packaging](desktop-packaging.md)
+- 桌面端（Windows）：**已交付** ✅ —— Tauri 2 + Next 静态导出，安装包走 GitHub Release（当前 v0.1.4，`.msi` / `.exe`）。打包流程与踩坑见 [desktop-packaging](desktop-packaging.md)
 - 桌面端（macOS）：**未启动** —— 同一套 `src-tauri` 配置，但需要 macOS 机器签名与公证；当前仓库无对应 CI job
-- 移动端（Android）：**已打通** ✅ —— Capacitor 8 包壳，`pnpm build:mobile` 复用桌面端的静态导出脚本（`scripts/build-shell.mjs` 的 `mobile` 目标），前端资源打进 APK 直连后端，**不依赖域名可达性**。图标、启动图、release 签名配置均已就位，尚未发布安装包
+- 移动端（Android）：**已发布** ✅ —— Capacitor 8 包壳，`pnpm build:mobile` 复用桌面端的静态导出脚本（`scripts/build-shell.mjs` 的 `mobile` 目标），前端资源打进 APK 直连后端，**不依赖域名可达性**。图标、启动图、release 签名配置均已就位，v0.1.4 起在 GitHub Release 分发 APK
   - 构建：`pnpm build:mobile` → `npx cap sync android` → `cd android && ./gradlew --init-script gradle/init-mirrors.gradle assembleDebug`
   - 踩坑与不变量见 [frontend-features](frontend-features.md) §16（`androidScheme` 必须 https、`server.url` 不能配、镜像 init script 不能省、keystore 必须备份）
 - 移动端（iOS）：**未启动** —— 打包必须有 macOS + Xcode，当前开发机是 Windows。同一套前端资源，需补 `npx cap add ios` 与 macOS CI job

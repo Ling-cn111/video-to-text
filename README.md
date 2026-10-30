@@ -5,7 +5,7 @@
 - **零成本字幕快路径**：视频有 CC / AI 字幕时直接取，27 分钟视频 5-7 秒出稿，¥0
 - **分层降级流水线**：字幕快路径（秒级 ¥0）→ 语音识别（云端优先、本机自建可走 faster-whisper）→ LLM 总结，逐层兜底不空手
 - **真实 AI 结构化总结**：一句话概要 / 带时间戳要点 / 章节笔记，时间戳锚定原文；三档详细度（精简 / 标准 / 详细）可随时切换，切换会重新生成而不是裁剪旧结果
-- **两种安装形态**：Web PWA（配好可达域名后可装到主屏幕）、Windows 桌面安装包（Tauri，不依赖域名可达性）；Android 另可打包 APK（Capacitor，同样不依赖域名）
+- **三种安装形态**：Web PWA（配好可达域名后可装到主屏幕）、Windows 桌面安装包（Tauri）、Android APK（Capacitor）——后两者资源随包分发，**不依赖域名可达性**
 - **手机上也能导出**：App 内点导出会拉起系统分享面板（存到文件 / 发给微信），不再依赖浏览器下载——`blob:` 下载在 WebView 里根本不会落地
 - **深色模式与自适阅读**：浅色 / 深色 / 跟随系统三档；全文可调字号、搜索高亮、按章节跳转
 - **字幕文件导出**：除阅读用的 TXT / Markdown（零时间戳）外，还可导出 SRT / VTT 字幕，直接挂到播放器；两类产物语义相反，入口分组、绝不混用
@@ -18,41 +18,52 @@
 | | 入口 |
 | --- | --- |
 | 在线体验 | <https://video-to-text-six.vercel.app> |
-| 桌面端下载（Windows） | [**v0.1.3 · .exe 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.3/video-to-text_0.1.3_x64-setup.exe) ／ [全部 Release](https://github.com/Ling-cn111/video-to-text/releases/latest) |
-| 手机端 | **Android 包壳已打通**（Capacitor，源码内可直接构建 APK），尚未发布安装包，见下方说明 |
+| 桌面端下载（Windows） | [**v0.1.4 · .exe 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.4/video-to-text_0.1.4_x64-setup.exe) ／ [全部 Release](https://github.com/Ling-cn111/video-to-text/releases/latest) |
+| 手机端下载（Android） | [**v0.1.4 · .apk 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.4/video-to-text_0.1.4_android.apk) — 3.8 MB，Android 7.0+，覆盖安装即可升级 |
 
 ### 桌面端下载
 
-当前版本 **v0.1.3**，点文件名直接下载（无需先进 Release 页找）：
+当前版本 **v0.1.4**，点文件名直接下载（无需先进 Release 页找）：
 
-- [**video-to-text_0.1.3_x64-setup.exe**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.3/video-to-text_0.1.3_x64-setup.exe) — 2.3 MB，NSIS，普通用户双击安装，**无需管理员权限**（推荐）
-- [**video-to-text_0.1.3_x64_zh-CN.msi**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.3/video-to-text_0.1.3_x64_zh-CN.msi) — 3.3 MB，WiX，适合企业组策略 / 静默分发
+- [**video-to-text_0.1.4_x64-setup.exe**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.4/video-to-text_0.1.4_x64-setup.exe) — 2.4 MB，NSIS，普通用户双击安装，**无需管理员权限**（推荐）
+- [**video-to-text_0.1.4_x64_zh-CN.msi**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.4/video-to-text_0.1.4_x64_zh-CN.msi) — 3.4 MB，WiX，适合企业组策略 / 静默分发
 
 校验和（`certutil -hashfile <文件> SHA256`）：
 
 ```
-c2dcc07de48c2844c8312ba13313d7856275b15735171c55126ce8d11c9256e3  video-to-text_0.1.3_x64-setup.exe
-7ec01b6bc8761bd3c60799723ec679c9e70d39055a15f4202c56324ab1ca439e  video-to-text_0.1.3_x64_zh-CN.msi
+3517b27cbeed8ac363a6af285e8d76e89a6e26572ddd1cbf3e8e5589a7027df6  video-to-text_0.1.4_x64-setup.exe
+35e1b76e7d3f1a3ab9e2d707a4962ad3bb4c23301be2876f68610f25aa3f6ea5  video-to-text_0.1.4_x64_zh-CN.msi
 ```
 
-> **请使用 v0.1.3**：它支持自由配置 AI 总结服务商（接口地址 + 模型名 + Key）与直接输入 BV / av 号。v0.1.2 只能填 Key、服务商被钉死在站点预设的那一两家，填别家的 Key 会被误报「Key 无效」；v0.1.1 及更早版本更严重——没有「API 设置」入口，又始终向后端声明用本地转写引擎（线上镜像不含本地 ASR），装了之后总结永远灰着且没有出路。
+> **请使用 v0.1.4**：它在 v0.1.3（自由配置 AI 总结服务商、直接输入 BV / av 号）之上补齐了深色模式、错误页与安全响应头。更早的版本问题见 [v0.1.4 Release 说明](https://github.com/Ling-cn111/video-to-text/releases/tag/v0.1.4)。
 > 安装包未做代码签名，Windows SmartScreen 会提示「未知发布者」，点「更多信息 → 仍要运行」即可。
 > 安装后不依赖域名可达性：桌面端直接连后端 API，不受 `*.vercel.app` 被墙影响。
 > `github.com` 在国内可能连不上，若下载失败需自备代理；网页端本身不受此影响。
 
 ### 手机端（Android）
 
-**包壳已打通，可自行构建 APK；尚未发布安装包。** 现状：
+**已发布安装包**：下载 [**video-to-text_0.1.4_android.apk**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.4/video-to-text_0.1.4_android.apk)（3.8 MB）传到手机安装即可，无需 Android Studio，也不需要域名可达。
+
+校验和（`sha256sum <文件>`）：
+
+```
+2c7c089fc5ac1160b084630a5f416b587441c5056db9252bf608000fbf6ed711  video-to-text_0.1.4_android.apk
+```
+
+> 安装包已用固定 keystore 签名，后续版本可直接覆盖升级；首次安装需在系统里允许「安装未知来源应用」。
+> 手机上装的是**本地资源**，所以 `*.vercel.app` 被墙不影响 App 使用；只有 API 请求需要联网（后端在阿里云 FC，可达）。
+
+现状：
 
 | 方式 | 状态 |
 | --- | --- |
-| Android APK（Capacitor 包壳） | **已实现** ✅ 前端资源打进安装包，直连后端 API，**不依赖域名可达性**。构建见下方命令 |
+| Android APK（Capacitor 包壳） | **已发布** ✅ 前端资源打进安装包，直连后端 API，**不依赖域名可达性**。见上方直链 |
 | PWA 装到主屏幕（Android） | 功能已实现，但 `*.vercel.app` 被 SNI 阻断，国内手机上 `beforeinstallprompt` 不会触发，**实际装不上** |
 | PWA 装到主屏幕（iOS） | 即使域名可达也**不会出现「安装应用」按钮**：iOS Safari 从不触发 `beforeinstallprompt`，顶栏入口因此不显示。需手动走「分享 → 添加到主屏幕」 |
 | 换自定义域名后装 PWA | 可行，域名解析后 Android 的安装按钮即刻出现（无需打包）；iOS 仍需上面的手动步骤 |
 | iOS 包壳 | **未启动**：打包必须有 macOS + Xcode，当前开发机是 Windows |
 
-也就是说：Android 已经可以打包成独立 App（不需要域名）；iOS 目前只能通过浏览器访问网页。
+也就是说：Android 已有独立 App（不需要域名）；iOS 目前只能通过浏览器访问网页。
 
 **自行构建 Android APK**（需要 JDK 17+ 与 Android SDK，无需 Android Studio）：
 
@@ -68,8 +79,6 @@ cd android
 
 > **`--init-script gradle/init-mirrors.gradle` 不能省**：Capacitor 子工程的 `build.gradle` 把 `google()` 排在最前，
 > 直连 `dl.google.com` 在国内会卡十几分钟再超时失败。这个 init script 在子工程脚本求值前插入阿里云镜像。
-
-> 手机上装的是**本地资源**，所以 `*.vercel.app` 被墙不影响 App 使用；只有 API 请求需要联网（后端在阿里云 FC，可达）。
 
 构建方法见 [桌面端打包指南](docs/desktop-packaging.md)（静态导出与后端地址注入的共用逻辑）。
 
@@ -208,8 +217,8 @@ src-tauri/                # Tauri 桌面端壳
 - 云端部署时若 `REDIS_URL` 连不上，应用会静默降级到内存存储，表现为任务永远停在 `processing`
 - PWA 在国内手机暂不可安装：`*.vercel.app` 被 DNS 污染与 SNI 阻断，需换自定义域名
 - 桌面端安装包未做代码签名，SmartScreen 会提示「未知发布者」；也**没有自动更新**，升级需重新下载安装
-- **Android 安装包尚未发布**：包壳与签名配置都已就位（`pnpm build:mobile` 可自行构建），但没有走分发流程；iOS 需 macOS + Xcode，未启动
-- Android 包的最低系统要求是 **Android 7.0（API 24）**，targetSdk 36；打包需 JDK 17+ 与 Android SDK（无需 Android Studio）
+- **Android 安装包未上应用商店**，只发在 GitHub Release（需自行下载 APK 侧载，国内访问 `github.com` 可能需代理）；iOS 需 macOS + Xcode，未启动
+- Android 包的最低系统要求是 **Android 7.0（API 24）**，targetSdk 36；自行打包需 JDK 17+ 与 Android SDK（无需 Android Studio）
 
 ## 协作规范
 
