@@ -83,8 +83,20 @@ test.describe("移动端导出改造（纯函数）", () => {
   });
 });
 
+/**
+ * 下面三条要走「打开结果页 → 点导出」的完整链路，依赖 Mock 任务号。
+ * 真实模式构建上 `mockTaskId()` 编出来的号在真后端是 404（任务不存在），
+ * 结果页渲染成 MissingTask，`fulltext-article` 根本不出现 —— 那是**环境不匹配**，
+ * 不是导出功能坏了。所以真实模式下跳过，与回归 15 / 23 的处理一致。
+ *
+ * CI 的真实模式阶段只跑 `-g "锁定 7"` 与 `-g "平台宣称"`，本来就不会跑到这里；
+ * 加这个门禁是为了本地手动跑全量时不再出现三条吓人的红。
+ */
+const needsMockTask = process.env.VTT_EXPECT_MODE === "real";
+
 test.describe("移动端导出改造（浏览器行为）", () => {
   test("回归 27：桌面/网页端仍走下载，行为未被改造破坏", async ({ page }) => {
+    test.skip(needsMockTask, "真实模式构建下没有 Mock 任务号，结果页无法渲染（非功能问题）");
     await page.goto(`/result?id=${mockTaskId()}`);
     await expect(page.getByTestId("fulltext-article")).toBeVisible();
 
@@ -99,6 +111,7 @@ test.describe("移动端导出改造（浏览器行为）", () => {
   });
 
   test("回归 27b：用户取消分享不算失败，不弹错误提示", async ({ page }) => {
+    test.skip(needsMockTask, "真实模式构建下没有 Mock 任务号，结果页无法渲染（非功能问题）");
     // 模拟「浏览器支持 Web Share，但用户点了取消」——这是手机上最高频的操作，
     // 每天几十次误触。若把它当失败处理，用户会被红条轰炸。
     await page.addInitScript(() => {
@@ -122,6 +135,7 @@ test.describe("移动端导出改造（浏览器行为）", () => {
   });
 
   test("回归 27c：分享成功后提示「已打开分享面板」而不是「已开始下载」", async ({ page }) => {
+    test.skip(needsMockTask, "真实模式构建下没有 Mock 任务号，结果页无法渲染（非功能问题）");
     await page.addInitScript(() => {
       Object.defineProperty(navigator, "share", {
         configurable: true,

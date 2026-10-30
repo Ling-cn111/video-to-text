@@ -30,7 +30,7 @@ pnpm start       # 以生产模式启动，默认 3000 端口
 | `e2e/pr6-byok.spec.ts` | 回归 14-17：BYOK 面板存取与掩码、Key 走请求头不进请求体、错误归属、未配置提示的自助出路 |
 | `e2e/pr7-no-key-and-engine.spec.ts` | 回归 18-21：没有可用 Key 时不发请求也不报红卡、引导态一键打开设置、填完 Key 立刻可用、转写模式选择器按 `localAsrAvailable` 显示、面板只收 LLM Key 且文案如实 |
 | `e2e/pr8-custom-provider.spec.ts` | 回归 22-25：自定义服务商三项（Key/地址/模型）存取、预设填空、地址与模型真进请求体而 Key 仍只在请求头、只填地址不填模型被拦、只填地址不填 Key 被拦（站点 Key 不得外泄）、换服务商后总结缓存被清、SSRF 与末尾斜杠纯函数断言、裸 BV/av 号直接可用（含正文大小写原样透传） |
-| `e2e/pr9-mobile-shell.spec.ts` | 回归 26-27c：导出函数必须是 async（不得退回 fire-and-forget）、桌面端下载行为未被改造破坏、用户取消分享不报错也不误报「已下载」、分享成功提示走分享文案 |
+| `e2e/pr9-mobile-shell.spec.ts` | 回归 26-27c：导出函数必须是 async（不得退回 fire-and-forget）、桌面端下载行为未被改造破坏、用户取消分享不报错也不误报「已下载」、分享成功提示走分享文案。**回归 27/27b/27c 在 `VTT_EXPECT_MODE=real` 下自动 skip**（它们依赖 Mock 任务号打开结果页，真实构建里那号是 404，与导出功能无关） |
 
 **`test_byok.py`（后端）** 与上面的 BYOK 前端用例是配套的：前端只证明「头发出去了」，后端证明「收到后按请求级覆盖、被拒时报对错误码、不落库、不降级」。改任一侧都要跑另一侧。
 
@@ -42,6 +42,7 @@ Next.js 只在 `pnpm build` 时把 `NEXT_PUBLIC_*` 内联进产物，**改这个
 
 - 直接 `pnpm build` 会读取 `.env.local`。若其中是 `NEXT_PUBLIC_USE_MOCK=false`，构建出来的是**真实模式**。
 - 而锁定用例全部按 **Mock 模式**编写。对真实模式构建跑全套会**因环境原因全红**（Mock taskId 在真实接口取不到数据；真实模式的健康检查走 `/backend-api/health`，测试里对 `/api/health` 的拦截不生效）——**这不是代码回归**。
+- 唯一例外是 `pr9-mobile-shell.spec.ts` 里那三条要打开结果页的用例：它们用 `VTT_EXPECT_MODE=real` 判断并自动 skip，所以真实模式下跑全量只会看到 3 skipped，不会再有 3 failed。
 
 ### 2.2 本地跑全量锁定用例（Mock 模式）
 
