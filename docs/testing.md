@@ -30,6 +30,7 @@ pnpm start       # 以生产模式启动，默认 3000 端口
 | `e2e/pr6-byok.spec.ts` | 回归 14-17：BYOK 面板存取与掩码、Key 走请求头不进请求体、错误归属、未配置提示的自助出路 |
 | `e2e/pr7-no-key-and-engine.spec.ts` | 回归 18-21：没有可用 Key 时不发请求也不报红卡、引导态一键打开设置、填完 Key 立刻可用、转写模式选择器按 `localAsrAvailable` 显示、面板只收 LLM Key 且文案如实 |
 | `e2e/pr8-custom-provider.spec.ts` | 回归 22-25：自定义服务商三项（Key/地址/模型）存取、预设填空、地址与模型真进请求体而 Key 仍只在请求头、只填地址不填模型被拦、只填地址不填 Key 被拦（站点 Key 不得外泄）、换服务商后总结缓存被清、SSRF 与末尾斜杠纯函数断言、裸 BV/av 号直接可用（含正文大小写原样透传） |
+| `e2e/pr9-mobile-shell.spec.ts` | 回归 26-27c：导出函数必须是 async（不得退回 fire-and-forget）、桌面端下载行为未被改造破坏、用户取消分享不报错也不误报「已下载」、分享成功提示走分享文案 |
 
 **`test_byok.py`（后端）** 与上面的 BYOK 前端用例是配套的：前端只证明「头发出去了」，后端证明「收到后按请求级覆盖、被拒时报对错误码、不落库、不降级」。改任一侧都要跑另一侧。
 
@@ -121,6 +122,8 @@ cd backend
 | `node scripts/verify-pwa.mjs` | PWA 21 项验收：manifest 字段、图标可访问、apple-touch-icon 180×180、theme-color、`viewport-fit=cover`、SW activated、缓存预置、刷新后仍生效 |
 | `node scripts/check-msi-locale.mjs` | 直接读 MSI 数据库，确认产品名为中文 |
 | `node scripts/generate-icons.mjs` | 重新生成 `public/icons/`（改图标源后运行） |
+| `node scripts/verify-shell.mjs [desktop\|mobile]` | 静态壳产物验收：把 `out/` 当站点起起来，用 Playwright 断言**打进安装包的那份字节**（BYOK 三项、预设、裸号、请求体无 `engine`、不注册 SW）。桌面端 14 项、移动端 15 项。跑前需 `pnpm build:desktop` 或 `pnpm build:mobile` |
+| `python scripts/gen-android-icons.py` | 从 `public/icons/icon-1024.png` 生成 Android 全套图标与启动图（27 个文件） |
 
 PWA 验收需先 `pnpm build && pnpm start`；桌面端相关脚本见 [desktop-packaging.md](desktop-packaging.md)。
 
@@ -139,4 +142,6 @@ PWA 验收需先 `pnpm build && pnpm start`；桌面端相关脚本见 [desktop-
 | 改自定义服务商（`LLM_PROVIDER_PRESETS` / `normalize_base_url` / `_resolve_provider`） | 后端 `pytest tests/test_byok.py` + 前端 `pnpm exec playwright test e2e/pr8-custom-provider.spec.ts`。**四条不变量别碰**：①填了地址必须填模型（否则拿站点默认模型去问别家，只会得到 model not found）②填了地址必须填用户自己的 Key（否则站点 Key 会被发往用户指定的地址，`/api/summarize` 无鉴权等于公开泄露）③地址必须过 SSRF 校验**且解析 DNS 后复检**（只查字面量挡不住 `nip.io` 这类域名，这是放行用户输入的唯一安全前提，不能为了「支持自建 Ollama」放宽）④Key 只走请求头、地址与模型走请求体 |
 | 改裸视频号识别（`src/lib/platform.ts` 的 `resolveBareVideoId` / `normalizeVideoInput`） | `pnpm exec playwright test e2e/pr8-custom-provider.spec.ts -g "回归 24"`。**BV 号正文大小写敏感**：`BV1xx411c7mD` 与 `BV1XX411C7MD` 是两个不同的号，任何 `toUpperCase()` / `toLowerCase()` 规范化正文的改动都会把用户送到不存在的视频。只允许规范 `BV` / `av` 前缀本身 |
 | 改转写引擎选择 / 降级链（`_resolve_engine` / `local_engine_available` / `capabilities.localAsrAvailable`） | `pytest tests/test_capabilities.py tests/test_asr_cloud.py` + `pnpm exec playwright test e2e/pr7-no-key-and-engine.spec.ts`。**注意线上镜像不含 faster-whisper**：任何「默认走 local」的改动在线上都会变成 ModuleNotFoundError，必须由后端按能力挑 |
+| 改导出 / 分享（`src/lib/export.ts` / `share-file.ts` / `export-menu.tsx`） | `pnpm exec playwright test e2e/pr4-reading-and-export.spec.ts e2e/pr9-mobile-shell.spec.ts`。**三条不变量别碰**：①`exportResult` / `exportSubtitles` 必须返回 `Promise<ShareOutcome>`（退回 fire-and-forget 后 WebView 里失败无任何提示）②用户取消分享返回 `cancelled` 且**不弹任何提示**③TXT/MD 零时间戳、SRT/VTT 必带时间轴，两类产物不得互相复用生成函数 |
+| 改移动端壳（`capacitor.config.ts` / `scripts/build-shell.mjs` / `use-android-back.ts` / `runtime.ts`） | `pnpm build:mobile && node scripts/verify-shell.mjs mobile`，再 `npx cap sync android` + `cd android && ./gradlew --init-script gradle/init-mirrors.gradle assembleDebug`。**四个致命点**：①`NEXT_PUBLIC_USE_MOCK` 必须显式注入 false（缺省是 Mock）②`server.url` 绝不能配（配了资源又回到被墙的 vercel.app）③`androidScheme` 必须 https（改 http 会让剪贴板 API 静默失效）④`gradle --init-script gradle/init-mirrors.gradle` 不能漏（Capacitor 子工程的 `google()` 在最前，直连 dl.google.com 会卡十几分钟再失败） |
 | 文档 / 构建脚本 | 若动了 `next.config.mjs`、`scripts/`，跑一次 `pnpm build` |

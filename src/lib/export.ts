@@ -1,5 +1,6 @@
 import { formatDurationWords } from '@/lib/format'
 import { getPlatformMeta } from '@/lib/platforms/registry'
+import { shareTextFile, type ShareOutcome } from '@/lib/share-file'
 import { buildSrt, buildVtt } from '@/lib/subtitle-export'
 import type { TranscriptItem, VideoInfo } from '@/lib/types'
 
@@ -74,21 +75,22 @@ export function buildSubtitleFilename(format: SubtitleFormat, video: VideoInfo):
   return `${sanitizeFilename(video.title)}-字幕.${format}`
 }
 
-export function downloadTextFile(filename: string, content: string, mime = 'text/plain;charset=utf-8'): void {
-  const blob = new Blob([content], { type: mime })
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = filename
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  URL.revokeObjectURL(url)
-}
-
-export function exportResult(format: ExportFormat, input: ExportInput): void {
+/**
+ * 把内容交给系统：移动端壳内走原生分享，网页 / 桌面端走分享或下载。
+ *
+ * 历史实现是裸的 `blob:` + `<a download>`，在 Android WebView 里会变成新窗口
+ * 或静默失败；改造后统一走 `shareTextFile` 的三级降级（见 src/lib/share-file.ts）。
+ *
+ * 返回值语义：`cancelled` 是用户主动关掉分享面板，**不是错误**，调用方不要报错。
+ */
+export async function exportResult(format: ExportFormat, input: ExportInput): Promise<ShareOutcome> {
   const content = format === 'md' ? buildMarkdown(input) : buildPlainText(input)
-  downloadTextFile(buildExportFilename(format, input.video), content)
+  return shareTextFile({
+    filename: buildExportFilename(format, input.video),
+    content,
+    mime: 'text/plain;charset=utf-8',
+    title: input.video.title,
+  })
 }
 
 /**
@@ -97,9 +99,14 @@ export function exportResult(format: ExportFormat, input: ExportInput): void {
  * 与 `exportResult` 分开是刻意的：两者产物语义相反（零时间戳 vs 必须有时间戳），
  * 合并成一个函数后，后来的人很容易顺手在字幕分支里复用 buildPlainText。
  */
-export function exportSubtitles(format: SubtitleFormat, input: SubtitleExportInput): void {
+export async function exportSubtitles(format: SubtitleFormat, input: SubtitleExportInput): Promise<ShareOutcome> {
   const content =
     format === 'vtt' ? buildVtt(input.transcript, input.video) : buildSrt(input.transcript, input.video.duration)
-  // VTT 用 text/vtt：部分播放器靠 MIME 判断能否直接挂载
-  downloadTextFile(buildSubtitleFilename(format, input.video), content, format === 'vtt' ? 'text/vtt;charset=utf-8' : 'application/x-subrip;charset=utf-8')
+  return shareTextFile({
+    filename: buildSubtitleFilename(format, input.video),
+    content,
+    // VTT 用 text/vtt：部分播放器靠 MIME 判断能否直接挂载
+    mime: format === 'vtt' ? 'text/vtt;charset=utf-8' : 'application/x-subrip;charset=utf-8',
+    title: `${input.video.title}-字幕`,
+  })
 }

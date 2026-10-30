@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect } from 'react'
+import { IS_STATIC_SHELL } from '@/lib/runtime'
 
 /** 与 public/sw.js 的 CACHE_NAME 同前缀；历史版本的外壳缓存一并清理 */
 const SHELL_CACHE_PREFIX = 'vtt-shell-'
@@ -19,9 +20,9 @@ export function RegisterSw() {
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return
 
-    // 桌面端（Tauri）不注册：tauri:// / http://tauri.localhost 下 SW 无意义，
-    // 资源本就来自本地安装目录，缓存只会拖慢更新。构建期常量，便于 tree-shaking。
-    if (process.env.NEXT_PUBLIC_DESKTOP === 'true') return
+    // 静态壳（桌面 Tauri / 移动 Capacitor）不注册：资源本就来自本地安装目录，
+    // 缓存只会拖慢更新，且在 asset 协议下 SW 行为未定义。构建期常量，便于 tree-shaking。
+    if (IS_STATIC_SHELL) return
 
     if (process.env.NODE_ENV !== 'production') {
       void cleanupLeftoverServiceWorker()

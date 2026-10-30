@@ -21,7 +21,7 @@ Tauri 本身不带 Node 运行时，窗口里加载的是本地文件，所以�
 | --- | --- |
 | 不支持 `rewrites`（没有服务端） | 桌面端改直连后端绝对地址，见 `src/lib/api-base.ts` |
 | 不支持动态段 `/x/[id]`（无法枚举取值） | 改查询参数 `/x?id=`，见 `src/lib/routes.ts` |
-| 不支持 Route Handler 的 POST | 构建期临时移出 `src/app/api/`，见 `scripts/build-desktop.mjs` |
+| 不支持 Route Handler 的 POST | 构建期临时移出 `src/app/api/`，见 `scripts/build-shell.mjs` |
 
 ### 1.1 后端地址如何切换
 
@@ -31,7 +31,7 @@ web   : fetch('/backend-api/parse')  → Next rewrites → BACKEND_ORIGIN/api/pa
 ```
 
 `apiUrl()` 按有无 `NEXT_PUBLIC_API_BASE` 二选一。桌面端由
-`scripts/build-desktop.mjs` 注入该变量（取值顺序：`DESKTOP_API_BASE` >
+`scripts/build-shell.mjs` 注入该变量（取值顺序：`SHELL_API_BASE` > `DESKTOP_API_BASE`（旧名）>
 `.env.local` 的 `BACKEND_ORIGIN`）。
 
 跨域能成立的前提是后端放行：`CORS_ORIGINS=*`（本项目线上即如此）。
@@ -184,5 +184,5 @@ src-tauri/target/release/bundle/nsis/<产品名>_<版本>_x64-setup.exe
 | Mock 路由 `/api/*` | 存在 | 构建期移除 |
 | 离线可用性 | 依赖 SW 缓存外壳 | 前端全在本地，仅接口需联网 |
 
-Service Worker 在桌面端通过 `NEXT_PUBLIC_DESKTOP=true` 关闭（见
+Service Worker 在桌面端通过 `NEXT_PUBLIC_STATIC_SHELL=true` 关闭（`NEXT_PUBLIC_DESKTOP` 仍作兼容别名，见
 `src/components/pwa/register-sw.tsx`），避免在 asset 协议下注册失败刷警告。

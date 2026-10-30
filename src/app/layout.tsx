@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import { Toaster } from "@/components/ui/sonner";
 import { BackendHealthBanner } from "@/components/layout/backend-health-banner";
+import { MobileShellBridge } from "@/components/layout/mobile-shell-bridge";
 import { PreferenceHydrator } from "@/components/layout/preference-hydrator";
 import { SiteHeader } from "@/components/layout/site-header";
 import { ThemeProvider } from "@/components/layout/theme-provider";
@@ -84,6 +85,7 @@ export default function RootLayout({
           {/* 全局层：后端可达性横幅（fixed + 等高占位）与本地偏好水合 */}
           <BackendHealthBanner />
           <PreferenceHydrator />
+          <MobileShellBridge />
           <SiteHeader />
           <main className="flex-1">{children}</main>
           <RegisterSw />

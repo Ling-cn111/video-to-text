@@ -191,7 +191,26 @@
 | 不降级 | ASR 用用户 Key 被拒时**不降级到本地引擎**。降级会跑出结果，用户以为云端成功了，从此不会去改那把已失效的 Key（`asr.py` 的 `except ByokKeyInvalidError: raise` 必须排在通用 `except` 之前） |
 | 不落库 | Key 不写进任务库。`TranscribeJob.byok_key` 只随作业跨进程投递，`tasks._payload_dict` 里不得出现任何含 "key" 的字段 |
 
-## 15. 回归检查清单（改前端后必跑）
+## 16. 移动端壳（Android，PR9 新增）
+
+| 功能 | 锁定要求 |
+| --- | --- |
+| 构建入口 | `pnpm build:mobile` → `scripts/build-shell.mjs mobile`，与桌面端共用同一脚本（`desktop` / `mobile` 两个目标）。`next.config.mjs` 的静态导出条件是 `BUILD_TARGET === 'desktop' \|\| 'mobile'`。**不得为移动端另写一套导出逻辑**：桌面端已经踩过 `src/app/api` 的 POST Route Handler 在静态导出下不可用的坑，重写一遍必然重踩 |
+| 资源必须打进安装包 | `capacitor.config.ts` 的 `webDir: 'out'`，`npx cap sync android` 把 `out/` 复制到 `android/app/src/main/assets/public/`。**`server.url` 绝不能配置**：配了就是壳里加载远程网页，资源又回到被墙的 `*.vercel.app`，等于白打包。验收必须含「飞行模式冷启动能看到首页」 |
+| `androidScheme` 必须是 https | `server: { androidScheme: 'https' }`。WebView 里 `https://localhost` 属 secure context，`navigator.clipboard.writeText` 才可用；改成 `http` 会让 `src/lib/clipboard.ts` 的 Clipboard API 静默降级到 `execCommand`，**时间戳复制按钮会坏掉且不报错** |
+| 环境变量必须显式注入 | `scripts/build-shell.mjs` 注入 `NEXT_PUBLIC_USE_MOCK=false`（缺省值是 Mock，不注入则 APK 走假数据）、`NEXT_PUBLIC_API_BASE`、`NEXT_PUBLIC_STATIC_SHELL=true`、`NEXT_PUBLIC_MOBILE_SHELL`。**`NEXT_PUBLIC_USE_MOCK` 是构建期常量**，漏注入无法在运行时补救 |
+| 静态壳不注册 Service Worker | `src/lib/runtime.ts` 的 `IS_STATIC_SHELL` 为真时 `register-sw.tsx` 直接 return。asset 协议下 SW 行为未定义，注册失败会在控制台刷红字。旧的 `NEXT_PUBLIC_DESKTOP` 保留为兼容别名，**新代码一律用 `IS_STATIC_SHELL` / `IS_MOBILE_SHELL`** |
+| 导出三分支降级 | `src/lib/share-file.ts` 的 `shareTextFile()`：**Capacitor Share（移动端主路径）→ `navigator.share({files})`（网页 / PWA）→ `blob:` + `<a download>`（桌面兜底）**。**主路径必须是原生插件**：Android WebView 的 Web Share API 依赖宿主实现，不可靠；`blob:` 下载在 WebView 里会变新窗口或静默失败。写文件用 `Directory.Cache`（系统可回收，不占用户存储） |
+| 导出必须可等待 | `exportResult` / `exportSubtitles` 返回 `Promise<ShareOutcome>`，**不得退回 fire-and-forget 的 `void download(...)`**：旧实现在 WebView 里失败后用户点完什么也没发生、也没有任何提示，是移动端最典型的「看着能用实际不能用」 |
+| 用户取消分享不是失败 | `ShareOutcome` 的 `cancelled` 分支**不得弹任何提示**（既不报错也不说「已下载」）。手机上误触取消是高频操作，当失败处理会让用户被红条轰炸。`failed` 才提示「导出失败，请重试或换一种格式」 |
+| 成功文案分路径 | `shared` → 「已打开分享面板，选一个应用保存」；`downloaded` → 「已开始下载」。**两者不得共用一句**：手机上分享和下载是两件事，说错用户会去下载目录里找一个不存在的文件 |
+| Android 物理返回键 | `src/hooks/use-android-back.ts` 通过 `@capacitor/app` 的 `backButton` 监听：`history.state.idx > 0` 时 `router.back()`，已在会话第一页时**交还系统**（不调 `exitApp`）。**不得省略这个 hook**：Capacitor 默认行为是「按返回键退出 App」，用户在结果页按返回会直接关掉应用。注册点放根布局（`MobileShellBridge`），**不要逐页注册**——`/processing`、`/result` 是直链入口，逐页注册必漏 |
+| 只在移动端壳内启用 | 返回键监听与 Capacitor 插件 import 都在 `IS_MOBILE_SHELL` 判断之后，网页 / 桌面端不产生任何监听与动态 import（`@capacitor/*` 不会进初始包） |
+| 图标与启动图 | `scripts/gen-android-icons.py` 从 `public/icons/icon-1024.png` 生成 27 个文件。**不用 `@capacitor/assets`**：它依赖 `sharp@0.32`，pnpm 的 build script 策略会让 win32-x64 二进制缺失，直接崩。自适应图标前景层铺满 108dp 画布（源图图案只占中央 43%，落在安全区内），底色 `#7C3AED` 与图标一致（裁切动画会露出这一层） |
+| 签名密钥必须备份 | `android/keystore.properties` + `*.jks` 均已 gitignore，模板见 `keystore.properties.example`。**keystore 丢失 = 已安装用户永远无法升级**（Android 用签名证书判定「是不是同一个应用」），是唯一「做错没法补救」的环节。`versionCode` 已发布后不能回退 |
+| 依赖镜像 | `android/build.gradle` 与 `android/gradle/init-mirrors.gradle` 把阿里云 Maven 镜像排在最前。**`init-mirrors.gradle` 不能删**：Capacitor 子工程的 `build.gradle` 自带 buildscript 且 `google()` 在最前，`pnpm install` 会覆盖对 node_modules 的修改，只能靠 `beforeProject` 追加。构建命令必须带 `--init-script gradle/init-mirrors.gradle` |
+
+## 17. 回归检查清单（改前端后必跑）
 
 - [ ] 结果页默认显示「全文阅读」，文章排版无时间戳
 - [ ] Tab 可切换到「时间戳定位」，列表 + 复制功能正常
@@ -244,6 +263,11 @@
 - [ ] 解析到内网的域名同样被拦：`127.0.0.1.nip.io` / `localtest.me` / `10.0.0.5.nip.io` / `100.100.100.200` 全部返回 400，而 `api.openai.com` / `api.deepseek.com` 正常放行（后端 `test_normalize_base_url_rejects_hostname_resolving_to_loopback` / `_private_ip` / `_when_dns_lookup_fails` / `_accepts_public_hostname` + `test_shared_address_space_is_blocked`）
 - [ ] 换服务商后旧总结不被复用：保存或清除配置会清空 `summary:` 前缀的 sessionStorage，避免点「重试总结」命中旧缓存造成「假成功」（E2E 回归 25）
 - [ ] 直接输入 AV/BV 号：`BV1xx411c7mD` / `av170001` 能直接解析并补成完整链接，小写 `bv` 也能识别且规范成大写；纯数字（抖音号）不被误认成 av 号（E2E 回归 24 / 24b / 24c）
+- [ ] 移动端壳：`pnpm build:mobile` 后 `out/` 里 `NEXT_PUBLIC_USE_MOCK` 为 false、`IS_STATIC_SHELL` 与 `IS_MOBILE_SHELL` 均内联为 true（`node scripts/verify-shell.mjs mobile` 共 15 项）
+- [ ] 导出改造未破坏桌面端：网页上导出仍触发下载并提示「已开始下载」（E2E 回归 27）
+- [ ] 用户取消分享不报错、也不提示「已开始下载」（E2E 回归 27b）；分享成功提示「已打开分享面板，选一个应用保存」（E2E 回归 27c）
+- [ ] 导出函数返回 Promise，不得退回 fire-and-forget（E2E 回归 26 / 26b）
+- [ ] 真机验收（需要插线）：飞行模式冷启动能看到首页与示例链接、按物理返回键不会直接退出 App、导出能拉起系统分享面板并保存到手机、底部导航栏不遮挡「导出」按钮
 - [ ] `pnpm lint && pnpm build` 通过
 
 > 修改本文件（新增/放宽锁定项）需要用户明确确认。

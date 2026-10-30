@@ -48,11 +48,11 @@
 
 - 桌面端（Windows）：**已交付** ✅ —— Tauri 2 + Next 静态导出，安装包走 GitHub Release（当前 v0.1.3，`.msi` / `.exe`）。打包流程与踩坑见 [desktop-packaging](desktop-packaging.md)
 - 桌面端（macOS）：**未启动** —— 同一套 `src-tauri` 配置，但需要 macOS 机器签名与公证；当前仓库无对应 CI job
-- 移动端（Android / iOS）：推荐 **Capacitor** 包壳 PWA，可上架应用商店。**未启动**
-  - 前置依赖：Android 需 JDK + Android SDK（当前开发机未安装）；iOS 打包**必须有 macOS + Xcode**
-  - 可复用：`scripts/build-desktop.mjs` 的静态导出 + `stashMockRoutes()` 逻辑，`api-base.ts` 的 `NEXT_PUBLIC_API_BASE` 分支无需改动（移动端同样无 Node 服务端）
-- 结构：新增 `apps/mobile` 目录与对应 CI job，与现有 web 应用同仓 monorepo（`pnpm-workspace.yaml` 已具备条件）
-- PWA（M1）与 M4 三端互补：PWA 即装即用，打包 App 覆盖商店分发与系统能力
+- 移动端（Android）：**已打通** ✅ —— Capacitor 8 包壳，`pnpm build:mobile` 复用桌面端的静态导出脚本（`scripts/build-shell.mjs` 的 `mobile` 目标），前端资源打进 APK 直连后端，**不依赖域名可达性**。图标、启动图、release 签名配置均已就位，尚未发布安装包
+  - 构建：`pnpm build:mobile` → `npx cap sync android` → `cd android && ./gradlew --init-script gradle/init-mirrors.gradle assembleDebug`
+  - 踩坑与不变量见 [frontend-features](frontend-features.md) §16（`androidScheme` 必须 https、`server.url` 不能配、镜像 init script 不能省、keystore 必须备份）
+- 移动端（iOS）：**未启动** —— 打包必须有 macOS + Xcode，当前开发机是 Windows。同一套前端资源，需补 `npx cap add ios` 与 macOS CI job
+- PWA（M1）与 M4 互补：PWA 即装即用（需域名可达），打包 App 覆盖系统分享与离线启动
 
 ## 工程预留点速览
 
