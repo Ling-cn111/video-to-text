@@ -109,7 +109,7 @@ pnpm build && pnpm start
 本文只补两条容易踩的细节：
 
 - **`NEXT_PUBLIC_*` 是构建期内联**：改变取值必须重新 `pnpm build`，重启进程无效。构建前建议删掉 `.next`，避免残留产物沿用旧常量。
-- **`NEXT_PUBLIC_API_BASE` 由构建脚本注入**：`scripts/build-desktop.mjs` 会把 `DESKTOP_API_BASE` 写进它。手动设这个变量只在排除脚本、直接跑 `BUILD_TARGET=desktop pnpm build` 时才有意义。
+- **`NEXT_PUBLIC_API_BASE` 由构建脚本注入**：`scripts/build-shell.mjs` 会把 `SHELL_API_BASE`（旧名 `DESKTOP_API_BASE`）写进它。手动设这个变量只在排除脚本、直接跑 `BUILD_TARGET=desktop pnpm build` 时才有意义。
 
 ## 5. 故障排查
 

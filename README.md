@@ -5,7 +5,8 @@
 - **零成本字幕快路径**：视频有 CC / AI 字幕时直接取，27 分钟视频 5-7 秒出稿，¥0
 - **分层降级流水线**：字幕快路径（秒级 ¥0）→ 语音识别（云端优先、本机自建可走 faster-whisper）→ LLM 总结，逐层兜底不空手
 - **真实 AI 结构化总结**：一句话概要 / 带时间戳要点 / 章节笔记，时间戳锚定原文；三档详细度（精简 / 标准 / 详细）可随时切换，切换会重新生成而不是裁剪旧结果
-- **两种安装形态**：Web PWA（配好可达域名后可装到主屏幕）、Windows 桌面安装包（Tauri，不依赖域名可达性）
+- **两种安装形态**：Web PWA（配好可达域名后可装到主屏幕）、Windows 桌面安装包（Tauri，不依赖域名可达性）；Android 另可打包 APK（Capacitor，同样不依赖域名）
+- **手机上也能导出**：App 内点导出会拉起系统分享面板（存到文件 / 发给微信），不再依赖浏览器下载——`blob:` 下载在 WebView 里根本不会落地
 - **深色模式与自适阅读**：浅色 / 深色 / 跟随系统三档；全文可调字号、搜索高亮、按章节跳转
 - **字幕文件导出**：除阅读用的 TXT / Markdown（零时间戳）外，还可导出 SRT / VTT 字幕，直接挂到播放器；两类产物语义相反，入口分组、绝不混用
 - **最近转写**：首页记住最近 8 条任务，关掉标签页也能找回；转写期间误关会先确认一次
@@ -18,7 +19,7 @@
 | --- | --- |
 | 在线体验 | <https://video-to-text-six.vercel.app> |
 | 桌面端下载（Windows） | [**v0.1.3 · .exe 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.3/video-to-text_0.1.3_x64-setup.exe) ／ [全部 Release](https://github.com/Ling-cn111/video-to-text/releases/latest) |
-| 手机端 | **暂未提供安装包**，见下方说明 |
+| 手机端 | **Android 包壳已打通**（Capacitor，源码内可直接构建 APK），尚未发布安装包，见下方说明 |
 
 ### 桌面端下载
 
@@ -39,25 +40,38 @@ c2dcc07de48c2844c8312ba13313d7856275b15735171c55126ce8d11c9256e3  video-to-text_
 > 安装后不依赖域名可达性：桌面端直接连后端 API，不受 `*.vercel.app` 被墙影响。
 > `github.com` 在国内可能连不上，若下载失败需自备代理；网页端本身不受此影响。
 
-### 手机端
+### 手机端（Android）
 
-**目前没有 Android / iOS 安装包。** 现状与可行路径：
+**包壳已打通，可自行构建 APK；尚未发布安装包。** 现状：
 
 | 方式 | 状态 |
 | --- | --- |
+| Android APK（Capacitor 包壳） | **已实现** ✅ 前端资源打进安装包，直连后端 API，**不依赖域名可达性**。构建见下方命令 |
 | PWA 装到主屏幕（Android） | 功能已实现，但 `*.vercel.app` 被 SNI 阻断，国内手机上 `beforeinstallprompt` 不会触发，**实际装不上** |
 | PWA 装到主屏幕（iOS） | 即使域名可达也**不会出现「安装应用」按钮**：iOS Safari 从不触发 `beforeinstallprompt`，顶栏入口因此不显示。需手动走「分享 → 添加到主屏幕」 |
 | 换自定义域名后装 PWA | 可行，域名解析后 Android 的安装按钮即刻出现（无需打包）；iOS 仍需上面的手动步骤 |
-| Capacitor 包壳上架 | **未启动**，见 [路线图 M4](docs/ROADMAP.md) |
+| iOS 包壳 | **未启动**：打包必须有 macOS + Xcode，当前开发机是 Windows |
 
-也就是说：手机上目前只能通过浏览器访问网页使用（同样需要域名可达），没有可下载的 App。
-如果你需要手机 App，最短路径是给网页配一个自定义域名（Android 的 PWA 立即可装），而不是等打包。
+也就是说：Android 已经可以打包成独立 App（不需要域名）；iOS 目前只能通过浏览器访问网页。
 
-> iOS 的安装入口缺失是**代码层缺口**（`src/components/pwa/install-app-button.tsx` 只在捕获到
-> `beforeinstallprompt` 时才渲染），不是域名问题——换域名也不会自动出现。
-> 补齐做法：检测 iOS 且非 standalone 时改为展示「分享 → 添加到主屏幕」的图示引导。
+**自行构建 Android APK**（需要 JDK 17+ 与 Android SDK，无需 Android Studio）：
 
-构建方法见 [桌面端打包指南](docs/desktop-packaging.md)。
+```bash
+pnpm install
+pnpm build:mobile                 # 静态导出到 out/，注入 NEXT_PUBLIC_USE_MOCK=false
+npx cap sync android              # 把 out/ 复制进 android/app/src/main/assets/public/
+cd android
+./gradlew --init-script gradle/init-mirrors.gradle assembleDebug   # 产物：app/build/outputs/apk/debug/
+```
+
+发布版签名：把 `android/keystore.properties.example` 复制成 `keystore.properties` 并填入 keystore 路径与密码，然后 `assembleRelease`。**keystore 必须备份**——丢了之后已安装用户永远无法升级。
+
+> **`--init-script gradle/init-mirrors.gradle` 不能省**：Capacitor 子工程的 `build.gradle` 把 `google()` 排在最前，
+> 直连 `dl.google.com` 在国内会卡十几分钟再超时失败。这个 init script 在子工程脚本求值前插入阿里云镜像。
+
+> 手机上装的是**本地资源**，所以 `*.vercel.app` 被墙不影响 App 使用；只有 API 请求需要联网（后端在阿里云 FC，可达）。
+
+构建方法见 [桌面端打包指南](docs/desktop-packaging.md)（静态导出与后端地址注入的共用逻辑）。
 
 ## 架构
 
@@ -177,6 +191,7 @@ src-tauri/                # Tauri 桌面端壳
 | 前端功能锁定协议与回归清单 | [docs/frontend-features.md](docs/frontend-features.md) |
 | API 契约（接口 / 错误码 / 路由约定） | [docs/api-contract.md](docs/api-contract.md) |
 | 桌面端打包指南（WiX / NSIS / 国内镜像） | [docs/desktop-packaging.md](docs/desktop-packaging.md) |
+| Android 包壳的不变量与踩坑 | [docs/frontend-features.md](docs/frontend-features.md) 第 16 节 |
 | ASR 准确率评测基准（绝对 CER） | [docs/asr-benchmark.md](docs/asr-benchmark.md) |
 | 异步架构改造侦察报告 | [docs/s2-async-recon.md](docs/s2-async-recon.md) |
 | LLM 成本记录 | [docs/llm-cost.md](docs/llm-cost.md) |
@@ -193,7 +208,8 @@ src-tauri/                # Tauri 桌面端壳
 - 云端部署时若 `REDIS_URL` 连不上，应用会静默降级到内存存储，表现为任务永远停在 `processing`
 - PWA 在国内手机暂不可安装：`*.vercel.app` 被 DNS 污染与 SNI 阻断，需换自定义域名
 - 桌面端安装包未做代码签名，SmartScreen 会提示「未知发布者」；也**没有自动更新**，升级需重新下载安装
-- 手机端无原生安装包（Capacitor 包壳未启动），仅能通过浏览器访问网页
+- **Android 安装包尚未发布**：包壳与签名配置都已就位（`pnpm build:mobile` 可自行构建），但没有走分发流程；iOS 需 macOS + Xcode，未启动
+- Android 包的最低系统要求是 **Android 7.0（API 24）**，targetSdk 36；打包需 JDK 17+ 与 Android SDK（无需 Android Studio）
 
 ## 协作规范
 

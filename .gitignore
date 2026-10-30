@@ -13,7 +13,8 @@
 /.next/
 /out/
 
-# 桌面端构建：Mock 路由的临时暂存目录（scripts/build-desktop.mjs 用后即删）
+# 桌面端 / 移动端构建：Mock 路由的临时暂存目录（scripts/build-shell.mjs 用后即删）
+/.shell-build/
 /.desktop-build/
 
 # 安装包产物（由 pnpm tauri build 生成，不入库；分发走 GitHub Release）

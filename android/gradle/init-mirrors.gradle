@@ -1,0 +1,26 @@
+// Gradle 镜像初始化脚本（国内网络必需）。
+//
+// 用法：./gradlew --init-script gradle/init-mirrors.gradle assembleDebug
+// （package.json 的 build:android 已带这个参数，日常不用手写）
+//
+// 为什么需要它：Capacitor 的 android 子工程（node_modules/@capacitor/android/capacitor/
+// build.gradle）自带一个 buildscript 块，里面是 google() 在最前。dl.google.com 在国内
+// 常被重置，Gradle 遇到网络错误不会「换下一个仓库重试」，而是直接判定依赖解析失败，
+// 一次构建白等十几分钟。
+//
+// 为什么不直接改那些 build.gradle：它们在 node_modules 里，`pnpm install` 后会被覆盖。
+//
+// 原理：beforeProject 在子工程 build 脚本求值之前执行，此时往 buildscript.repositories
+// 里追加镜像，后续 build 脚本的 `google()` 只会「追加」在后面 —— 于是镜像天然排在最前，
+// 官方仓库仍留作兜底（镜像缺版本时仍能回落到官方源，而不是直接失败）。
+
+def addMirrors = { repositories ->
+    repositories.maven { url = 'https://maven.aliyun.com/repository/google' }
+    repositories.maven { url = 'https://maven.aliyun.com/repository/central' }
+    repositories.maven { url = 'https://maven.aliyun.com/repository/gradle-plugin' }
+}
+
+gradle.beforeProject { project ->
+    addMirrors(project.buildscript.repositories)
+    addMirrors(project.repositories)
+}

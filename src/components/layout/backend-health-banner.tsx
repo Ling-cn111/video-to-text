@@ -92,7 +92,10 @@ export function BackendHealthBanner() {
         ref={bannerRef}
         role="alert"
         data-testid="backend-unreachable-banner"
-        className="fixed inset-x-0 top-0 z-50 flex items-center gap-2 bg-destructive px-3 py-2 text-destructive-foreground shadow-md sm:px-4"
+        className="fixed inset-x-0 z-50 flex items-center gap-2 bg-destructive px-3 py-2 text-destructive-foreground shadow-md sm:px-4"
+        // 让开状态栏：fixed 相对视口定位，body 的 padding-top 管不到它。
+        // 留白交给 `--safe-top`，占位块的高度仍等于横幅自身高度，两者对齐。
+        style={{ top: "var(--safe-top, 0px)" }}
       >
         <AlertTriangle className="size-4 shrink-0" aria-hidden />
         <p className="flex-1 text-xs leading-snug sm:text-sm">{message}</p>

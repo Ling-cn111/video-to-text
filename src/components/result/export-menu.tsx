@@ -1,6 +1,7 @@
 'use client'
 
 import { Captions, FileCode2, FileDown } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -11,6 +12,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { exportResult, exportSubtitles } from '@/lib/export'
+import { IS_MOBILE_SHELL } from '@/lib/runtime'
+import type { ShareOutcome } from '@/lib/share-file'
 import type { TranscriptItem, VideoInfo } from '@/lib/types'
 
 interface ExportMenuProps {
@@ -27,14 +30,27 @@ interface ExportMenuProps {
  * - 导出字幕（SRT / VTT）：挂到播放器用，必须带时间轴
  * 分组是必要的：用户看到「导出」时想的可能是任一用途，混在一个列表里
  * 很容易下错文件（拿到一份没有时间戳的「字幕」）。
+ *
+ * 移动端壳内点导出会拉起系统分享面板（保存到文件 / 发给微信等），
+ * 网页与桌面端仍是下载。两条路径的提示文案不同，不能共用「已开始下载」。
  */
 export function ExportMenu({ video, paragraphs, transcript }: ExportMenuProps) {
-  const handleExport = (format: 'txt' | 'md') => {
-    exportResult(format, { video, paragraphs })
+  /** 按结果给提示：用户取消不报错，真失败才提示换方式 */
+  const notify = (outcome: ShareOutcome) => {
+    if (outcome === 'cancelled') return
+    if (outcome === 'failed') {
+      toast.error('导出失败，请重试或换一种格式')
+      return
+    }
+    toast.success(outcome === 'shared' ? '已打开分享面板，选一个应用保存' : '已开始下载')
   }
 
-  const handleSubtitle = (format: 'srt' | 'vtt') => {
-    exportSubtitles(format, { video, transcript })
+  const handleExport = async (format: 'txt' | 'md') => {
+    notify(await exportResult(format, { video, paragraphs }))
+  }
+
+  const handleSubtitle = async (format: 'srt' | 'vtt') => {
+    notify(await exportSubtitles(format, { video, transcript }))
   }
 
   return (
@@ -47,13 +63,15 @@ export function ExportMenu({ video, paragraphs, transcript }: ExportMenuProps) {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
         <DropdownMenuLabel>导出全文</DropdownMenuLabel>
-        <p className="px-2 pb-1.5 text-xs text-muted-foreground">纯文本 · 不含时间戳</p>
+        <p className="px-2 pb-1.5 text-xs text-muted-foreground">
+          纯文本 · 不含时间戳{IS_MOBILE_SHELL ? ' · 可保存到手机' : ''}
+        </p>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => handleExport('txt')} className="gap-2" data-testid="export-txt">
+        <DropdownMenuItem onClick={() => void handleExport('txt')} className="gap-2" data-testid="export-txt">
           <FileDown className="size-4 text-muted-foreground" aria-hidden />
           纯文本（.txt）
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => handleExport('md')} className="gap-2" data-testid="export-md">
+        <DropdownMenuItem onClick={() => void handleExport('md')} className="gap-2" data-testid="export-md">
           <FileCode2 className="size-4 text-muted-foreground" aria-hidden />
           Markdown（.md）
         </DropdownMenuItem>
@@ -62,11 +80,11 @@ export function ExportMenu({ video, paragraphs, transcript }: ExportMenuProps) {
         <DropdownMenuLabel>导出字幕</DropdownMenuLabel>
         <p className="px-2 pb-1.5 text-xs text-muted-foreground">带时间轴 · 可直接挂到播放器</p>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => handleSubtitle('srt')} className="gap-2" data-testid="export-srt">
+        <DropdownMenuItem onClick={() => void handleSubtitle('srt')} className="gap-2" data-testid="export-srt">
           <Captions className="size-4 text-muted-foreground" aria-hidden />
           字幕（.srt）
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => handleSubtitle('vtt')} className="gap-2" data-testid="export-vtt">
+        <DropdownMenuItem onClick={() => void handleSubtitle('vtt')} className="gap-2" data-testid="export-vtt">
           <Captions className="size-4 text-muted-foreground" aria-hidden />
           字幕（.vtt）
         </DropdownMenuItem>
