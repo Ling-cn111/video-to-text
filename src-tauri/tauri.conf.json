@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "视频转文字",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "identifier": "com.videototext.desktop",
   "build": {
     "frontendDist": "../out",
@@ -29,6 +29,7 @@
   "bundle": {
     "active": true,
     "targets": ["msi", "nsis"],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -48,6 +49,17 @@
         "installMode": "currentUser",
         "languages": ["SimpChinese", "English"],
         "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/Ling-cn111/video-to-text/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERBRkM3Q0Y4RkQxNTA3QTkKUldTcEJ4WDkrSHo4MmxWQXhjaFdiV0dxWHA4TDhWeTliQ1FSYm9kZ1oyTFVJVERjOGZ0eWlmVnAK",
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

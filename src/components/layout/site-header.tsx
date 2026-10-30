@@ -3,6 +3,7 @@ import { AudioLines } from 'lucide-react'
 import { InstallAppButton } from '@/components/pwa/install-app-button'
 import { ThemeToggle } from '@/components/layout/theme-toggle'
 import { ApiSettingsButton } from '@/components/layout/api-settings-button'
+import { UpdateButton } from '@/components/layout/update-button'
 
 /** 全局顶栏：品牌 + API 设置 + 主题切换 + PWA 安装入口。
  *  sticky 偏移 = 安全区顶部（状态栏）+「后端不可达」横幅高度。
@@ -28,6 +29,7 @@ export function SiteHeader() {
           <span className="text-base font-semibold tracking-tight">视频转文字</span>
         </Link>
         <div className="flex items-center gap-1">
+          <UpdateButton />
           <ApiSettingsButton />
           <ThemeToggle />
           <InstallAppButton />

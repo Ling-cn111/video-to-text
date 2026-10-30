@@ -195,6 +195,35 @@ if (TARGET === 'mobile') {
     true,
     hasSharePluginCode ? '已注入' : '浏览器环境无桥（预期，真机验证）',
   )
+
+  // —— 11. 移动端不应有自动更新入口 ——
+  // Android 走 APK 覆盖安装，Tauri 的 updater 在 Capacitor 壳里根本不存在；
+  // 若这里渲染出按钮，点下去只会拿到一个命令不存在的错误。
+  check('移动端不渲染「检查更新」入口', (await page.getByTestId('check-update').count()) === 0)
+}
+
+if (TARGET === 'desktop') {
+  // —— 10. 桌面端自动更新入口存在 ——
+  // v0.1.4 及更早版本完全没有这个入口，桌面端只能靠用户自己去 Release 页下载。
+  const updateButton = page.getByTestId('check-update')
+  check('桌面端顶栏有「检查更新」入口', await updateButton.isVisible())
+
+  // 浏览器里没有 Tauri 桥，点开应该如实说「不支持」而不是假装检查成功
+  await updateButton.click()
+  const updateDialog = page.getByTestId('update-dialog')
+  check('点开能弹出更新对话框', await updateDialog.isVisible())
+  const description = await page.getByTestId('update-description').innerText().catch(() => '')
+  check(
+    '无 Tauri 桥时如实提示不支持（不假装成功）',
+    description.includes('不支持') || description.includes('已是最新'),
+    description.slice(0, 40),
+  )
+  const releasesLink = await updateDialog.getByRole('link', { name: /打开发布页/ }).getAttribute('href')
+  check(
+    '对话框里有手动下载出口（更新服务器在 GitHub，国内可能连不上）',
+    (releasesLink ?? '').includes('releases/latest'),
+    releasesLink ?? '(无)',
+  )
 }
 
 await browser.close()
