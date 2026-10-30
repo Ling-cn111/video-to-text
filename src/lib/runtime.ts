@@ -21,3 +21,16 @@ export const IS_STATIC_SHELL =
 
 /** 是否移动端壳（Capacitor）。用于按需启用原生能力，web 与桌面端不加载。 */
 export const IS_MOBILE_SHELL = process.env.NEXT_PUBLIC_MOBILE_SHELL === 'true'
+
+/**
+ * 是否桌面端壳（Tauri）。
+ *
+ * 与 `IS_STATIC_SHELL` 的区别：静态壳包含桌面端**和**移动端，而自动更新只对
+ * 桌面端有意义——移动端走 APK 覆盖安装，网页端每次刷新都是最新。所以不能用
+ * `IS_STATIC_SHELL` 决定是否启用更新检查，否则 Android 包里会去调一个不存在的
+ * Tauri 命令，启动时抛异常。
+ */
+export const IS_DESKTOP_SHELL =
+  process.env.NEXT_PUBLIC_DESKTOP_SHELL === 'true' ||
+  (IS_STATIC_SHELL && !IS_MOBILE_SHELL)
+

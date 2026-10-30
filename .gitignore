@@ -20,6 +20,11 @@
 # 安装包产物（由 pnpm tauri build 生成，不入库；分发走 GitHub Release）
 /dist/
 
+# 自动更新清单：由 scripts/make-latest-json.mjs 按当前构建产物生成，
+# 每次发版内容都不同（签名 + 时间戳），入库只会制造无意义的 diff。
+# 正式发布时由 release-desktop.yml 现生成现上传。
+/latest.json
+
 # Tauri / Rust 编译产物（src-tauri/.gitignore 已含 /target、/gen/schemas）
 
 # production

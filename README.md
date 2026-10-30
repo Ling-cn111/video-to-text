@@ -6,6 +6,7 @@
 - **分层降级流水线**：字幕快路径（秒级 ¥0）→ 语音识别（云端优先、本机自建可走 faster-whisper）→ LLM 总结，逐层兜底不空手
 - **真实 AI 结构化总结**：一句话概要 / 带时间戳要点 / 章节笔记，时间戳锚定原文；三档详细度（精简 / 标准 / 详细）可随时切换，切换会重新生成而不是裁剪旧结果
 - **三种安装形态**：Web PWA（配好可达域名后可装到主屏幕）、Windows 桌面安装包（Tauri）、Android APK（Capacitor）——后两者资源随包分发，**不依赖域名可达性**
+- **桌面端自动更新**：Windows 版启动后自动检查新版本，顶栏提示一键下载安装，装一次之后不用再手动找安装包；下载与安装始终由你点确认，不会偷偷占带宽
 - **手机上也能导出**：App 内点导出会拉起系统分享面板（存到文件 / 发给微信），不再依赖浏览器下载——`blob:` 下载在 WebView 里根本不会落地
 - **深色模式与自适阅读**：浅色 / 深色 / 跟随系统三档；全文可调字号、搜索高亮、按章节跳转
 - **字幕文件导出**：除阅读用的 TXT / Markdown（零时间戳）外，还可导出 SRT / VTT 字幕，直接挂到播放器；两类产物语义相反，入口分组、绝不混用
@@ -18,36 +19,37 @@
 | | 入口 |
 | --- | --- |
 | 在线体验 | <https://video-to-text-six.vercel.app> |
-| 桌面端下载（Windows） | [**v0.1.4 · .exe 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.4/video-to-text_0.1.4_x64-setup.exe) ／ [全部 Release](https://github.com/Ling-cn111/video-to-text/releases/latest) |
-| 手机端下载（Android） | [**v0.1.4 · .apk 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.4/video-to-text_0.1.4_android.apk) — 3.8 MB，Android 7.0+，覆盖安装即可升级 |
+| 桌面端下载（Windows） | [**v0.1.5 · .exe 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.5/video-to-text_0.1.5_x64-setup.exe) ／ [全部 Release](https://github.com/Ling-cn111/video-to-text/releases/latest) |
+| 手机端下载（Android） | [**v0.1.5 · .apk 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.5/video-to-text_0.1.5_android.apk) — 3.8 MB，Android 7.0+，覆盖安装即可升级 |
 
 ### 桌面端下载
 
-当前版本 **v0.1.4**，点文件名直接下载（无需先进 Release 页找）：
+当前版本 **v0.1.5**，点文件名直接下载（无需先进 Release 页找）：
 
-- [**video-to-text_0.1.4_x64-setup.exe**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.4/video-to-text_0.1.4_x64-setup.exe) — 2.4 MB，NSIS，普通用户双击安装，**无需管理员权限**（推荐）
-- [**video-to-text_0.1.4_x64_zh-CN.msi**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.4/video-to-text_0.1.4_x64_zh-CN.msi) — 3.4 MB，WiX，适合企业组策略 / 静默分发
+- [**video-to-text_0.1.5_x64-setup.exe**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.5/video-to-text_0.1.5_x64-setup.exe) — 3.4 MB，NSIS，普通用户双击安装，**无需管理员权限**（推荐）
+- [**video-to-text_0.1.5_x64_zh-CN.msi**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.5/video-to-text_0.1.5_x64_zh-CN.msi) — 5.0 MB，WiX，适合企业组策略 / 静默分发
 
 校验和（`certutil -hashfile <文件> SHA256`）：
 
 ```
-3517b27cbeed8ac363a6af285e8d76e89a6e26572ddd1cbf3e8e5589a7027df6  video-to-text_0.1.4_x64-setup.exe
-35e1b76e7d3f1a3ab9e2d707a4962ad3bb4c23301be2876f68610f25aa3f6ea5  video-to-text_0.1.4_x64_zh-CN.msi
+94cb927a49ebbaa5914613e08bb7dd89eb2b2264f09a6dcedbb68f9e0dd031a9  video-to-text_0.1.5_x64-setup.exe
+e3dad7a23459d1f82fa9dea138e42da15f7182efc17c163e18aaf34fb4e6ef5d  video-to-text_0.1.5_x64_zh-CN.msi
 ```
 
-> **请使用 v0.1.4**：它在 v0.1.3（自由配置 AI 总结服务商、直接输入 BV / av 号）之上补齐了深色模式、错误页与安全响应头。更早的版本问题见 [v0.1.4 Release 说明](https://github.com/Ling-cn111/video-to-text/releases/tag/v0.1.4)。
+> **请使用 v0.1.5**：它新增了**桌面端自动更新**——装上这一版之后，后续版本不用再手动下载，客户端会在后台检查并提示更新。此外沿用 v0.1.4 的深色模式、错误页与安全响应头。更早版本的问题见 [v0.1.5 Release 说明](https://github.com/Ling-cn111/video-to-text/releases/tag/v0.1.5)。
+> **从 v0.1.4 及更早版本升级需要手动装这一次**（老版本没有更新器），之后就能自动更新。
 > 安装包未做代码签名，Windows SmartScreen 会提示「未知发布者」，点「更多信息 → 仍要运行」即可。
 > 安装后不依赖域名可达性：桌面端直接连后端 API，不受 `*.vercel.app` 被墙影响。
-> `github.com` 在国内可能连不上，若下载失败需自备代理；网页端本身不受此影响。
+> `github.com` 在国内可能连不上，若下载失败需自备代理；网页端本身不受此影响。更新检查也走 GitHub，连不上时会静默跳过，可在顶栏「检查更新」里手动重试或打开发布页。
 
 ### 手机端（Android）
 
-**已发布安装包**：下载 [**video-to-text_0.1.4_android.apk**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.4/video-to-text_0.1.4_android.apk)（3.8 MB）传到手机安装即可，无需 Android Studio，也不需要域名可达。
+**已发布安装包**：下载 [**video-to-text_0.1.5_android.apk**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.5/video-to-text_0.1.5_android.apk)（3.8 MB）传到手机安装即可，无需 Android Studio，也不需要域名可达。
 
 校验和（`sha256sum <文件>`）：
 
 ```
-2c7c089fc5ac1160b084630a5f416b587441c5056db9252bf608000fbf6ed711  video-to-text_0.1.4_android.apk
+f56d8166a32a17c17c5c781a2580d9106253a6486cebc95faccbb25f0246a8c2  video-to-text_0.1.5_android.apk
 ```
 
 > 安装包已用固定 keystore 签名，后续版本可直接覆盖升级；首次安装需在系统里允许「安装未知来源应用」。
@@ -111,10 +113,12 @@ flowchart LR
 
 1. 从上表下载当前版本安装包，双击安装（无需管理员权限）
 2. 从开始菜单打开「视频转文字」，粘贴 B站链接即可使用
+3. **之后不用再手动下载**：客户端会在启动后自动检查新版本，顶栏出现「更新到 x.y.z」时点一下即可下载安装（v0.1.5 起支持；从 v0.1.4 及更早版本升级需手动装这一次）
 
 > 自行构建的话，产物在 `src-tauri/target/release/bundle/`（`msi/` 与 `nsis/` 两个子目录），
 > 不在仓库根的 `dist/`。分发请以 [Release 资产](https://github.com/Ling-cn111/video-to-text/releases/latest) 为准，
 > 不要拿本地历史遗留的旧包——版本对不上时用户装到的是已经修复过的故障。
+> 自建分发的更新清单用 `node scripts/make-latest-json.mjs --version X.Y.Z` 生成，需先设置 `TAURI_SIGNING_PRIVATE_KEY` 让构建产出 `.sig`。
 
 ### 本地开发（Web）
 
@@ -201,6 +205,7 @@ src-tauri/                # Tauri 桌面端壳
 | API 契约（接口 / 错误码 / 路由约定） | [docs/api-contract.md](docs/api-contract.md) |
 | 桌面端打包指南（WiX / NSIS / 国内镜像） | [docs/desktop-packaging.md](docs/desktop-packaging.md) |
 | Android 包壳的不变量与踩坑 | [docs/frontend-features.md](docs/frontend-features.md) 第 16 节 |
+| 桌面端自动更新（签名、发版流程、不变量） | [docs/frontend-features.md](docs/frontend-features.md) 第 15 节 |
 | ASR 准确率评测基准（绝对 CER） | [docs/asr-benchmark.md](docs/asr-benchmark.md) |
 | 异步架构改造侦察报告 | [docs/s2-async-recon.md](docs/s2-async-recon.md) |
 | LLM 成本记录 | [docs/llm-cost.md](docs/llm-cost.md) |
@@ -216,7 +221,7 @@ src-tauri/                # Tauri 桌面端壳
 - **云端 ASR 的免费是「刊例价 0 元」**（硅基流动 `free-asr-model` 系列，按千字符计），不排除服务商后续调价；换模型时请重新核对价格页
 - 云端部署时若 `REDIS_URL` 连不上，应用会静默降级到内存存储，表现为任务永远停在 `processing`
 - PWA 在国内手机暂不可安装：`*.vercel.app` 被 DNS 污染与 SNI 阻断，需换自定义域名
-- 桌面端安装包未做代码签名，SmartScreen 会提示「未知发布者」；也**没有自动更新**，升级需重新下载安装
+- 桌面端安装包未做代码签名，SmartScreen 会提示「未知发布者」；**v0.1.5 起有自动更新**（检查走 GitHub，国内可能连不上，此时静默跳过，可手动点「检查更新」）
 - **Android 安装包未上应用商店**，只发在 GitHub Release（需自行下载 APK 侧载，国内访问 `github.com` 可能需代理）；iOS 需 macOS + Xcode，未启动
 - Android 包的最低系统要求是 **Android 7.0（API 24）**，targetSdk 36；自行打包需 JDK 17+ 与 Android SDK（无需 Android Studio）
 

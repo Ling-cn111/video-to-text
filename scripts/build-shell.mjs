@@ -99,6 +99,8 @@ try {
       NEXT_PUBLIC_STATIC_SHELL: 'true',
       // 移动端专属：启用 Capacitor 原生能力（导出分享、返回键），见 src/lib/runtime.ts
       NEXT_PUBLIC_MOBILE_SHELL: target === 'mobile' ? 'true' : 'false',
+      // 桌面端专属：启用 Tauri 自动更新（移动端走 APK 覆盖安装，没有这个概念）
+      NEXT_PUBLIC_DESKTOP_SHELL: target === 'desktop' ? 'true' : 'false',
     },
   })
   console.log(`[shell] 静态导出完成：out/（目标 ${target}）`)

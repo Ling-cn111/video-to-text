@@ -1,0 +1,171 @@
+# 桌面端发版：打 tag → 自动构建、签名、发 Release（含自动更新所需的 latest.json）
+#
+# 为什么要有这个 workflow：v0.1.1 ~ v0.1.4 都是本地手工构建再 `gh release create`，
+# 结果是「桌面端总是落后于 main」——因为没人愿意每次都手动跑一遍 Tauri 构建。
+# 自动化之后，发版只需要推一个 tag。
+#
+# 需要配置的仓库 Secrets：
+#   TAURI_SIGNING_PRIVATE_KEY           私钥内容（cat ~/.tauri/vtt-updater.key）
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  私钥口令（生成时留空则填空字符串）
+# 私钥丢失 = 已安装的客户端再也收不到自动更新（新私钥签的包对旧客户端无效），
+# 所以这份私钥必须离线备份，不能只存在 CI 里。
+#
+# 发版流程：
+#   1. 三处版本号改成同一个值（package.json / tauri.conf.json / Cargo.toml）
+#   2. （可选）写 docs/releases/v0.1.5.md 作为发布说明，不写则用 GitHub 自动生成的
+#   3. git tag v0.1.5 && git push origin v0.1.5
+
+name: Release Desktop
+
+on:
+  push:
+    tags:
+      - "v*"
+  # 允许手动重跑（例如某次构建因网络失败）。
+  # 注意：手动触发时 github.ref 是分支名，不是 tag，所以必须显式指定 tag 并在 checkout 时用上它，
+  # 否则后面的版本校验会拿 "main" 去和 "v0.1.5" 比，必然失败。
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（例如 v0.1.5，需已存在）"
+        required: true
+
+concurrency:
+  group: release-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build & release
+    # Tauri 的 Windows 安装包必须在 Windows 上构建（WiX / NSIS 都是 Windows 工具链）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # tag 推送时 github.ref 就是 refs/tags/v0.1.5；手动触发时是分支，需显式 checkout tag
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # 版本号与 tag 的一致性校验放在最前面：不通过就直接停，
+      # 不要让用户白等 20 分钟的 Rust 编译才发现 tag 写错了。
+      # 这里只用 node 读 JSON，不需要装依赖。
+      - name: Verify tag matches version
+        id: version
+        shell: bash
+        env:
+          # 手动触发时 GITHUB_REF_NAME 是分支名，必须用输入框里的 tag
+          TAG_NAME: ${{ inputs.tag || github.ref_name }}
+        run: |
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "构建版本：$VERSION（tag $TAG_NAME）"
+          if [ "$TAG_NAME" != "v$VERSION" ]; then
+            echo "::error::tag $TAG_NAME 与 tauri.conf.json 的版本 v$VERSION 不一致"
+            echo "::error::三处版本号必须一致：package.json / src-tauri/tauri.conf.json / src-tauri/Cargo.toml"
+            exit 1
+          fi
+          # Cargo.toml 是独立的一份，v0.1.4 曾经漏改过（构建日志显示 Compiling app v0.1.3）
+          CARGO_VERSION=$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+          if [ "$CARGO_VERSION" != "$VERSION" ]; then
+            echo "::error::src-tauri/Cargo.toml 的版本是 $CARGO_VERSION，应为 $VERSION"
+            exit 1
+          fi
+
+      # Rust 工具链：stable 足够，项目 rust-version 是 1.90
+      - uses: dtolnay/rust-toolchain@stable
+
+      # 编译缓存：Tauri 的依赖树很大（实测 1.6 GB / 300+ rlib），
+      # 不缓存的话每次发版要跑 20 分钟以上
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 自动更新的签名私钥。不配这两个 Secret，构建会产出无签名的包，
+      # make-latest-json.mjs 会直接失败退出 —— 这是故意的，宁可发版失败，
+      # 也不要发一个客户端装不上的更新。
+      - name: Build desktop bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # 后端地址：静态壳没有 Node 服务端，必须内联绝对地址。
+          # 用仓库变量覆盖，未配置时回落到线上 FC 函数。
+          SHELL_API_BASE: ${{ vars.SHELL_API_BASE || 'https://video-ttext-api-thuxmkmghu.cn-hangzhou.fcapp.run' }}
+        run: pnpm tauri build
+
+      # 发布说明：优先用版本专属文件（能写人话），否则交给 GitHub 从 commit 生成
+      - name: Resolve release notes
+        id: notes
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          if [ -f "docs/releases/v${VERSION}.md" ]; then
+            echo "file=docs/releases/v${VERSION}.md" >> "$GITHUB_OUTPUT"
+            echo "使用 docs/releases/v${VERSION}.md"
+          else
+            echo "file=" >> "$GITHUB_OUTPUT"
+            echo "未找到 docs/releases/v${VERSION}.md，使用自动生成的说明"
+          fi
+
+      - name: Generate latest.json
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          NOTES_FILE: ${{ steps.notes.outputs.file }}
+        run: |
+          node scripts/make-latest-json.mjs \
+            --version "$VERSION" \
+            --notes-file "$NOTES_FILE" \
+            --out latest.json
+
+      # gh 上传中文文件名会被剥成 `_`（v0.1.1 踩过），所以先重命名成 ASCII。
+      # 产品名仍是「视频转文字」（在 tauri.conf.json 的 productName 里），用户无感。
+      - name: Stage assets with ASCII names
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          mkdir -p dist
+          NSIS="src-tauri/target/release/bundle/nsis/视频转文字_${VERSION}_x64-setup.exe"
+          MSI="src-tauri/target/release/bundle/msi/视频转文字_${VERSION}_x64_zh-CN.msi"
+          cp "$NSIS" "dist/video-to-text_${VERSION}_x64-setup.exe"
+          cp "$MSI" "dist/video-to-text_${VERSION}_x64_zh-CN.msi"
+          ls -l dist/
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.value }}
+          TAG_NAME: ${{ steps.version.outputs.tag }}
+          NOTES_FILE: ${{ steps.notes.outputs.file }}
+        run: |
+          ASSETS=(
+            "dist/video-to-text_${VERSION}_x64-setup.exe"
+            "dist/video-to-text_${VERSION}_x64_zh-CN.msi"
+            "latest.json"
+          )
+          if [ -n "$NOTES_FILE" ]; then
+            gh release create "$TAG_NAME" \
+              --title "$TAG_NAME" \
+              --notes-file "$NOTES_FILE" \
+              "${ASSETS[@]}"
+          else
+            gh release create "$TAG_NAME" \
+              --title "$TAG_NAME" \
+              --generate-notes \
+              "${ASSETS[@]}"
+          fi

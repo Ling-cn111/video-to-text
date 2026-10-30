@@ -191,6 +191,26 @@
 | 不降级 | ASR 用用户 Key 被拒时**不降级到本地引擎**。降级会跑出结果，用户以为云端成功了，从此不会去改那把已失效的 Key（`asr.py` 的 `except ByokKeyInvalidError: raise` 必须排在通用 `except` 之前） |
 | 不落库 | Key 不写进任务库。`TranscribeJob.byok_key` 只随作业跨进程投递，`tasks._payload_dict` 里不得出现任何含 "key" 的字段 |
 
+## 15. 桌面端自动更新（PR10 新增）
+
+| 功能 | 锁定要求 |
+| --- | --- |
+| 启用条件 | 必须同时满足 **桌面壳 + 生产构建 + Tauri 桥存在**（`shouldEnableUpdater()` 与 `hasTauriBridge()` 两道判断）。**不得用 `IS_STATIC_SHELL` 决定**：它包含 Android，而 Capacitor 壳里根本没有 updater 插件，调下去只会抛「command not found」。网页端刷新即最新、Android 走 APK 覆盖安装，两者都不该出现这个入口 |
+| 入口位置 | 顶栏 `data-testid="check-update"`，排在「API 设置」左侧。**网页 / 移动端构建里必须渲染为 0 个**（E2E 回归 30g 用 `toHaveCount(0)` 断言）。渲染一个点了什么都不会发生的按钮比不渲染更糟——用户会以为功能坏了 |
+| 检查自动、下载手动 | 启动 8 秒后静默检查一次（`FIRST_CHECK_DELAY_MS`），之后每 4 小时复查（`RECHECK_INTERVAL_MS`）。**查到更新只提示、不自动下载**：安装包 3 MB 量级，国内到 GitHub 常要几十秒甚至超时，静默下载会在用户毫无察觉时占带宽，失败也无从得知。用户点「下载并安装」才走下载 |
+| 自动检查失败必须静默 | 自动检查（`check(true)`）失败时状态回到 `idle`，界面不显示任何东西；**只有手动检查（`check(false)`）才写 `error` 并显示原因**。最常见的原因就是网络到不了 GitHub，弹出来只是噪音 |
+| 手动检查失败要给出口 | `data-testid="update-error"` 的卡片必须说明「更新服务器在 GitHub 上，国内网络可能连不上」，并给出 `RELEASES_PAGE` 链接。**只报错不给出口等于把用户堵死**。对话框底部常驻「打开发布页」，任何状态下都能点 |
+| 版本比较只能按数值 | `compareVersions` 拆成 `[major, minor, patch]` 逐位比。**禁止字符串比较**：`"0.1.10" > "0.1.9"` 字符串结果是 false，会把新版判成旧版，用户永远收不到更新（E2E 回归 30） |
+| 解析失败一律「不比当前新」 | `parseVersion` 无法解析时返回 `null`，`compareVersions` 返回 0，`isNewerVersion` 返回 false。**宁可漏一次更新，也不要因为端点返回了奇怪的版本号就提示用户装一个坏包**（E2E 回归 30b） |
+| 降级不算更新 | `isNewerVersion("0.1.3", "0.1.4") === false`。否则回滚发版时会让所有用户被提示「更新」到旧版。插件层 `check()` 本身也允许同版本，所以拿到 Update 后还要用 `getVersion()` 复检一次 |
+| 进度总量未知时不猜 | `progressPercent(downloaded, total)` 在 `total` 缺失或 ≤0 时返回 `null`，界面切成不确定态。**不许用已下载字节数瞎算百分比**——跳来跳去的进度条比没有更让人困惑（E2E 回归 30d） |
+| 签名不可绕过 | `tauri.conf.json` 的 `plugins.updater.pubkey` 是公钥，私钥离线保存（`D:/tauri-keys/vtt-updater.key`，**不入库**）。`bundle.createUpdaterArtifacts: true` 让 `tauri build` 产出 `.sig`。`scripts/make-latest-json.mjs` **在没有 `.sig` 时直接失败退出**——这是故意的：宁可发版失败，也不要发一个客户端装不上的更新。私钥丢失 = 已安装客户端永远收不到自动更新，必须离线备份 |
+| `latest.json` 不入库 | 每次发版内容都不同（签名 + 时间戳），入库只制造无意义 diff。由 `release-desktop.yml` 现生成现上传，`.gitignore` 已忽略 `/latest.json` |
+| 端点与下载页必须同仓库 | `UPDATE_ENDPOINT` 指向 `releases/latest/download/latest.json`，`RELEASES_PAGE` 指向 `releases/latest`，两者都在 `Ling-cn111/video-to-text`（E2E 回归 30f 断言）。指向不同仓库会出现「检查到更新但点进去是另一个项目」 |
+| 下载页链接是已知限制 | 端点在 GitHub 上，国内可能不可达。这是当前方案的取舍，**不要为了「看起来更完整」把失败文案改成成功**。后续若要覆盖国内用户，需要把 `latest.json` 与安装包放到可达域名（如阿里云 FC 反代），属独立改造 |
+| 发版必须三处版本号一致 | `package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`。`release-desktop.yml` 在**装依赖之前**就校验 tag 与两者一致（v0.1.4 曾漏改 Cargo.toml，构建日志显示 `Compiling app v0.1.3`，安装包内嵌版本与界面不一致）。不要等 20 分钟的 Rust 编译完才发现 |
+| 资产名必须是 ASCII | `gh` 上传中文文件名会被剥成 `_`（v0.1.1 踩过）。workflow 里先把 `视频转文字_x.y.z_x64-setup.exe` 复制成 `video-to-text_x.y.z_x64-setup.exe` 再上传。产品名仍是「视频转文字」（`productName` 未变），用户无感 |
+
 ## 16. 移动端壳（Android，PR9 新增）
 
 | 功能 | 锁定要求 |
@@ -272,6 +292,12 @@
 - [ ] 返回键决策：非首页 + 有上一页 → 回退；非首页 + 无上一页 → 回首页；首页 → 二次确认后退出（E2E 回归 28，纯函数断言，覆盖 `pathname` 为 `null` 与空串两种边界）
 - [ ] 安全区四边齐：注入 `--safe-area-inset-*` 后 `body` 四边 padding 全部生效、顶栏 `getBoundingClientRect().top >= 安全区顶部`、sticky 的 `top` 含安全区（E2E 回归 29）
 - [ ] 不可达横幅也让开状态栏（fixed 定位不吃 body 的 padding，E2E 回归 29b）
+- [ ] 自动更新入口：桌面端构建里有「检查更新」按钮，网页 / 移动端构建里 **0 个**（`node scripts/verify-shell.mjs desktop` 18 项 + E2E 回归 30g）
+- [ ] 版本比较：`0.1.10 > 0.1.9`、降级不算更新、解析失败不比当前新（E2E 回归 30 / 30b）
+- [ ] 更新只在桌面壳 + 生产构建下启用（E2E 回归 30c）
+- [ ] 下载进度总量未知时返回 `null` 而不是瞎猜百分比（E2E 回归 30d）
+- [ ] `latest.json` 的签名能解出 `version:` 与安装包文件名，URL 与 tag 一致（发版前用 `make-latest-json.mjs` 的输出核对）
+- [ ] 发版前三处版本号一致：`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`（`release-desktop.yml` 会拦）
 - [ ] `pnpm lint && pnpm build` 通过
 
 > 修改本文件（新增/放宽锁定项）需要用户明确确认。
