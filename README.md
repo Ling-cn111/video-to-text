@@ -27,13 +27,13 @@
 当前版本 **v0.1.5**，点文件名直接下载（无需先进 Release 页找）：
 
 - [**video-to-text_0.1.5_x64-setup.exe**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.5/video-to-text_0.1.5_x64-setup.exe) — 3.4 MB，NSIS，普通用户双击安装，**无需管理员权限**（推荐）
-- [**video-to-text_0.1.5_x64_zh-CN.msi**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.5/video-to-text_0.1.5_x64_zh-CN.msi) — 5.0 MB，WiX，适合企业组策略 / 静默分发
+- [**video-to-text_0.1.5_x64_zh-CN.msi**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.5/video-to-text_0.1.5_x64_zh-CN.msi) — 4.7 MB，WiX，适合企业组策略 / 静默分发
 
 校验和（`certutil -hashfile <文件> SHA256`）：
 
 ```
-94cb927a49ebbaa5914613e08bb7dd89eb2b2264f09a6dcedbb68f9e0dd031a9  video-to-text_0.1.5_x64-setup.exe
-e3dad7a23459d1f82fa9dea138e42da15f7182efc17c163e18aaf34fb4e6ef5d  video-to-text_0.1.5_x64_zh-CN.msi
+c617ee4dbcfcc3c19c095f74c48787f8fe5bbef155a59c2b88902e940609e382  video-to-text_0.1.5_x64-setup.exe
+876d118b33e5cfea1afb68113f46baec3868448de4a3196218f849eb8d6e0607  video-to-text_0.1.5_x64_zh-CN.msi
 ```
 
 > **请使用 v0.1.5**：它新增了**桌面端自动更新**——装上这一版之后，后续版本不用再手动下载，客户端会在后台检查并提示更新。此外沿用 v0.1.4 的深色模式、错误页与安全响应头。更早版本的问题见 [v0.1.5 Release 说明](https://github.com/Ling-cn111/video-to-text/releases/tag/v0.1.5)。
