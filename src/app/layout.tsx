@@ -22,7 +22,7 @@ const geistMono = localFont({
 });
 
 /** 站点描述：支持平台由构建能力决定（真实后端只接了 B站），不写死「B站 / 抖音」 */
-const SITE_DESCRIPTION = `粘贴${supportedPlatformsShortText()}视频链接，自动生成带时间戳的文字稿与 AI 总结，支持导出 TXT / Markdown。`;
+const SITE_DESCRIPTION = `粘贴${supportedPlatformsShortText()}视频链接，自动生成带时间戳的文字稿与 AI 总结，支持导出 TXT / Markdown 与 SRT / VTT 字幕。`;
 
 export const metadata: Metadata = {
   // 规范地址：og 图、canonical 链接需要绝对 URL，缺失时 Next 构建会警告
