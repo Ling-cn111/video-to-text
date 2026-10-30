@@ -24,6 +24,24 @@
     --input: 220 13% 91%;
     --ring: 262.1 83.3% 57.8%;
     --radius: 0.5rem;
+
+    /*
+     * 安全区四边（状态栏 / 刘海 / Home 指示条 / 横屏圆角）。
+     *
+     * 优先取 Capacitor 注入的 `--safe-area-inset-*`：Android WebView 对 `env()`
+     * 的支持取决于 WebView 版本，SystemBars 插件在 `css` 模式下会把四个值显式
+     * 写进 <html> 的行内样式（见 SystemBars.java 的 injectSafeAreaCSS）。
+     * 浏览器与 iOS PWA 没有这些变量，回落到 `env()`。
+     *
+     * 为什么优先变量而不是直接 env()：Capacitor 走 `native` 模式时会把变量写成
+     * 0px（四边已由原生 padding 处理），此时走变量分支正好是 0，不会重复留白；
+     * 而 `env()` 在这种模式下仍可能返回非零值（Chromium 按显示切口算，不看 view
+     * padding），直接用它会让内容被顶两遍。
+     */
+    --safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+    --safe-right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
+    --safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+    --safe-left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
   }
 
   .dark {
@@ -59,18 +77,24 @@
 }
 
 /*
- * 移动端 PWA 安全区（配合 layout.tsx 的 viewportFit: "cover"）。
- * 安装到主屏后 iOS/Android 会去掉浏览器地址栏，内容会顶到刘海与 Home 指示条下方；
- * 用 env() 补内边距。max() 兜底不支持 env() 的旧浏览器（回退 0px，不影响桌面端）。
+ * 安全区留白（配合 layout.tsx 的 viewportFit: "cover"）。
+ *
+ * 三个地方都要用，缺一个就会露出一条被遮挡的边：
+ * 1. body 的内边距 —— 页面内容整体让开状态栏与 Home 指示条
+ * 2. 顶栏的 sticky 偏移 —— 滚动时顶栏是相对滚动视口定位的，不会跟着 body 的
+ *    padding 走，必须自己加上 `--safe-top`，否则一滚动就滑到状态栏底下
+ * 3. 固定定位的横幅与 toast —— fixed 元素同样相对视口定位
+ *
+ * 历史坑：这里原来只有 left/right/bottom 三边，注释还写着「只有底部需要额外留白」。
+ * 那个假设在浏览器里成立（有地址栏），在 Capacitor 的全屏 WebView 里不成立：
+ * SystemBars 在 `css` 模式下顶部不设原生 padding，完全交给 CSS，于是顶栏直接
+ * 压到状态栏上 —— 真机反馈的「顶部与手机的 UI 重叠」就是这条。
  */
 @supports (padding: max(0px)) {
   body {
-    padding-left: env(safe-area-inset-left);
-    padding-right: env(safe-area-inset-right);
-  }
-
-  /* 只有底部需要额外留白：避免固定底栏被 Home 指示条遮挡 */
-  body {
-    padding-bottom: env(safe-area-inset-bottom);
+    padding-top: var(--safe-top, 0px);
+    padding-right: var(--safe-right, 0px);
+    padding-bottom: var(--safe-bottom, 0px);
+    padding-left: var(--safe-left, 0px);
   }
 }

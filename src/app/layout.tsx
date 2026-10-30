@@ -89,7 +89,14 @@ export default function RootLayout({
           <SiteHeader />
           <main className="flex-1">{children}</main>
           <RegisterSw />
-          <Toaster richColors position="top-center" />
+          {/* toast 是 fixed 定位，同样会压到状态栏上；把安全区顶部加进偏移量。
+              sonner 的默认偏移是 24px（窄屏 16px），这里在默认值之上再让出 `--safe-top`。 */}
+          <Toaster
+            richColors
+            position="top-center"
+            offset={{ top: "calc(var(--safe-top, 0px) + 24px)" }}
+            mobileOffset={{ top: "calc(var(--safe-top, 0px) + 16px)" }}
+          />
         </ThemeProvider>
       </body>
     </html>

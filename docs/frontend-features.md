@@ -204,7 +204,8 @@
 | 导出必须可等待 | `exportResult` / `exportSubtitles` 返回 `Promise<ShareOutcome>`，**不得退回 fire-and-forget 的 `void download(...)`**：旧实现在 WebView 里失败后用户点完什么也没发生、也没有任何提示，是移动端最典型的「看着能用实际不能用」 |
 | 用户取消分享不是失败 | `ShareOutcome` 的 `cancelled` 分支**不得弹任何提示**（既不报错也不说「已下载」）。手机上误触取消是高频操作，当失败处理会让用户被红条轰炸。`failed` 才提示「导出失败，请重试或换一种格式」 |
 | 成功文案分路径 | `shared` → 「已打开分享面板，选一个应用保存」；`downloaded` → 「已开始下载」。**两者不得共用一句**：手机上分享和下载是两件事，说错用户会去下载目录里找一个不存在的文件 |
-| Android 物理返回键 | `src/hooks/use-android-back.ts` 通过 `@capacitor/app` 的 `backButton` 监听：`history.state.idx > 0` 时 `router.back()`，已在会话第一页时**交还系统**（不调 `exitApp`）。**不得省略这个 hook**：Capacitor 默认行为是「按返回键退出 App」，用户在结果页按返回会直接关掉应用。注册点放根布局（`MobileShellBridge`），**不要逐页注册**——`/processing`、`/result` 是直链入口，逐页注册必漏 |
+| Android 物理返回键 | `src/hooks/use-android-back.ts` 通过 `@capacitor/app` 的 `backButton` 监听，决策交给纯函数 `resolveBackAction(pathname, canGoBack)`（`src/lib/back-navigation.ts`）：**非首页且有上一页 → `router.back()`；非首页但无上一页（冷启动直达 `/result`）→ `router.replace('/')`；已在首页 → 弹「再按一次返回键退出」，2 秒内再按才 `App.exitApp()`**。**禁止用 `history.state.idx` 判断**：那是 Pages Router 的字段，App Router 的 pushState 只写 `__NA` 与 `__PRIVATE_NEXTJS_INTERNALS_TREE`，`idx` 恒为 `undefined`，会让 `router.back()` 一次都不执行（v0.1.3 真机「按返回没反应」的根因）。**也不得只看 `canGoBack`**：结果页「返回首页」走 `router.push('/')`，历史变成 [首页, 结果页, 首页]，只看 `canGoBack` 会在首页按返回退回结果页。pathname 必须走 ref（effect 只依赖 `router`），否则每次跳转都重建监听器，跳转瞬间有真空期 |
+| 安全区必须四边齐 | `src/app/globals.css` 的 `:root` 定义 `--safe-top/right/bottom/left`，取值 **`var(--safe-area-inset-X, env(safe-area-inset-X, 0px))`**（Capacitor 注入优先，浏览器 / iOS PWA 回落 `env()`）。**必须优先变量而不是直接用 `env()`**：Capacitor 走 `native` 模式时把变量写成 0px（原生 padding 已处理），而 `env()` 在该模式下仍可能返回非零（Chromium 按显示切口算，不看 view padding），直接用会顶两遍。**三个使用点缺一不可**：① `body` 四边 padding（内容整体让开）② 顶栏 sticky 的 `top: calc(var(--safe-top) + var(--backend-banner-offset))`——sticky 相对滚动视口定位，不吃 body 的 padding，不加就会一滚动滑到状态栏底下 ③ fixed 元素（不可达横幅的 `top`、sonner 的 `offset` / `mobileOffset`）。v0.1.3 只设了 left/right/bottom 三边、注释还写着「只有底部需要额外留白」，真机表现就是顶栏压住状态栏 |
 | 只在移动端壳内启用 | 返回键监听与 Capacitor 插件 import 都在 `IS_MOBILE_SHELL` 判断之后，网页 / 桌面端不产生任何监听与动态 import（`@capacitor/*` 不会进初始包） |
 | 图标与启动图 | `scripts/gen-android-icons.py` 从 `public/icons/icon-1024.png` 生成 27 个文件。**不用 `@capacitor/assets`**：它依赖 `sharp@0.32`，pnpm 的 build script 策略会让 win32-x64 二进制缺失，直接崩。自适应图标前景层铺满 108dp 画布（源图图案只占中央 43%，落在安全区内），底色 `#7C3AED` 与图标一致（裁切动画会露出这一层） |
 | 签名密钥必须备份 | `android/keystore.properties` + `*.jks` 均已 gitignore，模板见 `keystore.properties.example`。**keystore 丢失 = 已安装用户永远无法升级**（Android 用签名证书判定「是不是同一个应用」），是唯一「做错没法补救」的环节。`versionCode` 已发布后不能回退 |
@@ -268,6 +269,9 @@
 - [ ] 用户取消分享不报错、也不提示「已开始下载」（E2E 回归 27b）；分享成功提示「已打开分享面板，选一个应用保存」（E2E 回归 27c）
 - [ ] 导出函数返回 Promise，不得退回 fire-and-forget（E2E 回归 26 / 26b）
 - [ ] 真机验收（需要插线）：飞行模式冷启动能看到首页与示例链接、按物理返回键不会直接退出 App、导出能拉起系统分享面板并保存到手机、底部导航栏不遮挡「导出」按钮
+- [ ] 返回键决策：非首页 + 有上一页 → 回退；非首页 + 无上一页 → 回首页；首页 → 二次确认后退出（E2E 回归 28，纯函数断言，覆盖 `pathname` 为 `null` 与空串两种边界）
+- [ ] 安全区四边齐：注入 `--safe-area-inset-*` 后 `body` 四边 padding 全部生效、顶栏 `getBoundingClientRect().top >= 安全区顶部`、sticky 的 `top` 含安全区（E2E 回归 29）
+- [ ] 不可达横幅也让开状态栏（fixed 定位不吃 body 的 padding，E2E 回归 29b）
 - [ ] `pnpm lint && pnpm build` 通过
 
 > 修改本文件（新增/放宽锁定项）需要用户明确确认。

@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { exportResult, exportSubtitles } from "../src/lib/export";
+import { isHomePath, resolveBackAction } from "../src/lib/back-navigation";
 import type { TranscriptItem, VideoInfo } from "../src/lib/types";
 
 /**
@@ -154,5 +155,90 @@ test.describe("移动端导出改造（浏览器行为）", () => {
     await page.getByTestId("export-srt").click();
 
     await expect(page.getByText("已打开分享面板，选一个应用保存")).toBeVisible();
+  });
+});
+
+/**
+ * 真机反馈的两个缺陷的回归测试（v0.1.4）。
+ *
+ * 这两条都只能在真机上「看见」，但判断逻辑与 CSS 结果都能在浏览器里断言：
+ * - 返回键：决策是纯函数，直接断言
+ * - 安全区：把 Capacitor 注入的 CSS 变量手工写进 <html>，断言布局是否让开
+ *
+ * 为什么要这么测：上一版把「返回键判断」写成读 `history.state.idx`，
+ * 浏览器里不报错、构建全绿，装到真机上才发现按返回没反应。
+ */
+test.describe("移动端壳：返回键与安全区（v0.1.4 真机反馈）", () => {
+  test("回归 28：非首页按返回要回退，首页按返回才退出", () => {
+    // 结果页、进度页都必须能回退 —— 这是用户报的「返回不了首页」
+    expect(resolveBackAction("/result", true)).toBe("back");
+    expect(resolveBackAction("/processing", true)).toBe("back");
+    // 冷启动直达 /result（历史里没有上一页）时回首页，而不是退出应用
+    expect(resolveBackAction("/result", false)).toBe("home");
+    // 首页是根：按返回应该走「再按一次退出」，不是再退一页
+    expect(resolveBackAction("/", true)).toBe("exit");
+    expect(resolveBackAction("/", false)).toBe("exit");
+    // 静态壳 trailingSlash 下可能出现空串
+    expect(resolveBackAction("", false)).toBe("exit");
+    expect(isHomePath("/")).toBe(true);
+    expect(isHomePath("")).toBe(true);
+    expect(isHomePath("/result")).toBe(false);
+    // 未水合时 pathname 为 null：不能当成首页，否则会误退出应用
+    expect(isHomePath(null)).toBe(false);
+  });
+
+  test("回归 29：注入安全区变量后，页面顶部让开状态栏", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("header")).toBeVisible();
+
+    // 桌面浏览器里 env() 全为 0，此时不应有任何多余留白
+    expect(await page.evaluate(() => getComputedStyle(document.body).paddingTop)).toBe("0px");
+
+    // 模拟 Capacitor SystemBars 注入（真机上由原生侧写进 <html> 行内样式）
+    await page.evaluate(() => {
+      const root = document.documentElement.style;
+      root.setProperty("--safe-area-inset-top", "44px");
+      root.setProperty("--safe-area-inset-bottom", "20px");
+      root.setProperty("--safe-area-inset-left", "10px");
+    });
+
+    const padding = await page.evaluate(() => {
+      const style = getComputedStyle(document.body);
+      return {
+        top: style.paddingTop,
+        bottom: style.paddingBottom,
+        left: style.paddingLeft,
+      };
+    });
+    expect(padding.top).toBe("44px");
+    expect(padding.bottom).toBe("20px");
+    expect(padding.left).toBe("10px");
+
+    // 顶栏必须整体落在状态栏下方（sticky 是相对视口定位的，不吃 body 的 padding）
+    const headerTop = await page.evaluate(() => {
+      const header = document.querySelector("header");
+      if (!header) return -1;
+      return Math.round(header.getBoundingClientRect().top);
+    });
+    expect(headerTop).toBeGreaterThanOrEqual(44);
+
+    // sticky 的偏移量本身也要带上安全区，否则滚动时顶栏会滑回状态栏底下
+    expect(await page.evaluate(() => getComputedStyle(document.querySelector("header")!).top)).toBe(
+      "44px",
+    );
+  });
+
+  test("回归 29b：不可达横幅也让开状态栏，不与状态栏图标重叠", async ({ page }) => {
+    // 横幅是 fixed 定位，body 的 padding-top 管不到它 —— 这里断言它自己带了偏移
+    await page.route("**/health*", (route) => route.fulfill({ status: 503, body: "down" }));
+    await page.goto("/");
+    await page.evaluate(() => {
+      document.documentElement.style.setProperty("--safe-area-inset-top", "44px");
+    });
+
+    const banner = page.getByTestId("backend-unreachable-banner");
+    await expect(banner).toBeVisible();
+    const top = await banner.evaluate((node) => Math.round(node.getBoundingClientRect().top));
+    expect(top).toBeGreaterThanOrEqual(44);
   });
 });
