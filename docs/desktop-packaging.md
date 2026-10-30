@@ -171,6 +171,47 @@ src-tauri/target/release/bundle/nsis/<产品名>_<版本>_x64-setup.exe
 2. 静默装 NSIS 包 → 开始菜单出现快捷方式 → 启动 → 窗口标题与尺寸正确
 3. 首页粘贴真实链接 → 解析 → 进度页 → 结果页出字幕与 AI 总结
 4. 静默卸载 → 安装目录与快捷方式均无残留
+5. `node scripts/verify-shell.mjs desktop` — 18 项静态壳断言（含自动更新入口、无 Tauri 桥时如实提示）
+
+---
+
+## 5.1 自动更新（v0.1.5 起）
+
+Tauri 的更新机制是「**签名 + 一份 JSON 清单**」，两者缺一不可：
+
+1. **一次性**：生成密钥对并离线保存私钥
+   ```bash
+   pnpm tauri signer generate -w D:/tauri-keys/vtt-updater.key --ci
+   ```
+   公钥填进 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`（已填好，改密钥才需要动）。
+   **私钥丢失 = 已安装客户端永远收不到自动更新**，必须离线备份；私钥入库等于任何人都能发更新。
+
+2. **每次构建**：把私钥通过环境变量传给 bundler，`bundle.createUpdaterArtifacts: true` 会让它额外产出 `.sig`
+   ```bash
+   TAURI_SIGNING_PRIVATE_KEY="$(cat D:/tauri-keys/vtt-updater.key)" \
+   TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" \
+   pnpm tauri build
+   ```
+   日志里应出现 `Finished 2 updater signatures at:` 两行（msi + nsis 各一个）。
+
+3. **生成清单**：
+   ```bash
+   node scripts/make-latest-json.mjs --version 0.1.5 --out latest.json
+   ```
+   它从 `bundle/` 里找 `.sig` 与安装包，拼出 Tauri 要求的格式。**缺 `.sig` 会直接失败退出**——
+   无签名的包客户端装不上，宁可发版失败也不要发出去。
+
+4. **发布**：`latest.json` 与安装包上传到**同一个** Release，且资产名必须是 ASCII
+   （`gh` 上传中文文件名会被剥成 `_`）。`latest.json` 里的 `url` 指向 `releases/download/<tag>/<asset>`。
+
+`endpoints` 配的是 `releases/latest/download/latest.json`，所以**只要最新 Release 里带这个文件就生效**，
+不用改客户端。发版流程已自动化：推 `v*` tag 触发 `.github/workflows/release-desktop.yml`，
+它在装依赖前先校验三处版本号一致（`package.json` / `tauri.conf.json` / `Cargo.toml`），
+然后构建 → 签名 → 生成 `latest.json` → `gh release create`。
+
+**已知限制**：端点在 `github.com` 上，国内可能不可达。检查失败时客户端静默跳过（自动检查）或
+提示失败原因 + 给出 Release 页链接（手动检查）。要覆盖国内用户需把 `latest.json` 与安装包
+放到可达域名（如阿里云 FC 反代），属独立改造。
 
 ---
 
