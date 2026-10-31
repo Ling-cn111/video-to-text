@@ -264,6 +264,18 @@ if (TARGET === 'mobile') {
     .evaluate((el) => el.tagName.toLowerCase())
     .catch(() => '')
   check('检查更新按钮是 button', checkButtonTag === 'button', `实际 <${checkButtonTag}>`)
+
+  // —— 11b. 应用内下载并安装的接线真的进了产物 ——
+  // 只声明 Manifest 权限不够：JS 侧若不调 ApkInstaller 插件，用户点「下载并安装」
+  // 依旧会被弹到浏览器。这两个字符串是 `src/lib/apk-installer.ts` 里
+  // registerPlugin 的插件名与原生侧的缓存路径，两边分居 JS/Java，
+  // 只能靠产物里同时出现来证明它们都被打进来了。
+  const apkHits = await scanOutFor(['ApkInstaller', 'updates/video-to-text-update.apk'])
+  check('移动端产物含安装插件名 ApkInstaller', apkHits.ApkInstaller)
+  check(
+    '移动端产物含原生侧约定的 APK 缓存路径',
+    apkHits['updates/video-to-text-update.apk'],
+  )
 }
 
 if (TARGET === 'desktop') {

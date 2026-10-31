@@ -267,7 +267,22 @@
 | 上传必须 `--clobber` | 重跑流水线时资产已存在，不加这个参数 `gh release upload` 直接失败。桌面端与 Android 两个 job 都可能重跑，这条对两者都成立 |
 | 不要给 Android job 加 `init-mirrors.gradle` | `android/gradle/init-mirrors.gradle` 是给**国内网络**绕开 `dl.google.com` 重置用的。GitHub 托管 runner 在海外，官方仓库本来就通，多加一层镜像只会多一次解析开销 |
 
-## 19. 回归检查清单（改前端后必跑）
+## 19. 应用内下载并安装 APK（PR15 新增）
+
+手机端的「检查更新」查到新版本后，**不再跳到浏览器**，而是在 App 内下载 APK 并拉起系统安装器。v0.1.7 及更早的实现是 `openExternal(apkUrl)`，用户点完会被弹出 App、落到 GitHub 页面、自己找文件；这条路径在手机上是三步操作，多数人会以为「点了没反应」。
+
+| 功能 | 锁定要求 |
+| --- | --- |
+| 下载必须走原生 HTTP，不能用 fetch | `src/lib/apk-installer.ts` 的 `downloadApk` 必须用 `Filesystem.downloadFile`。GitHub Release 的 APK 直链会 302 到 `objects.githubusercontent.com`，**那个域没有 CORS 头**，WebView 里 `fetch` 一定失败；`downloadFile` 是原生 HTTP，不受同源策略约束，而且直接落盘，不用把 4 MB 读进内存（E2E 回归 35） |
+| 缓存路径两边必须逐字一致 | JS 侧 `APK_CACHE_PATH = 'updates/video-to-text-update.apk'` 与 Java 侧 `ApkInstallerPlugin.DEFAULT_PATH` 是同一个字符串写在两个语言里。改一侧忘另一侧的表现是「下载显示成功、点安装报『安装包还没下载好』」——从日志到 UI 都看不出根因（E2E 回归 35 直接比对两个字符串） |
+| 装不了必须留浏览器出口 | 原生插件没打进包（`checkInstallPermission()` 返 null）、下载失败、Release 里没有 `.apk` 资产，三种情况都要能退回 `openExternal`。**不能只留一个会失败的按钮**：用户不知道是网络问题还是 App 坏了（E2E 回归 35d / 35e） |
+| 首次需授权时不能自己循环重试 | Android 8+ 要求用户逐应用授权「安装未知应用」。`requestInstallPermission()` 只是把人送到系统设置页（`Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES`），**跳走之后必须停下来等用户回来再点**，不能原地 `await` 然后接着下载：用户此时还在设置页，回来时 App 已经报「失败」 |
+| Manifest 权限与 FileProvider 缺一不可 | `<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />` 没有时报 `canRequestPackageInstalls()` 恒 false，带 apk 的 `ACTION_VIEW` 被系统直接拒绝；`FileProvider.getUriForFile` + `FLAG_GRANT_READ_URI_PERMISSION` + `FLAG_ACTIVITY_NEW_TASK` 三个都缺一不可，`file://` 在 `targetSdkVersion 36` 上抛 `FileUriExposedException`（E2E 回归 35b / 35c） |
+| 只能做到「收进 App」，不能真静默安装 | Android 不允许普通应用静默安装自己，唯一静默路径是 Device Owner / 企业 MDM，个人应用拿不到。**不要为了「一步到位」去申请这类权限或被引导去研究 `pm install`**：做不到，而且会让应用无法上架。极限就是「下载 + 拉起安装器」，最后那下必须用户点 |
+| 按钮文案要说清会发生什么 | 主按钮是「下载并安装」，不是「下载新版本」也**不是**「去浏览器下载」。后者会让用户以为还要再操作一次；前者在下载中是「下载中 N%」（`contentLength` 为 -1 时退回「准备中…」，不能显示 `NaN%`）（E2E 回归 35e） |
+| 进度监听器必须移除 | `Filesystem.addListener('progress')` 是全局注册，每次检查更新都会新增一个；不 `remove()` 会随使用次数叠加，后面的下载会推多个重复进度（`src/lib/apk-installer.ts` 的 `finally` 里做了清理） |
+
+## 20. 回归检查清单（改前端后必跑）
 
 - [ ] 结果页默认显示「全文阅读」，文章排版无时间戳
 - [ ] Tab 可切换到「时间戳定位」，列表 + 复制功能正常
@@ -353,6 +368,10 @@
 - [ ] 热词存原始文本：`localStorage.hotwords` 保留用户敲的分隔符，刷新后输入框回填且保持展开（E2E 回归 34e）
 - [ ] 发版工作流必须含 `android` job（`needs: build` + `runs-on: ubuntu-latest`），签名密钥从 Secrets 还原且缺失即失败，APK 版本号与 tag 一致、上传带 `--clobber`（E2E 回归 34f）
 - [ ] `latest.json` 的签名能解出 `version:` 与安装包文件名，URL 与 tag 一致（发版前用 `make-latest-json.mjs` 的输出核对）
+- [ ] 应用内更新：JS 的 `APK_CACHE_PATH` 与 Java 的 `DEFAULT_PATH` 逐字一致；下载走 `Filesystem.downloadFile` 而非 `fetch`（E2E 回归 35）
+- [ ] 应用内更新接线齐全：Manifest 有 `REQUEST_INSTALL_PACKAGES`、`MainActivity` 注册 `ApkInstallerPlugin`、插件用 `FileProvider` + 两个 Flag、`file_paths.xml` 覆盖 `cache-path`（E2E 回归 35b / 35c）
+- [ ] 应用内更新在非移动壳里全部安全降级（返回 null / false / 「当前环境不支持应用内安装」），网页构建里 `mobile-update` 数量为 0（E2E 回归 35d / 35f）
+- [ ] 主按钮文案是「下载并安装」，下载中显示 `N%`、`contentLength` 缺失时显示「准备中…」；失败一定留浏览器出口（E2E 回归 35e）
 - [ ] 发版前三处版本号一致：`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`（`release-desktop.yml` 会拦）
 - [ ] `pnpm lint && pnpm build` 通过
 
