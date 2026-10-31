@@ -231,7 +231,22 @@
 | 签名密钥必须备份 | `android/keystore.properties` + `*.jks` 均已 gitignore，模板见 `keystore.properties.example`。**keystore 丢失 = 已安装用户永远无法升级**（Android 用签名证书判定「是不是同一个应用」），是唯一「做错没法补救」的环节。`versionCode` 已发布后不能回退 |
 | 依赖镜像 | `android/build.gradle` 与 `android/gradle/init-mirrors.gradle` 把阿里云 Maven 镜像排在最前。**`init-mirrors.gradle` 不能删**：Capacitor 子工程的 `build.gradle` 自带 buildscript 且 `google()` 在最前，`pnpm install` 会覆盖对 node_modules 的修改，只能靠 `beforeProject` 追加。构建命令必须带 `--init-script gradle/init-mirrors.gradle` |
 
-## 17. 回归检查清单（改前端后必跑）
+## 17. 系统分享接收与链接规范化（PR12 新增）
+
+| 功能 | 锁定要求 |
+| --- | --- |
+| 只声明 SEND，不声明 BROWSABLE | `AndroidManifest.xml` 里只有一个额外 intent-filter：`android.intent.action.SEND` + `category.DEFAULT` + `mimeType="text/plain"`。**不得声明 `https://*.bilibili.com` 的 VIEW 过滤**：我们没有那些域名的所有权，过不了 App Links 的 `autoVerify`，于是用户每点一次 B站 链接都会弹「用哪个应用打开」——把一次便利变成长期打扰。分享意图只出现在用户主动点「分享」之后，没有这个问题（E2E 回归 32e 断言 manifest 里没有 `BROWSABLE`） |
+| 插件注册必须在 `super.onCreate` 之前 | `MainActivity.onCreate` 先 `registerPlugin(ShareIntentPlugin.class)` 再 `super.onCreate(savedInstanceState)`。`BridgeActivity.onCreate` 内部会调 `load()`，而 `load()` 末尾会 `onNewIntent(getIntent())` 把**冷启动**的分享意图派发给插件；晚于 super 注册的话冷启动那一次分享直接丢掉（热启动不受影响，所以特别容易漏测） |
+| 事件必须 retain | `notifyListeners(EVENT_SHARE, payload, true)` 第三个参数必须为 `true`。冷启动时 WebView 刚起、React 还没水合，JS 侧监听器必然晚于原生派发；`retainUntilConsumed` 会把参数暂存，等 JS 首次 `addListener` 时补发（`Plugin.sendRetainedArgumentsForEvent`）。**不要额外提供「主动拉取」接口**：补发 + 拉取会叠在一起，同一次分享提交两次任务 |
+| 分享文案是整段文本 | 原生侧只把 `EXTRA_TEXT` 原样递给 JS，**不做任何 URL 猜测**。抽取在 `src/lib/share-intent.ts` 的 `sharedTextToVideoInput`：先 `extractFirstUrl` 抽链接，抽不到再试裸 BV/av 号，都不行返回 `null` 由调用方提示。`extractFirstUrl` **不能用 `\S+` 这类宽松正则**：B站 分享文案是「【标题】 看看这个 https://b23.tv/xxx 复制打开」，宽松正则会把中文一起吞掉（E2E 回归 32 / 32b） |
+| 认不出链接时不提交 | `useShareIntent` 在 `sharedTextToVideoInput` 返回 `null` 时**不调 `submitUrl`**，而是 toast 说明「没有在分享内容里找到视频链接」并回首页。分享来的可能是任意 text/plain（聊天记录、商品链接），静默失败或提交垃圾都会让用户困惑 |
+| 同一条分享只处理一次 | `shouldIgnoreShare` 用「同文本 + `SHARE_DEDUPE_MS`（5 秒）窗口」去重。分享事件是 retain 的，若 effect 因 StrictMode 或路由切换重建监听器，补发与实时派发可能落进两个监听器，用户会看到「解析了两次」（E2E 回归 32d） |
+| 送后端必须是 canonical 链接 | `submitUrl` 送的是 `canonicalUrlFor(video) ?? url`，不是用户原始输入。**原因**：B站 分享出来的是 `b23.tv` 短链，而后端 `subtitles.py` 与 `audio.py` 的 `_extract_bvid` 只认 `bilibili.com` 域名，短链会让「字幕快路径」与「playurl 音频快路径」双双失效，退回 yt-dlp 下载 + ASR —— 结果一样但慢一大截。`canonicalUrlFor` 认不出模板时返回 `null`，调用方保留原链接，**不许拼一个必然 404 的地址**（E2E 回归 32c） |
+| 只在移动端壳内启用 | 分享监听与 `@capacitor/core` 的动态 import 都在 `IS_MOBILE_SHELL` 判断之后，网页 / 桌面端不产生任何监听（E2E 回归 32f） |
+| 分享后直接开转 | 用户从 B站 点「分享 → 视频转文字」，意图已经明确，直接 `submitUrl` + 跳进度页，**不再要求回首页确认一次**。这与首页表单的交互刻意不同：表单是「用户主动来粘贴」，需要确认；分享是「用户已经在别处确认过了」 |
+| 产物里必须有原生插件与 JS 监听 | `node scripts/verify-shell.mjs mobile` 扫描 `out/` 的 JS 产物，断言含 `ShareIntent` 与分享失败提示文案。**只断言原生插件存在是不够的**：JS 侧不注册监听器的话，用户分享过来会落在首页什么都不发生，而构建日志全绿 |
+
+## 18. 回归检查清单（改前端后必跑）
 
 - [ ] 结果页默认显示「全文阅读」，文章排版无时间戳
 - [ ] Tab 可切换到「时间戳定位」，列表 + 复制功能正常
@@ -284,18 +299,26 @@
 - [ ] 解析到内网的域名同样被拦：`127.0.0.1.nip.io` / `localtest.me` / `10.0.0.5.nip.io` / `100.100.100.200` 全部返回 400，而 `api.openai.com` / `api.deepseek.com` 正常放行（后端 `test_normalize_base_url_rejects_hostname_resolving_to_loopback` / `_private_ip` / `_when_dns_lookup_fails` / `_accepts_public_hostname` + `test_shared_address_space_is_blocked`）
 - [ ] 换服务商后旧总结不被复用：保存或清除配置会清空 `summary:` 前缀的 sessionStorage，避免点「重试总结」命中旧缓存造成「假成功」（E2E 回归 25）
 - [ ] 直接输入 AV/BV 号：`BV1xx411c7mD` / `av170001` 能直接解析并补成完整链接，小写 `bv` 也能识别且规范成大写；纯数字（抖音号）不被误认成 av 号（E2E 回归 24 / 24b / 24c）
-- [ ] 移动端壳：`pnpm build:mobile` 后 `out/` 里 `NEXT_PUBLIC_USE_MOCK` 为 false、`IS_STATIC_SHELL` 与 `IS_MOBILE_SHELL` 均内联为 true（`node scripts/verify-shell.mjs mobile` 共 15 项）
+- [ ] 移动端壳：`pnpm build:mobile` 后 `out/` 里 `NEXT_PUBLIC_USE_MOCK` 为 false、`IS_STATIC_SHELL` 与 `IS_MOBILE_SHELL` 均内联为 true（`node scripts/verify-shell.mjs mobile` 共 22 项）
 - [ ] 导出改造未破坏桌面端：网页上导出仍触发下载并提示「已开始下载」（E2E 回归 27）
 - [ ] 用户取消分享不报错、也不提示「已开始下载」（E2E 回归 27b）；分享成功提示「已打开分享面板，选一个应用保存」（E2E 回归 27c）
 - [ ] 导出函数返回 Promise，不得退回 fire-and-forget（E2E 回归 26 / 26b）
-- [ ] 真机验收（需要插线）：飞行模式冷启动能看到首页与示例链接、按物理返回键不会直接退出 App、导出能拉起系统分享面板并保存到手机、底部导航栏不遮挡「导出」按钮
+- [ ] 真机验收（需要插线）：飞行模式冷启动能看到首页与示例链接、按物理返回键不会直接退出 App、导出能拉起系统分享面板并保存到手机、底部导航栏不遮挡「导出」按钮、**在 B站 App 点「分享」能看到「视频转文字」并直接开转**
 - [ ] 返回键决策：非首页 + 有上一页 → 回退；非首页 + 无上一页 → 回首页；首页 → 二次确认后退出（E2E 回归 28，纯函数断言，覆盖 `pathname` 为 `null` 与空串两种边界）
 - [ ] 安全区四边齐：注入 `--safe-area-inset-*` 后 `body` 四边 padding 全部生效、顶栏 `getBoundingClientRect().top >= 安全区顶部`、sticky 的 `top` 含安全区（E2E 回归 29）
 - [ ] 不可达横幅也让开状态栏（fixed 定位不吃 body 的 padding，E2E 回归 29b）
-- [ ] 自动更新入口：桌面端构建里有「检查更新」按钮，网页 / 移动端构建里 **0 个**（`node scripts/verify-shell.mjs desktop` 18 项 + E2E 回归 30g）
+- [ ] 自动更新入口：桌面端构建里有「检查更新」按钮，网页 / 移动端构建里 **0 个**（`node scripts/verify-shell.mjs desktop` 20 项 + E2E 回归 30g）
 - [ ] 版本比较：`0.1.10 > 0.1.9`、降级不算更新、解析失败不比当前新（E2E 回归 30 / 30b）
 - [ ] 更新只在桌面壳 + 生产构建下启用（E2E 回归 30c）
 - [ ] 下载进度总量未知时返回 `null` 而不是瞎猜百分比（E2E 回归 30d）
+- [ ] 桌面端「打开发布页」是 button 而非 `<a target=_blank>`（WebView2 会静默吞掉新窗口，表现为「点了没反应」；`verify-shell.mjs desktop` 断言对话框内 `target=_blank` 数量为 0）
+- [ ] 手机端检查更新入口在**设置面板**里（`mobile-update` 区块 + 当前版本号 + `mobile-check-update` 是 button），顶栏不渲染桌面端入口（`verify-shell.mjs mobile` 22 项）
+- [ ] 分享文案能抽出链接：`"【标题】 看看这个 https://b23.tv/AbCdEfG 复制打开"` → `https://b23.tv/AbCdEfG`；裸号补成完整链接；认不出返回 `null` 不瞎猜（E2E 回归 32）
+- [ ] 抽链接不吞中文、不带尾随标点，尾随文字不会被百分号编码进 path（E2E 回归 32b）
+- [ ] 送后端的是 canonical 链接：`b23.tv` 短链按 videoId 还原成 `https://www.bilibili.com/video/<id>`，认不出形态返回 `null` 保留原链接（E2E 回归 32c）
+- [ ] 同一条分享 5 秒内不重复处理，不同文本一律处理，空文本不提交（E2E 回归 32d）
+- [ ] Android manifest 只声明 `SEND` + `text/plain`，**没有** `BROWSABLE`；`MainActivity` 在 `super.onCreate` 之前 `registerPlugin`；插件用 `notifyListeners(..., true)`（E2E 回归 32e）
+- [ ] 移动端产物里含 `ShareIntent` 与分享失败提示文案（`verify-shell.mjs mobile` 扫描 `out/` 的 JS，证明监听器真的被打包）
 - [ ] `latest.json` 的签名能解出 `version:` 与安装包文件名，URL 与 tag 一致（发版前用 `make-latest-json.mjs` 的输出核对）
 - [ ] 发版前三处版本号一致：`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`（`release-desktop.yml` 会拦）
 - [ ] `pnpm lint && pnpm build` 通过

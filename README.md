@@ -8,6 +8,7 @@
 - **三种安装形态**：Web PWA（配好可达域名后可装到主屏幕）、Windows 桌面安装包（Tauri）、Android APK（Capacitor）——后两者资源随包分发，**不依赖域名可达性**
 - **桌面端自动更新**：Windows 版启动后自动检查新版本，顶栏提示一键下载安装，装一次之后不用再手动找安装包；下载与安装始终由你点确认，不会偷偷占带宽
 - **手机上也能导出**：App 内点导出会拉起系统分享面板（存到文件 / 发给微信），不再依赖浏览器下载——`blob:` 下载在 WebView 里根本不会落地
+- **从 B站 App 直接分享过来**：在 B站 点「分享 → 视频转文字」，链接直接进转写，不用先复制再切回来粘贴（这是安装版相对网页版的实际便利）
 - **深色模式与自适阅读**：浅色 / 深色 / 跟随系统三档；全文可调字号、搜索高亮、按章节跳转
 - **字幕文件导出**：除阅读用的 TXT / Markdown（零时间戳）外，还可导出 SRT / VTT 字幕，直接挂到播放器；两类产物语义相反，入口分组、绝不混用
 - **最近转写**：首页记住最近 8 条任务，关掉标签页也能找回；转写期间误关会先确认一次
@@ -54,6 +55,7 @@ f56d8166a32a17c17c5c781a2580d9106253a6486cebc95faccbb25f0246a8c2  video-to-text_
 
 > 安装包已用固定 keystore 签名，后续版本可直接覆盖升级；首次安装需在系统里允许「安装未知来源应用」。
 > 手机上装的是**本地资源**，所以 `*.vercel.app` 被墙不影响 App 使用；只有 API 请求需要联网（后端在阿里云 FC，可达）。
+> **从 B站 分享**：在 B站 App 里点「分享」→ 选「视频转文字」，链接直接进转写（不用先复制再切回来）。
 
 现状：
 
@@ -205,6 +207,7 @@ src-tauri/                # Tauri 桌面端壳
 | API 契约（接口 / 错误码 / 路由约定） | [docs/api-contract.md](docs/api-contract.md) |
 | 桌面端打包指南（WiX / NSIS / 国内镜像） | [docs/desktop-packaging.md](docs/desktop-packaging.md) |
 | Android 包壳的不变量与踩坑 | [docs/frontend-features.md](docs/frontend-features.md) 第 16 节 |
+| 系统分享接收（intent-filter、短链还原） | [docs/frontend-features.md](docs/frontend-features.md) 第 17 节 |
 | 桌面端自动更新（签名、发版流程、不变量） | [docs/frontend-features.md](docs/frontend-features.md) 第 15 节 |
 | ASR 准确率评测基准（绝对 CER） | [docs/asr-benchmark.md](docs/asr-benchmark.md) |
 | 异步架构改造侦察报告 | [docs/s2-async-recon.md](docs/s2-async-recon.md) |
