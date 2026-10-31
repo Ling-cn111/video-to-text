@@ -15,6 +15,7 @@
 - **进度页给的是真实反馈**：当前阶段剩余时间预估、按阶段自动退避的轮询（10 秒内 800ms → 之后 3s）、切到后台暂停轮询
 - **自带 API Key（BYOK，可自由换服务商）**：右上角「API 设置」可填自己的 **Key + 接口地址 + 模型名**，任何兼容 OpenAI `chat/completions` 的服务商都能用（DeepSeek / 百炼 / Moonshot / 智谱 / 硅基流动 / OpenAI / 自建中转），用各自的额度、不占站点配额；Key 只存在本机浏览器，生成总结时随请求头发给后端，不进请求体、不落库、不写日志。语音识别用的是免费模型，不需要填 Key
 - **直接输入视频号**：`BV1xx411c7mD`、`av170001` 这类裸号可以直接粘进首页输入框，不必凑出完整链接
+- **热词可选填**：人名 / 产品名 / 专业术语（逗号或顿号分隔，最多 12 个）会进语音识别的提示词，减少「听得见音但猜错字」；命中字幕快路径时用不到，其余流程不受影响
 - **限流有明确说法**：触发 429 时显示「请求太频繁」并给出冷却倒计时，冷却期内禁用重试（重试本身也是 POST，必然再撞限流）
 
 | | 入口 |
@@ -80,6 +81,9 @@ cd android
 ```
 
 发布版签名：把 `android/keystore.properties.example` 复制成 `keystore.properties` 并填入 keystore 路径与密码，然后 `assembleRelease`。**keystore 必须备份**——丢了之后已安装用户永远无法升级。
+
+> **日常发版不用自己跑这些**：推 `v*` tag 会触发 `release-desktop.yml`，桌面端与 APK 都由 CI 构建并上传到同一个 Release。
+> 上面的命令是本地想先看一眼产物时才用。
 
 > **`--init-script gradle/init-mirrors.gradle` 不能省**：Capacitor 子工程的 `build.gradle` 把 `google()` 排在最前，
 > 直连 `dl.google.com` 在国内会卡十几分钟再超时失败。这个 init script 在子工程脚本求值前插入阿里云镜像。
@@ -226,7 +230,7 @@ src-tauri/                # Tauri 桌面端壳
 - PWA 在国内手机暂不可安装：`*.vercel.app` 被 DNS 污染与 SNI 阻断，需换自定义域名
 - 桌面端安装包未做代码签名，SmartScreen 会提示「未知发布者」；**v0.1.5 起有自动更新**（检查走 GitHub，国内可能连不上，此时静默跳过，可手动点「检查更新」）
 - **Android 安装包未上应用商店**，只发在 GitHub Release（需自行下载 APK 侧载，国内访问 `github.com` 可能需代理）；iOS 需 macOS + Xcode，未启动
-- Android 包的最低系统要求是 **Android 7.0（API 24）**，targetSdk 36；自行打包需 JDK 17+ 与 Android SDK（无需 Android Studio）
+- Android 包的最低系统要求是 **Android 7.0（API 24）**，targetSdk 36；自行打包需 JDK 21 与 Android SDK（无需 Android Studio；本机工具链放在 `D:\vtt-toolchain`，路径由 `android/local.properties` 与 `android/keystore.properties` 指定，两者都不入库）
 
 ## 协作规范
 

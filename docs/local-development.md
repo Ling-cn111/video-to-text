@@ -10,6 +10,19 @@
 | pnpm | 12.5.1 | 由 `packageManager` 字段锁定，`corepack enable` 可自动对齐 |
 | Python | 3.11+ | 后端（FastAPI） |
 | FFmpeg | 可选 | 未安装时自动降级到 PyAV 解码 |
+| JDK 21 | 仅打 APK 需要 | Capacitor 8 / AGP 8.13 要求 21，17 不够；`JAVA_HOME` 指向它 |
+| Android SDK | 仅打 APK 需要 | 无需 Android Studio，只要 build-tools 与 platform |
+
+**本机工具链不在仓库里**（体积大、且含私钥），统一放在 `D:\vtt-toolchain`：
+
+| 路径 | 内容 | 谁引用它 |
+| --- | --- | --- |
+| `D:\vtt-toolchain\android-sdk` | Android SDK（build-tools 36.0.0、platform android-36） | `android/local.properties` 的 `sdk.dir` |
+| `D:\vtt-toolchain\android-keys\vtt-release.jks` | APK release 签名 keystore | `android/keystore.properties` 的 `storeFile` |
+| `D:\vtt-toolchain\tauri-keys\vtt-updater.key` | Tauri 自动更新签名私钥（无口令） | `pnpm tauri build` 前用 `TAURI_SIGNING_PRIVATE_KEY` 传入 |
+
+换机器时要改的就这两处 properties（**都不入库**）：`android/local.properties`、`android/keystore.properties`。
+`docs/desktop-packaging.md` 与 `docs/frontend-features.md` 里出现的同名路径要一并同步。
 
 ## 2. Windows 一键脚本
 
