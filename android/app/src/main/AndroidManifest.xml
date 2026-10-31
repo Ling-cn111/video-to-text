@@ -57,4 +57,13 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!--
+        应用内更新必需的权限（Android 8.0 / API 26 起）。
+
+        它不是「允许自己偷偷安装」：只是让本应用有资格出现在系统的「安装未知
+        应用」白名单里，用户仍要逐个应用授权，安装时系统安装器还会再弹一次确认。
+        没有这一条 `canRequestPackageInstalls()` 恒为 false，带 apk 的
+        `ACTION_VIEW` intent 会被系统直接拒绝。
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 </manifest>
