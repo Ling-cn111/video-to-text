@@ -164,6 +164,11 @@ export interface StartTaskRequest {
   video?: VideoInfo
   /** 可选转写引擎手动选择，缺省跟随后端 ASR_ENGINE 环境变量 */
   engine?: TranscribeEngine
+  /**
+   * 可选热词（专有名词列表）：后端拼进 ASR 的 `initial_prompt`，引导识别偏向这些写法。
+   * 空数组与不传等价，前端解析见 src/lib/hotwords.ts。
+   */
+  hotwords?: string[]
 }
 
 export interface StartTaskResponse {

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { api, ApiError, type ClientErrorCode } from '@/lib/api'
 import { readLlmKey } from '@/lib/byok'
+import { parseHotwords } from '@/lib/hotwords'
 import { canonicalUrlFor } from '@/lib/platform'
 import { ensureRecentTask, recordRecentTask, removeRecentTask, updateRecentTaskStatus } from '@/lib/recent-tasks'
 import type { RecentTaskStatus } from '@/lib/recent-tasks'
@@ -52,6 +53,12 @@ interface TaskState {
   autoSummary: boolean
   /** AI 总结详细度（用户偏好，localStorage 持久化，跨任务保留，不随 reset 清空） */
   summaryDetail: SummaryDetail
+  /**
+   * 热词（用户偏好，localStorage 持久化，跨任务保留，不随 reset 清空）。
+   * 存的永远是**原始输入文本**而不是解析后的数组：用户下次打开还想看到自己
+   * 敲的那一串，分隔符被规范化成「、」反而不好继续编辑。
+   */
+  hotwordsText: string
   /** 文字稿来源（字幕来源任务在结果页显示来源 Badge） */
   transcriptSource: TranscriptSource | null
   /** 能力探测（M2-P2-A）：null=检测中；会话内加载一次，跨任务保留；不随 reset 清空 */
@@ -76,6 +83,8 @@ interface TaskState {
   setAutoSummary: (enabled: boolean) => void
   /** 结果页 / 首页切换总结详细度（写入 localStorage，并在结果页触发重新总结） */
   setSummaryDetail: (detail: SummaryDetail) => void
+  /** 首页编辑热词（写入 localStorage，只存原始文本，提交时才解析成数组） */
+  setHotwords: (text: string) => void
   /** 从 localStorage 水合用户偏好：挂载后调用（SSR 阶段不读 localStorage，避免水合不一致） */
   hydratePreferences: () => void
   reset: () => void
@@ -140,6 +149,29 @@ function readSummaryDetail(): SummaryDetail {
 function persistSummaryDetail(detail: SummaryDetail): void {
   try {
     window.localStorage.setItem(DETAIL_KEY, detail)
+  } catch {
+    // 同 persistAutoSummary：存储不可用只影响跨会话记忆
+  }
+}
+
+/** 热词偏好键：存用户原始输入的整串文本（分隔符任选，见 src/lib/hotwords.ts） */
+const HOTWORDS_KEY = 'hotwords'
+
+/** 读热词：读不到 / 存储不可用一律视为没填 */
+function readHotwords(): string {
+  if (typeof window === 'undefined') return ''
+  try {
+    return window.localStorage.getItem(HOTWORDS_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function persistHotwords(text: string): void {
+  try {
+    // 清空时直接删键，别留一个空字符串在 localStorage 里
+    if (text.trim()) window.localStorage.setItem(HOTWORDS_KEY, text)
+    else window.localStorage.removeItem(HOTWORDS_KEY)
   } catch {
     // 同 persistAutoSummary：存储不可用只影响跨会话记忆
   }
@@ -345,6 +377,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   engine: 'local',
   autoSummary: true,
   summaryDetail: 'standard',
+  hotwordsText: '',
   capabilities: null,
 
   loadCapabilities: async () => {
@@ -379,6 +412,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         video,
         canonicalUrlFor(video) ?? url,
         engineParam(get().capabilities, get().engine),
+        // 热词只影响 ASR 层（initial_prompt），字幕快路径用不到；但仍照传，
+        // 因为用户不知道这次会命字幕还是走 ASR，行为不该随路径变
+        parseHotwords(get().hotwordsText),
       )
       set({ taskId: task.taskId, stage: task.stage, progress: task.progress, phase: 'transcribing' })
       // P1-7：任务一创建就落一条记录，用户此刻关掉页面也还能从首页找回
@@ -562,6 +598,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         video,
         sourceUrl ?? undefined,
         engineParam(get().capabilities, get().engine),
+        // 重试沿用当前热词：用户改完热词点「重试」时，期望的就是带上新词重跑
+        parseHotwords(get().hotwordsText),
       )
       set({ taskId: task.taskId, stage: task.stage, progress: task.progress, phase: 'transcribing' })
       return task.taskId
@@ -615,10 +653,20 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     persistSummaryDetail(detail)
   },
 
-  hydratePreferences: () =>
-    set({ autoSummary: readAutoSummary(), engine: readEngine(), summaryDetail: readSummaryDetail() }),
+  setHotwords: (text) => {
+    set({ hotwordsText: text })
+    persistHotwords(text)
+  },
 
-  // 不清 engine / autoSummary / summaryDetail：均为用户偏好，跨任务保留
+  hydratePreferences: () =>
+    set({
+      autoSummary: readAutoSummary(),
+      engine: readEngine(),
+      summaryDetail: readSummaryDetail(),
+      hotwordsText: readHotwords(),
+    }),
+
+  // 不清 engine / autoSummary / summaryDetail / hotwordsText：均为用户偏好，跨任务保留
   reset: () => set({ ...IDLE }),
 }))
 

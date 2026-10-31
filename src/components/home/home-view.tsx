@@ -6,6 +6,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { UrlForm } from '@/components/home/url-form'
 import { AutoSummaryToggle } from '@/components/home/auto-summary-toggle'
+import { HotwordsInput } from '@/components/home/hotwords-input'
 import { ExampleLinks } from '@/components/home/example-links'
 import { RecentTasks } from '@/components/home/recent-tasks'
 import { TranscribeMode } from '@/components/home/transcribe-mode'
@@ -76,6 +77,7 @@ export function HomeView() {
         </div>
         <AutoSummaryToggle />
         <TranscribeMode value={engine} onChange={setEngine} />
+        <HotwordsInput />
         <ExampleLinks onPick={pickExample} />
       </section>
 
