@@ -20,42 +20,42 @@
 | | 入口 |
 | --- | --- |
 | 在线体验 | <https://video-to-text-six.vercel.app> |
-| 桌面端下载（Windows） | [**v0.1.5 · .exe 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.5/video-to-text_0.1.5_x64-setup.exe) ／ [全部 Release](https://github.com/Ling-cn111/video-to-text/releases/latest) |
-| 手机端下载（Android） | [**v0.1.5 · .apk 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.5/video-to-text_0.1.5_android.apk) — 3.8 MB，Android 7.0+，覆盖安装即可升级 |
+| 桌面端下载（Windows） | [**v0.1.6 · .exe 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.6/video-to-text_0.1.6_x64-setup.exe) ／ [全部 Release](https://github.com/Ling-cn111/video-to-text/releases/latest) |
+| 手机端下载（Android） | [**v0.1.6 · .apk 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.6/video-to-text_0.1.6_android.apk) — 3.8 MB，Android 7.0+，覆盖安装即可升级 |
 
 ### 桌面端下载
 
-当前版本 **v0.1.5**，点文件名直接下载（无需先进 Release 页找）：
+当前版本 **v0.1.6**，点文件名直接下载（无需先进 Release 页找）：
 
-- [**video-to-text_0.1.5_x64-setup.exe**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.5/video-to-text_0.1.5_x64-setup.exe) — 3.4 MB，NSIS，普通用户双击安装，**无需管理员权限**（推荐）
-- [**video-to-text_0.1.5_x64_zh-CN.msi**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.5/video-to-text_0.1.5_x64_zh-CN.msi) — 4.7 MB，WiX，适合企业组策略 / 静默分发
+- [**video-to-text_0.1.6_x64-setup.exe**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.6/video-to-text_0.1.6_x64-setup.exe) — 3.5 MB，NSIS，普通用户双击安装，**无需管理员权限**（推荐）
+- [**video-to-text_0.1.6_x64_zh-CN.msi**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.6/video-to-text_0.1.6_x64_zh-CN.msi) — 4.8 MB，WiX，适合企业组策略 / 静默分发
 
 校验和（`certutil -hashfile <文件> SHA256`）：
 
 ```
-c617ee4dbcfcc3c19c095f74c48787f8fe5bbef155a59c2b88902e940609e382  video-to-text_0.1.5_x64-setup.exe
-876d118b33e5cfea1afb68113f46baec3868448de4a3196218f849eb8d6e0607  video-to-text_0.1.5_x64_zh-CN.msi
+cd71331d4d4db7ebb6463effabd0abd41fe83910481009454cc6a5a4e2ea42ff  video-to-text_0.1.6_x64-setup.exe
+2eb8189d7b96f2d56c5e0536a74ff122e122896b06005a1f55351d13ae511a23  video-to-text_0.1.6_x64_zh-CN.msi
 ```
 
-> **请使用 v0.1.5**：它新增了**桌面端自动更新**——装上这一版之后，后续版本不用再手动下载，客户端会在后台检查并提示更新。此外沿用 v0.1.4 的深色模式、错误页与安全响应头。更早版本的问题见 [v0.1.5 Release 说明](https://github.com/Ling-cn111/video-to-text/releases/tag/v0.1.5)。
-> **从 v0.1.4 及更早版本升级需要手动装这一次**（老版本没有更新器），之后就能自动更新。
+> **请使用 v0.1.6**：手机端可以直接从 B站 分享进来转写、能在设置面板里检查更新；桌面端修好了「打开发布页没反应」，发布页也不会再落到旧版本。已装 v0.1.5 的用户可在顶栏「检查更新」里自动升级。更早版本请手动覆盖安装一次（老版本没有更新器）。详见 [v0.1.6 Release 说明](https://github.com/Ling-cn111/video-to-text/releases/tag/v0.1.6)。
 > 安装包未做代码签名，Windows SmartScreen 会提示「未知发布者」，点「更多信息 → 仍要运行」即可。
 > 安装后不依赖域名可达性：桌面端直接连后端 API，不受 `*.vercel.app` 被墙影响。
 > `github.com` 在国内可能连不上，若下载失败需自备代理；网页端本身不受此影响。更新检查也走 GitHub，连不上时会静默跳过，可在顶栏「检查更新」里手动重试或打开发布页。
 
 ### 手机端（Android）
 
-**已发布安装包**：下载 [**video-to-text_0.1.5_android.apk**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.5/video-to-text_0.1.5_android.apk)（3.8 MB）传到手机安装即可，无需 Android Studio，也不需要域名可达。
+**已发布安装包**：下载 [**video-to-text_0.1.6_android.apk**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.6/video-to-text_0.1.6_android.apk)（3.8 MB）传到手机安装即可，无需 Android Studio，也不需要域名可达。
 
 校验和（`sha256sum <文件>`）：
 
 ```
-f56d8166a32a17c17c5c781a2580d9106253a6486cebc95faccbb25f0246a8c2  video-to-text_0.1.5_android.apk
+3e209bcedaa17904f0c898dafb3cd478940313ef6b9eebfe97292cb4dca1ced9  video-to-text_0.1.6_android.apk
 ```
 
 > 安装包已用固定 keystore 签名，后续版本可直接覆盖升级；首次安装需在系统里允许「安装未知来源应用」。
 > 手机上装的是**本地资源**，所以 `*.vercel.app` 被墙不影响 App 使用；只有 API 请求需要联网（后端在阿里云 FC，可达）。
-> **从 B站 分享**：在 B站 App 里点「分享」→ 选「视频转文字」，链接直接进转写（不用先复制再切回来）。
+> **从 B站 分享**：在 B站 App 里点「分享」→ 选「视频转文字」，链接直接进转写（不用先复制再切回来）。分享文案里带多条链接时会挑出真正的视频页，`b23.tv` 短链由后端展开。
+> **检查更新**：设置面板底部「版本更新」能看到当前版本、手动检查、有新版时给下载入口。
 
 现状：
 
