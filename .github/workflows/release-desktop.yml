@@ -166,7 +166,17 @@ jobs:
             "dist/video-to-text_${VERSION}_x64_zh-CN.msi"
             "latest.json"
           )
-          if [ -n "$NOTES_FILE" ]; then
+          # 重跑同一次发版时必须能成功：v0.1.7 就是 Android job 失败后重跑的，
+          # Release 已经存在。`gh release create` 对已存在的 tag 会直接报错，
+          # 所以先探测、存在就只覆盖资产。这样「某个 job 失败后重试整条流水线」
+          # 才是可行的，不用先把 Release 删掉再发一遍（那会让已下载的用户措手不及）。
+          #
+          # 覆盖而不是跳过：exe 与 latest.json 是配套的（latest.json 里的签名是对着
+          # 本次构建的 exe 生成的），只换一个会让自动更新验签失败。
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME 已存在，改为覆盖资产"
+            gh release upload "$TAG_NAME" "${ASSETS[@]}" --clobber
+          elif [ -n "$NOTES_FILE" ]; then
             gh release create "$TAG_NAME" \
               --title "$TAG_NAME" \
               --notes-file "$NOTES_FILE" \
