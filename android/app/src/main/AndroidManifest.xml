@@ -22,6 +22,25 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!--
+                从别的 App「分享」文本过来（B站 App 的分享按钮走的就是这条）。
+
+                为什么只声明 ACTION_SEND，不声明 https 域名的 ACTION_VIEW：
+                声明 `https://*.bilibili.com` 会让本应用成为**所有** B站 链接的
+                候选打开方式。我们没有那些域名的所有权，无法通过 Android App Links
+                的 autoVerify 校验，于是用户每点一次 B站 链接都会弹一次
+                「用哪个应用打开」——把一次便利变成长期的打扰。
+                分享意图没有这个问题：它只出现在用户主动点「分享」之后。
+
+                mimeType 必须是 text/plain：B站 分享的是纯文本（标题 + 短链），
+                不是文件流，也不是 text/html。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+
         </activity>
 
         <provider

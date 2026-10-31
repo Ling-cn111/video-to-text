@@ -13,7 +13,7 @@
  *   原生分享插件被真正打进来）。
  */
 import { createServer } from 'node:http'
-import { readFile, stat } from 'node:fs/promises'
+import { readFile, readdir, stat } from 'node:fs/promises'
 import { extname, join, normalize } from 'node:path'
 import { chromium } from '@playwright/test'
 
@@ -65,6 +65,35 @@ const results = []
 const check = (name, ok, detail = '') => {
   results.push({ name, ok, detail })
   console.log(`${ok ? '[ok]  ' : '[FAIL]'} ${name}${detail ? ` — ${detail}` : ''}`)
+}
+
+/**
+ * 在 out/ 的 JS 产物里找关键词。
+ *
+ * 为什么不能只看页面已加载的 script 标签：Next 把懒加载的 chunk 留在磁盘上，
+ * 页面没走到那条路径就不会 fetch。分享 hook 只在 `IS_MOBILE_SHELL` 且挂载后
+ * 才 import，浏览器里跑 verify 时永远不触发 —— 于是「产物里有没有」这个问题
+ * 只能靠扫文件回答。
+ */
+const scanOutFor = async (needles) => {
+  const found = Object.fromEntries(needles.map((n) => [n, false]))
+  const walk = async (dir) => {
+    const entries = await readdir(dir, { withFileTypes: true })
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        await walk(full)
+        continue
+      }
+      if (!entry.name.endsWith('.js')) continue
+      const text = await readFile(full, 'utf8')
+      for (const needle of needles) {
+        if (!found[needle] && text.includes(needle)) found[needle] = true
+      }
+    }
+  }
+  await walk(ROOT)
+  return found
 }
 
 const browser = await chromium.launch()
@@ -196,10 +225,45 @@ if (TARGET === 'mobile') {
     hasSharePluginCode ? '已注入' : '浏览器环境无桥（预期，真机验证）',
   )
 
-  // —— 11. 移动端不应有自动更新入口 ——
+  // —— 10a. 移动端：设置入口必须带可见文字 ——
+  // 真机反馈原话是「手机端没看到有设置选项」：网页端用 `hidden sm:inline`
+  // 把文字藏起来只留一个钥匙图标，手机顶栏三四个图标里，一个没文字的图标
+  // 等于不存在。这一条同时守住「别把文字又藏回去」。
+  const apiText = (await apiSettingsButton.innerText().catch(() => '')) ?? ''
+  check('移动端「API 设置」按钮带文字', apiText.includes('API 设置'), `实际「${apiText.trim()}」`)
+  const apiTextVisible = await apiSettingsButton
+    .locator('span')
+    .first()
+    .evaluate((el) => el.offsetWidth > 0 && window.getComputedStyle(el).display !== 'none')
+    .catch(() => false)
+  check('移动端「API 设置」文字真的可见（不是 display:none）', apiTextVisible)
+
+  // —— 10b. 移动端特有：分享接收链路真的被打进产物 ——
+  // 光有原生插件不够：JS 侧若不注册监听器，用户从 B站 分享过来会落在首页
+  // 什么都不发生。分享 hook 是懒加载 chunk，页面加载时不会 fetch 它，
+  // 所以直接扫 out/ 下的产物文件，而不是看已加载的 script 标签。
+  const shareHits = await scanOutFor(['ShareIntent', '没有在分享内容里找到视频链接'])
+  check('移动端产物含分享插件名 ShareIntent', shareHits.ShareIntent)
+  check('移动端产物含分享失败提示文案（说明监听器已打包）', shareHits['没有在分享内容里找到视频链接'])
+
+  // —— 11. 移动端：检查更新在设置面板里，而不是顶栏 ——
   // Android 走 APK 覆盖安装，Tauri 的 updater 在 Capacitor 壳里根本不存在；
-  // 若这里渲染出按钮，点下去只会拿到一个命令不存在的错误。
-  check('移动端不渲染「检查更新」入口', (await page.getByTestId('check-update').count()) === 0)
+  // 若顶栏渲染出按钮，点下去只会拿到一个命令不存在的错误。
+  check('移动端顶栏不渲染桌面端的「检查更新」入口', (await page.getByTestId('check-update').count()) === 0)
+
+  // 但设置面板里必须有入口——否则手机用户完全没法知道有没有新版
+  await page.getByTestId('open-api-settings').click()
+  const settingsDialog = page.getByTestId('api-settings-dialog')
+  check('设置面板能打开', await settingsDialog.isVisible())
+  const mobileUpdate = page.getByTestId('mobile-update')
+  check('设置面板里有「版本更新」区块', await mobileUpdate.isVisible())
+  const versionText = await page.getByTestId('mobile-current-version').innerText().catch(() => '')
+  check('显示当前版本号', /\d+\.\d+\.\d+/.test(versionText), versionText)
+  const checkButtonTag = await page
+    .getByTestId('mobile-check-update')
+    .evaluate((el) => el.tagName.toLowerCase())
+    .catch(() => '')
+  check('检查更新按钮是 button', checkButtonTag === 'button', `实际 <${checkButtonTag}>`)
 }
 
 if (TARGET === 'desktop') {
@@ -218,12 +282,16 @@ if (TARGET === 'desktop') {
     description.includes('不支持') || description.includes('已是最新'),
     description.slice(0, 40),
   )
-  const releasesLink = await updateDialog.getByRole('link', { name: /打开发布页/ }).getAttribute('href')
-  check(
-    '对话框里有手动下载出口（更新服务器在 GitHub，国内可能连不上）',
-    (releasesLink ?? '').includes('releases/latest'),
-    releasesLink ?? '(无)',
-  )
+  // v0.1.5 的「打开发布页」是个 <a target="_blank">，在 WebView2 里被静默吞掉，
+  // 用户点了没有任何反应。根因：wry 在未注册 new_window_req_handler 时直接
+  // args.SetHandled(true)（wry-0.57.1/src/webview2/mod.rs）。所以这里必须断言
+  // 它是 button（走 opener 插件），而不是裸链接。
+  const releasesButton = updateDialog.getByTestId('update-releases')
+  check('对话框里有手动下载出口', await releasesButton.isVisible())
+  const releasesTag = await releasesButton.evaluate((el) => el.tagName.toLowerCase())
+  check('发布页出口是 button 而非 <a target=_blank>', releasesTag === 'button', `实际 <${releasesTag}>`)
+  const blankAnchors = await updateDialog.locator('a[target="_blank"]').count()
+  check('对话框内不再有 target=_blank 的链接', blankAnchors === 0, `发现 ${blankAnchors} 个`)
 }
 
 await browser.close()

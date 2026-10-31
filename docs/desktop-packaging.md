@@ -171,7 +171,7 @@ src-tauri/target/release/bundle/nsis/<产品名>_<版本>_x64-setup.exe
 2. 静默装 NSIS 包 → 开始菜单出现快捷方式 → 启动 → 窗口标题与尺寸正确
 3. 首页粘贴真实链接 → 解析 → 进度页 → 结果页出字幕与 AI 总结
 4. 静默卸载 → 安装目录与快捷方式均无残留
-5. `node scripts/verify-shell.mjs desktop` — 18 项静态壳断言（含自动更新入口、无 Tauri 桥时如实提示）
+5. `node scripts/verify-shell.mjs desktop` — 20 项静态壳断言（含自动更新入口、无 Tauri 桥时如实提示）
 
 ---
 

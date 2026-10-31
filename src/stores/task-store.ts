@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { api, ApiError, type ClientErrorCode } from '@/lib/api'
 import { readLlmKey } from '@/lib/byok'
+import { canonicalUrlFor } from '@/lib/platform'
 import { ensureRecentTask, recordRecentTask, removeRecentTask, updateRecentTaskStatus } from '@/lib/recent-tasks'
 import type { RecentTaskStatus } from '@/lib/recent-tasks'
 import type {
@@ -368,10 +369,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       set({ video, sourceUrl: url })
       // 先确保能力已探测：engine 传不传取决于本机有没有本地 ASR
       await get().loadCapabilities()
+      // 送后端的是**规范化后的链接**而不是用户原始输入。
+      // 原因：B站分享出来的是 b23.tv 短链，后端 subtitles.py 与 audio.py 的
+      // _extract_bvid 都只认 bilibili.com 域名，短链会让「字幕快路径」与
+      // 「playurl 音频快路径」双双失效，退回 yt-dlp 下载 + ASR —— 能成功，
+      // 但每次都慢一大截。用解析出的 videoId 重建 canonical 链接即可救回。
       const task = await api.startTranscription(
         video.videoId,
         video,
-        url,
+        canonicalUrlFor(video) ?? url,
         engineParam(get().capabilities, get().engine),
       )
       set({ taskId: task.taskId, stage: task.stage, progress: task.progress, phase: 'transcribing' })

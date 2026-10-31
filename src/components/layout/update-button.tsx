@@ -16,6 +16,7 @@ import { Progress } from '@/components/ui/progress'
 import { useAppUpdate } from '@/hooks/use-app-update'
 import { RELEASES_PAGE, truncateNotes } from '@/lib/updater'
 import { IS_DESKTOP_SHELL } from '@/lib/runtime'
+import { openExternal } from '@/lib/external-link'
 
 /**
  * 顶栏的「检查更新」按钮。
@@ -34,6 +35,8 @@ import { IS_DESKTOP_SHELL } from '@/lib/runtime'
 export function UpdateButton() {
   const [open, setOpen] = useState(false)
   const [manualError, setManualError] = useState<string | null>(null)
+  // 外部链接打不开时兜底提示（桌面壳内 opener 插件缺失、浏览器拦截弹窗）
+  const [linkFailed, setLinkFailed] = useState(false)
   const update = useAppUpdate()
 
   // 手动检查：把失败原因显示出来（自动检查是静默的）
@@ -46,6 +49,12 @@ export function UpdateButton() {
   useEffect(() => {
     if (update.status === 'error' && update.error) setManualError(update.error)
   }, [update.status, update.error])
+
+  const handleOpenReleases = async () => {
+    setLinkFailed(false)
+    const ok = await openExternal(RELEASES_PAGE)
+    if (!ok) setLinkFailed(true)
+  }
 
   if (!IS_DESKTOP_SHELL) return null
 
@@ -116,17 +125,23 @@ export function UpdateButton() {
               <p className="mt-1 break-all opacity-90">{manualError}</p>
               <p className="mt-2 opacity-90">
                 更新服务器在 GitHub 上，国内网络可能连不上。可以手动去{' '}
-                <a
-                  href={RELEASES_PAGE}
-                  target="_blank"
-                  rel="noreferrer"
+                <button
+                  type="button"
+                  onClick={() => void handleOpenReleases()}
                   className="underline underline-offset-2"
+                  data-testid="update-error-releases"
                 >
                   Release 页
-                </a>{' '}
+                </button>{' '}
                 下载覆盖安装。
               </p>
             </div>
+          ) : null}
+
+          {linkFailed ? (
+            <p className="text-xs text-destructive" data-testid="update-link-failed">
+              没能打开浏览器。请手动访问 {RELEASES_PAGE}
+            </p>
           ) : null}
 
           <DialogFooter className="gap-2">
@@ -155,11 +170,9 @@ export function UpdateButton() {
                 立即检查
               </Button>
             ) : null}
-            <Button type="button" variant="outline" asChild>
-              <a href={RELEASES_PAGE} target="_blank" rel="noreferrer">
-                <ExternalLink className="mr-1.5 size-3.5" aria-hidden />
-                打开发布页
-              </a>
+            <Button type="button" variant="outline" onClick={() => void handleOpenReleases()} data-testid="update-releases">
+              <ExternalLink className="mr-1.5 size-3.5" aria-hidden />
+              打开发布页
             </Button>
           </DialogFooter>
         </DialogContent>

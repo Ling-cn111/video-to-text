@@ -167,11 +167,13 @@
 
 | 功能 | 锁定要求 |
 | --- | --- |
-| 入口位置 | 顶栏 `data-testid="open-api-settings"`，与主题切换、PWA 安装并列。**必须是全局设置而非首页表单里的选项**：它对结果页的总结生效，跟着页面走会让人以为只对当前这次转写有用 |
+| 入口位置 | 顶栏 `data-testid="open-api-settings"`，与主题切换、PWA 安装并列。**必须是全局设置而非首页表单里的选项**：它对结果页的总结生效，跟着页面走会让人以为只对当前这次转写有用。**移动端壳里这个按钮必须带可见文字**（`IS_MOBILE_SHELL` 为真时标签不再用 `hidden sm:inline`，`span` 真的可见，另带 `aria-label`）：手机顶栏只有三四个图标的位置，一个没有文字的钥匙图标混在主题切换旁边等于不存在，真机反馈原话是「手机端没看到有设置选项」（`verify-shell.mjs mobile` 断言文字可见） |
 | 面板 | `data-testid="api-settings-dialog"`，收「AI 总结服务」一组：**Key + 接口地址 + 模型名**三项，testid 分别为 `byok-llm-input` / `byok-llm-base-url-input` / `byok-llm-model-input`，配 `byok-llm-save` / `byok-llm-clear` / `byok-llm-masked` / `byok-llm-error` |
 | **三项必须都能配** | 只让用户填 Key 是不够的：Key 属于某个服务商，请求要打到**那个服务商**的地址、用**那个服务商**的模型名。旧实现把地址与模型钉死在后端 `LLM_PRESETS`，用户填 OpenAI / Moonshot 的 Key，后端仍拿它去请求 DeepSeek → 必然 401。这就是「别家的 Key 用不了」的根因，**不得回退成只收 Key** |
 | 服务商预设 | `byok-preset-<id>` 一排按钮（`LLM_PROVIDER_PRESETS`：DeepSeek / 百炼 / Moonshot / 智谱 / 硅基流动 / OpenAI / 其他）。**预设只是填空助手，不是白名单**——点一下把地址与常用模型填进输入框，用户仍可改成任意值。不做「拉取 /models 列表」：那需要后端代持 Key 去请求，与「Key 不进后端存储」冲突 |
-| 预设选中态由值反推 | `matchPreset(config)` 比对地址得出当前高亮哪个预设，**不单独存「用户选了哪个服务商」**。存了会不一致：用户选了 DeepSeek 又把地址改成自己的中转，界面还显示 DeepSeek，会让人以为请求打到了官方 |
+| 预设选中态由值反推 | `matchPreset(baseUrl)` 比对地址得出当前高亮哪个预设，**不单独存「用户选了哪个服务商」**。存了会不一致：用户选了 DeepSeek 又把地址改成自己的中转，界面还显示 DeepSeek，会让人以为请求打到了官方 |
+| **选服务商时「取 Key」必须立刻跟随草稿** | `activePreset` 的输入必须是 **`draftBaseUrl \|\| config.baseUrl`**（草稿优先），不能只看已保存的 `config`。旧实现从已保存配置反推：用户点「阿里云百炼」只改了草稿没保存 → `config` 仍为空 → `activePreset` 为 `null` → 回落到 DeepSeek 的取 Key 地址，用户看到「选了别的服务商但取 Key 还是 DeepSeek」（v0.1.6 真机反馈原话「api设置只有deepseek取key，选择其他服务商的时候不能对应」，E2E 回归 33e） |
+| 没有 Key 页面就别给链接 | `keyUrl` 为空时（「其他 / 自建」以及手打的自建地址）渲染 `data-testid="byok-key-url-absent"` 的说明文字，**不渲染 `byok-key-url` 按钮**，也**不得用 `'https://platform.deepseek.com/api_keys'` 之类的默认值兜底**：给一个到不了的服务商页面比不给更差，用户会以为自己点错了 |
 | **填了地址就必须填模型** | `llmConfigIssue()` 与后端 `_resolve_provider` 两处都拦。站点默认模型（如 `deepseek-flash`）在别家服务商那里不存在，发过去只会得到一句 `model not found`，用户还得猜是哪里错了。**不得为了「更宽松」去掉这条** |
 | **填了地址就必须填自己的 Key** | 同一条规则的另一半，但严重程度高得多：Key 的回落目标是**站点自己的** Key。若允许「地址是我的、Key 用站点的」，后端就会拿站点凭据去请求用户指定的地址，凭据直接外泄；`/api/summarize` 无鉴权，任何人手写一个不带 `X-Vtt-Llm-Key` 的请求就能触发。所以「地址是我的」必须意味着「Key 也是我的」。前端 `llmConfigIssue()` 与后端 `_resolve_provider` 两处都拦，**任何一侧都不得单独放宽** |
 | **只收 LLM Key** | 云端 ASR 用的是站点的免费模型（`XingChenAGI/XingChenASR-V3.2-Ultra` 等，刊例价 0 元），用户没有自备 Key 的必要，多一个输入框只是多一道门槛。后端仍保留 `X-Vtt-Asr-Key`（脚本 / API 调用方可用），**界面不得再收集 ASR Key**；面板文案必须说明「语音识别用的是免费模型，不需要填 Key」，否则用户会以为漏了功能 |
@@ -206,7 +208,7 @@
 | 进度总量未知时不猜 | `progressPercent(downloaded, total)` 在 `total` 缺失或 ≤0 时返回 `null`，界面切成不确定态。**不许用已下载字节数瞎算百分比**——跳来跳去的进度条比没有更让人困惑（E2E 回归 30d） |
 | 签名不可绕过 | `tauri.conf.json` 的 `plugins.updater.pubkey` 是公钥，私钥离线保存（`D:/tauri-keys/vtt-updater.key`，**不入库**）。`bundle.createUpdaterArtifacts: true` 让 `tauri build` 产出 `.sig`。`scripts/make-latest-json.mjs` **在没有 `.sig` 时直接失败退出**——这是故意的：宁可发版失败，也不要发一个客户端装不上的更新。私钥丢失 = 已安装客户端永远收不到自动更新，必须离线备份 |
 | `latest.json` 不入库 | 每次发版内容都不同（签名 + 时间戳），入库只制造无意义 diff。由 `release-desktop.yml` 现生成现上传，`.gitignore` 已忽略 `/latest.json` |
-| 端点与下载页必须同仓库 | `UPDATE_ENDPOINT` 指向 `releases/latest/download/latest.json`，`RELEASES_PAGE` 指向 `releases/latest`，两者都在 `Ling-cn111/video-to-text`（E2E 回归 30f 断言）。指向不同仓库会出现「检查到更新但点进去是另一个项目」 |
+| 端点与下载页必须同仓库、且下载页不能用 `latest` | `UPDATE_ENDPOINT` 指向 `releases/latest/download/latest.json`（**这个必须带 `latest`**，那是 Tauri updater 的固定端点路径），而 `RELEASES_PAGE` 指向 `releases` **列表页**、不是 `releases/latest`，两者都在 `Ling-cn111/video-to-text`。指向不同仓库会出现「检查到更新但点进去是另一个项目」；用 `releases/latest` 则会被 GitHub 302 到**最后一个非 prerelease 的 tag**——新版本已经装上了但对应 Release 还没建时，用户点开看到的是上一个版本，观感就是「这个按钮根本没生效」（v0.1.6 真机反馈原话「0.16版本打开发布页还是0.15版本的」；E2E 回归 30f / 33 断言 `RELEASES_PAGE` 不含 `releases/latest`） |
 | 下载页链接是已知限制 | 端点在 GitHub 上，国内可能不可达。这是当前方案的取舍，**不要为了「看起来更完整」把失败文案改成成功**。后续若要覆盖国内用户，需要把 `latest.json` 与安装包放到可达域名（如阿里云 FC 反代），属独立改造 |
 | 发版必须三处版本号一致 | `package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`。`release-desktop.yml` 在**装依赖之前**就校验 tag 与两者一致（v0.1.4 曾漏改 Cargo.toml，构建日志显示 `Compiling app v0.1.3`，安装包内嵌版本与界面不一致）。不要等 20 分钟的 Rust 编译完才发现 |
 | 资产名必须是 ASCII | `gh` 上传中文文件名会被剥成 `_`（v0.1.1 踩过）。workflow 里先把 `视频转文字_x.y.z_x64-setup.exe` 复制成 `video-to-text_x.y.z_x64-setup.exe` 再上传。产品名仍是「视频转文字」（`productName` 未变），用户无感 |
@@ -231,7 +233,24 @@
 | 签名密钥必须备份 | `android/keystore.properties` + `*.jks` 均已 gitignore，模板见 `keystore.properties.example`。**keystore 丢失 = 已安装用户永远无法升级**（Android 用签名证书判定「是不是同一个应用」），是唯一「做错没法补救」的环节。`versionCode` 已发布后不能回退 |
 | 依赖镜像 | `android/build.gradle` 与 `android/gradle/init-mirrors.gradle` 把阿里云 Maven 镜像排在最前。**`init-mirrors.gradle` 不能删**：Capacitor 子工程的 `build.gradle` 自带 buildscript 且 `google()` 在最前，`pnpm install` 会覆盖对 node_modules 的修改，只能靠 `beforeProject` 追加。构建命令必须带 `--init-script gradle/init-mirrors.gradle` |
 
-## 17. 回归检查清单（改前端后必跑）
+## 17. 系统分享接收与链接规范化（PR12 新增）
+
+| 功能 | 锁定要求 |
+| --- | --- |
+| 只声明 SEND，不声明 BROWSABLE | `AndroidManifest.xml` 里只有一个额外 intent-filter：`android.intent.action.SEND` + `category.DEFAULT` + `mimeType="text/plain"`。**不得声明 `https://*.bilibili.com` 的 VIEW 过滤**：我们没有那些域名的所有权，过不了 App Links 的 `autoVerify`，于是用户每点一次 B站 链接都会弹「用哪个应用打开」——把一次便利变成长期打扰。分享意图只出现在用户主动点「分享」之后，没有这个问题（E2E 回归 32e 断言 manifest 里没有 `BROWSABLE`） |
+| 插件注册必须在 `super.onCreate` 之前 | `MainActivity.onCreate` 先 `registerPlugin(ShareIntentPlugin.class)` 再 `super.onCreate(savedInstanceState)`。`BridgeActivity.onCreate` 内部会调 `load()`，而 `load()` 末尾会 `onNewIntent(getIntent())` 把**冷启动**的分享意图派发给插件；晚于 super 注册的话冷启动那一次分享直接丢掉（热启动不受影响，所以特别容易漏测） |
+| 事件必须 retain | `notifyListeners(EVENT_SHARE, payload, true)` 第三个参数必须为 `true`。冷启动时 WebView 刚起、React 还没水合，JS 侧监听器必然晚于原生派发；`retainUntilConsumed` 会把参数暂存，等 JS 首次 `addListener` 时补发（`Plugin.sendRetainedArgumentsForEvent`）。**不要额外提供「主动拉取」接口**：补发 + 拉取会叠在一起，同一次分享提交两次任务 |
+| 分享文案是整段文本 | 原生侧只把 `EXTRA_TEXT` 原样递给 JS，**不做任何 URL 猜测**。抽取在 `src/lib/share-intent.ts` 的 `sharedTextToVideoInput`：先 `extractVideoUrl` 抽链接，抽不到再试裸 BV/av 号，都不行返回 `null` 由调用方提示。`extractFirstUrl` / `extractVideoUrl` **都不能用 `\S+` 这类宽松正则**：B站 分享文案是「【标题】 看看这个 https://b23.tv/xxx 复制打开」，宽松正则会把中文一起吞掉（E2E 回归 32 / 32b） |
+| 多条链接必须挑视频页 | `extractVideoUrl` 三档优先级：① 路径命中 `videoIdPatterns`（`/video/BV…`）② 域名命中平台（含 `b23.tv` 短链）③ 第一条链接。**第 1 档必须排在域名匹配之前**：`space.bilibili.com/123` 与 `www.bilibili.com/video/BV…` 都命中 `bilibili.com` 的 `hostPatterns`，只按域名挑会抽到 UP 主主页，后端解析主页当然失败，用户看到「视频不存在或链接有误」而链接抄得一字不差。`extractFirstUrl` 仍保留（固定取第一条），但 `resolveVideoUrl` 与分享链路**必须走 `extractVideoUrl`**（E2E 回归 33b / 33c） |
+| 短链必须在后端展开 | `backend/app/services/short_link.py` 的 `expand_short_link` 逐跳跟随 `b23.tv` 重定向（**每一跳都过白名单**：只准 `b23.tv` 与 `bilibili.com` / `*.bilibili.com`，最多 3 跳、超时 8 秒、终点必须在 `/video/`），失败一律返 `None` 交回原链接。接入两处：`parser.py` 的 `parse_video_url`（展开后再走 view API，否则机房 IP 抓网页恒定 412 → 归到「视频不存在」）与 `transcribe.py` 的 `_resolve_target_url`（任务可能被脚本 / 重试 / 第三方直接创建，绕过 `/api/parse`）。**展开是优化路径，失败不能让用户看到报错**（后端 `tests/test_short_link.py`；E2E 回归 33d） |
+| 认不出链接时不提交 | `useShareIntent` 在 `sharedTextToVideoInput` 返回 `null` 时**不调 `submitUrl`**，而是 toast 说明「没有在分享内容里找到视频链接」并回首页。分享来的可能是任意 text/plain（聊天记录、商品链接），静默失败或提交垃圾都会让用户困惑 |
+| 同一条分享只处理一次 | `shouldIgnoreShare` 用「同文本 + `SHARE_DEDUPE_MS`（5 秒）窗口」去重。分享事件是 retain 的，若 effect 因 StrictMode 或路由切换重建监听器，补发与实时派发可能落进两个监听器，用户会看到「解析了两次」（E2E 回归 32d） |
+| 送后端必须是 canonical 链接 | `submitUrl` 送的是 `canonicalUrlFor(video) ?? url`，不是用户原始输入。**原因**：B站 分享出来的是 `b23.tv` 短链，而后端 `subtitles.py` 与 `audio.py` 的 `_extract_bvid` 只认 `bilibili.com` 域名，短链会让「字幕快路径」与「playurl 音频快路径」双双失效，退回 yt-dlp 下载 + ASR —— 结果一样但慢一大截。`canonicalUrlFor` 认不出模板时返回 `null`，调用方保留原链接，**不许拼一个必然 404 的地址**（E2E 回归 32c）。注意短链末段（`b23.tv/AbCdEfG` 的 `AbCdEfG`）不是 BV 号，`canonicalUrlFor` 必然返回 `null`，这条链路真正靠的是后端 `short_link.expand_short_link` 展开（见上一条） |
+| 只在移动端壳内启用 | 分享监听与 `@capacitor/core` 的动态 import 都在 `IS_MOBILE_SHELL` 判断之后，网页 / 桌面端不产生任何监听（E2E 回归 32f） |
+| 分享后直接开转 | 用户从 B站 点「分享 → 视频转文字」，意图已经明确，直接 `submitUrl` + 跳进度页，**不再要求回首页确认一次**。这与首页表单的交互刻意不同：表单是「用户主动来粘贴」，需要确认；分享是「用户已经在别处确认过了」 |
+| 产物里必须有原生插件与 JS 监听 | `node scripts/verify-shell.mjs mobile` 扫描 `out/` 的 JS 产物，断言含 `ShareIntent` 与分享失败提示文案。**只断言原生插件存在是不够的**：JS 侧不注册监听器的话，用户分享过来会落在首页什么都不发生，而构建日志全绿 |
+
+## 18. 回归检查清单（改前端后必跑）
 
 - [ ] 结果页默认显示「全文阅读」，文章排版无时间戳
 - [ ] Tab 可切换到「时间戳定位」，列表 + 复制功能正常
@@ -284,18 +303,32 @@
 - [ ] 解析到内网的域名同样被拦：`127.0.0.1.nip.io` / `localtest.me` / `10.0.0.5.nip.io` / `100.100.100.200` 全部返回 400，而 `api.openai.com` / `api.deepseek.com` 正常放行（后端 `test_normalize_base_url_rejects_hostname_resolving_to_loopback` / `_private_ip` / `_when_dns_lookup_fails` / `_accepts_public_hostname` + `test_shared_address_space_is_blocked`）
 - [ ] 换服务商后旧总结不被复用：保存或清除配置会清空 `summary:` 前缀的 sessionStorage，避免点「重试总结」命中旧缓存造成「假成功」（E2E 回归 25）
 - [ ] 直接输入 AV/BV 号：`BV1xx411c7mD` / `av170001` 能直接解析并补成完整链接，小写 `bv` 也能识别且规范成大写；纯数字（抖音号）不被误认成 av 号（E2E 回归 24 / 24b / 24c）
-- [ ] 移动端壳：`pnpm build:mobile` 后 `out/` 里 `NEXT_PUBLIC_USE_MOCK` 为 false、`IS_STATIC_SHELL` 与 `IS_MOBILE_SHELL` 均内联为 true（`node scripts/verify-shell.mjs mobile` 共 15 项）
+- [ ] 移动端壳：`pnpm build:mobile` 后 `out/` 里 `NEXT_PUBLIC_USE_MOCK` 为 false、`IS_STATIC_SHELL` 与 `IS_MOBILE_SHELL` 均内联为 true（`node scripts/verify-shell.mjs mobile` 共 24 项）
 - [ ] 导出改造未破坏桌面端：网页上导出仍触发下载并提示「已开始下载」（E2E 回归 27）
 - [ ] 用户取消分享不报错、也不提示「已开始下载」（E2E 回归 27b）；分享成功提示「已打开分享面板，选一个应用保存」（E2E 回归 27c）
 - [ ] 导出函数返回 Promise，不得退回 fire-and-forget（E2E 回归 26 / 26b）
-- [ ] 真机验收（需要插线）：飞行模式冷启动能看到首页与示例链接、按物理返回键不会直接退出 App、导出能拉起系统分享面板并保存到手机、底部导航栏不遮挡「导出」按钮
+- [ ] 真机验收（需要插线）：飞行模式冷启动能看到首页与示例链接、按物理返回键不会直接退出 App、导出能拉起系统分享面板并保存到手机、底部导航栏不遮挡「导出」按钮、**在 B站 App 点「分享」能看到「视频转文字」并直接开转**
 - [ ] 返回键决策：非首页 + 有上一页 → 回退；非首页 + 无上一页 → 回首页；首页 → 二次确认后退出（E2E 回归 28，纯函数断言，覆盖 `pathname` 为 `null` 与空串两种边界）
 - [ ] 安全区四边齐：注入 `--safe-area-inset-*` 后 `body` 四边 padding 全部生效、顶栏 `getBoundingClientRect().top >= 安全区顶部`、sticky 的 `top` 含安全区（E2E 回归 29）
 - [ ] 不可达横幅也让开状态栏（fixed 定位不吃 body 的 padding，E2E 回归 29b）
-- [ ] 自动更新入口：桌面端构建里有「检查更新」按钮，网页 / 移动端构建里 **0 个**（`node scripts/verify-shell.mjs desktop` 18 项 + E2E 回归 30g）
+- [ ] 自动更新入口：桌面端构建里有「检查更新」按钮，网页 / 移动端构建里 **0 个**（`node scripts/verify-shell.mjs desktop` 20 项 + E2E 回归 30g）
 - [ ] 版本比较：`0.1.10 > 0.1.9`、降级不算更新、解析失败不比当前新（E2E 回归 30 / 30b）
 - [ ] 更新只在桌面壳 + 生产构建下启用（E2E 回归 30c）
 - [ ] 下载进度总量未知时返回 `null` 而不是瞎猜百分比（E2E 回归 30d）
+- [ ] 桌面端「打开发布页」是 button 而非 `<a target=_blank>`（WebView2 会静默吞掉新窗口，表现为「点了没反应」；`verify-shell.mjs desktop` 断言对话框内 `target=_blank` 数量为 0）
+- [ ] 手机端检查更新入口在**设置面板**里（`mobile-update` 区块 + 当前版本号 + `mobile-check-update` 是 button），顶栏不渲染桌面端入口（`verify-shell.mjs mobile` 24 项）
+- [ ] 分享文案能抽出链接：`"【标题】 看看这个 https://b23.tv/AbCdEfG 复制打开"` → `https://b23.tv/AbCdEfG`；裸号补成完整链接；认不出返回 `null` 不瞎猜（E2E 回归 32）
+- [ ] 抽链接不吞中文、不带尾随标点，尾随文字不会被百分号编码进 path（E2E 回归 32b）
+- [ ] 送后端的是 canonical 链接：`b23.tv` 短链按 videoId 还原成 `https://www.bilibili.com/video/<id>`，认不出形态返回 `null` 保留原链接（E2E 回归 32c）
+- [ ] 同一条分享 5 秒内不重复处理，不同文本一律处理，空文本不提交（E2E 回归 32d）
+- [ ] Android manifest 只声明 `SEND` + `text/plain`，**没有** `BROWSABLE`；`MainActivity` 在 `super.onCreate` 之前 `registerPlugin`；插件用 `notifyListeners(..., true)`（E2E 回归 32e）
+- [ ] 移动端产物里含 `ShareIntent` 与分享失败提示文案（`verify-shell.mjs mobile` 扫描 `out/` 的 JS，证明监听器真的被打包）
+- [ ] 发布页指向 `releases` 列表页、**不含** `releases/latest`（`latest` 会被 GitHub 302 到最后一个非 prerelease 的 tag，新包配旧页面看起来像按钮没生效；E2E 回归 30f / 33）
+- [ ] 分享文案里有多条链接时优先挑出路径含 `/video/` 的那条，`space.bilibili.com/123` 这类主页不能被选中；一条都不认得时仍返回第一条（E2E 回归 33b / 33c）
+- [ ] `resolveVideoUrl` 与 `sharedTextToVideoInput` 都走 `extractVideoUrl`，不得退回 `extractFirstUrl`（E2E 回归 33c）
+- [ ] 短链末段不是 BV 号时 `canonicalUrlFor` 返回 `null`、保留原短链交给后端展开，**不许拼 `https://www.bilibili.com/video/<短链末段>`**（E2E 回归 33d）
+- [ ] 后端短链展开：只认 `b23.tv`、每一跳过白名单、终点必须含 `/video/`、任何异常返回 `None` 交回原链接；`parse_video_url` 与 `_resolve_target_url` 两处都接入（后端 `tests/test_short_link.py` 11 项）
+- [ ] 「取 Key」跟随草稿里的服务商，不等保存；`keyUrl` 为空时渲染 `byok-key-url-absent` 而不是死链（E2E 回归 33e + `verify-shell.mjs mobile` 的「API 设置」文字可见两项）
 - [ ] `latest.json` 的签名能解出 `version:` 与安装包文件名，URL 与 tag 一致（发版前用 `make-latest-json.mjs` 的输出核对）
 - [ ] 发版前三处版本号一致：`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`（`release-desktop.yml` 会拦）
 - [ ] `pnpm lint && pnpm build` 通过
