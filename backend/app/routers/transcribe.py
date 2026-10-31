@@ -14,6 +14,7 @@ from app.schemas import StartTaskResponse, StartTranscribeRequest, TaskDetailRes
 from app.services.asr import local_engine_available
 from app.services.byok import HEADER_ASR_KEY, normalize_key
 from app.services.dispatcher import TranscribeJob, enqueue
+from app.services import short_link
 from app.services.tasks import create_task, get_task, update_task
 from app.url_guard import validate_public_http_url
 
@@ -72,6 +73,20 @@ def _resolve_target_url(payload: StartTranscribeRequest) -> str:
         raise UnsupportedPlatformError(
             f"暂不支持「{parsed.hostname}」平台，当前支持哔哩哔哩"
         )
+
+    # 分享短链在这里也展开一次。`/api/parse` 已经展开过，前端会用解析出的
+    # videoId 重建 canonical 链接，正常走不到这里；但任务可能被直接创建
+    # （脚本、重试、第三方调用），把短链原样存进任务记录会让 pipeline 里的
+    # 字幕/playurl 快路径全部失效。展开是幂等的，代价只有一次 HEAD/GET。
+    if short_link.is_short_link(candidate):
+        expanded = short_link.expand_short_link(candidate)
+        if expanded:
+            candidate = expanded
+            parsed = validate_public_http_url(candidate)
+            if detect_platform(parsed.hostname or "") is None:
+                raise UnsupportedPlatformError(
+                    f"短链指向了不受支持的地址，当前支持哔哩哔哩"
+                )
     return candidate
 
 

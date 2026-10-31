@@ -1,4 +1,4 @@
-import { extractFirstUrl, normalizeVideoInput, resolveBareVideoId } from '@/lib/platform'
+import { extractVideoUrl, normalizeVideoInput, resolveBareVideoId } from '@/lib/platform'
 
 /**
  * 「从别的 App 分享过来」的文本 → 可以直接交给 `submitUrl` 的输入。
@@ -21,7 +21,7 @@ export function sharedTextToVideoInput(text: string | null | undefined): string 
   const trimmed = (text ?? '').trim()
   if (!trimmed) return null
 
-  const url = extractFirstUrl(trimmed)
+  const url = extractVideoUrl(trimmed)
   if (url) return normalizeVideoInput(url)
 
   // 没有链接：整段可能只是用户复制的裸 BV / av 号。

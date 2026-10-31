@@ -21,6 +21,7 @@ import yt_dlp
 from app.errors import InvalidUrlError, ParseFailedError, UnsupportedPlatformError
 from app.platforms import PlatformMeta, detect_platform, extract_video_id
 from app.schemas import VideoInfo
+from app.services import short_link
 from app.services.ytdlp_options import base_options as _base_options
 from app.url_guard import validate_public_http_url
 
@@ -66,6 +67,17 @@ def parse_video_url(raw_url: str) -> VideoInfo:
             f"暂不支持「{parsed.hostname}」平台，当前支持哔哩哔哩"
         )
 
+    # 分享短链（b23.tv）先展开成规范视频页：不展开的话，下面的 view API 与
+    # 字幕/playurl 快路径全部命中不了，只能退回 yt-dlp 抓网页，而机房 IP 抓
+    # B站网页恒定 412 —— 用户看到的是「视频不存在或链接有误」，链接其实没错。
+    target_url = raw_url.strip()
+    if short_link.is_short_link(target_url):
+        expanded = short_link.expand_short_link(target_url)
+        if expanded:
+            target_url = expanded
+            parsed = validate_public_http_url(target_url)
+            logger.info("短链展开后解析：%s", target_url)
+
     url_video_id = extract_video_id(parsed.path, meta)
 
     # 第 1 级：B站 view API。机房 IP 上网页会 412，JSON API 不会。
@@ -77,7 +89,7 @@ def parse_video_url(raw_url: str) -> VideoInfo:
     # 第 2 级：yt-dlp（其他平台，或 API 不可用时的兜底）
     try:
         with yt_dlp.YoutubeDL(_ydl_options()) as ydl:
-            info = ydl.extract_info(raw_url.strip(), download=False)
+            info = ydl.extract_info(target_url, download=False)
     except yt_dlp.utils.DownloadError as exc:
         raise friendly_parse_error(str(exc)) from exc
 

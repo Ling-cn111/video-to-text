@@ -225,6 +225,19 @@ if (TARGET === 'mobile') {
     hasSharePluginCode ? '已注入' : '浏览器环境无桥（预期，真机验证）',
   )
 
+  // —— 10a. 移动端：设置入口必须带可见文字 ——
+  // 真机反馈原话是「手机端没看到有设置选项」：网页端用 `hidden sm:inline`
+  // 把文字藏起来只留一个钥匙图标，手机顶栏三四个图标里，一个没文字的图标
+  // 等于不存在。这一条同时守住「别把文字又藏回去」。
+  const apiText = (await apiSettingsButton.innerText().catch(() => '')) ?? ''
+  check('移动端「API 设置」按钮带文字', apiText.includes('API 设置'), `实际「${apiText.trim()}」`)
+  const apiTextVisible = await apiSettingsButton
+    .locator('span')
+    .first()
+    .evaluate((el) => el.offsetWidth > 0 && window.getComputedStyle(el).display !== 'none')
+    .catch(() => false)
+  check('移动端「API 设置」文字真的可见（不是 display:none）', apiTextVisible)
+
   // —— 10b. 移动端特有：分享接收链路真的被打进产物 ——
   // 光有原生插件不够：JS 侧若不注册监听器，用户从 B站 分享过来会落在首页
   // 什么都不发生。分享 hook 是懒加载 chunk，页面加载时不会 fetch 它，

@@ -41,9 +41,9 @@ import {
  * 模型这两个值。存了反而会不一致——用户选了 DeepSeek 又把地址改成自己的代理，
  * 界面还显示 DeepSeek，会让人以为请求打到了官方。这里由值反推，永远不会骗人。
  */
-function matchPreset(config: LlmConfig): LlmProviderPreset | null {
-  if (!config.baseUrl) return null
-  const normalized = config.baseUrl.replace(/\/+$/, '')
+function matchPreset(baseUrl: string | null | undefined): LlmProviderPreset | null {
+  if (!baseUrl) return null
+  const normalized = baseUrl.replace(/\/+$/, '')
   return (
     LLM_PROVIDER_PRESETS.find((preset) => preset.baseUrl && preset.baseUrl.replace(/\/+$/, '') === normalized) ?? null
   )
@@ -89,9 +89,15 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
     setError(null)
   }, [open])
 
-  const activePreset = useMemo(() => matchPreset(config), [config])
-  const keyUrl = activePreset?.keyUrl || 'https://platform.deepseek.com/api_keys'
-  const keyUrlName = activePreset?.name || 'DeepSeek'
+  // 草稿优先：用户点了「阿里云百炼」时只改了 draftBaseUrl，还没保存。
+  // 若只用已保存的 config 反推，activePreset 仍是 null → 下面的「取 Key」
+  // 会回落到 DeepSeek 的默认地址，看起来像「选了别的服务商但链接没跟着换」。
+  const activePreset = useMemo(
+    () => matchPreset(draftBaseUrl || config.baseUrl),
+    [draftBaseUrl, config.baseUrl],
+  )
+  const keyUrl = activePreset?.keyUrl || ''
+  const keyUrlName = activePreset?.name || '当前服务商'
 
   function applyPreset(preset: LlmProviderPreset) {
     setError(null)
@@ -321,15 +327,23 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
                 </p>
               ) : null}
               <div className="flex flex-wrap gap-x-3 gap-y-1">
-                <button
-                  type="button"
-                  onClick={() => void openExternal(keyUrl)}
-                  className="inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                  data-testid="byok-key-url"
-                >
-                  {keyUrlName} 取 Key
-                  <ExternalLink className="size-3" aria-hidden />
-                </button>
+                {/* 没有 keyUrl 时（「其他 / 自建」）不渲染这个按钮：给一个到不了的
+                    链接比不给更差，用户会以为点错了。 */}
+                {keyUrl ? (
+                  <button
+                    type="button"
+                    onClick={() => void openExternal(keyUrl)}
+                    className="inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                    data-testid="byok-key-url"
+                  >
+                    {keyUrlName} 取 Key
+                    <ExternalLink className="size-3" aria-hidden />
+                  </button>
+                ) : (
+                  <span className="text-xs text-muted-foreground" data-testid="byok-key-url-absent">
+                    自建 / 中转服务的 Key 请从服务商后台获取
+                  </span>
+                )}
                 {activePreset?.keyHint ? (
                   <span className="text-xs text-muted-foreground">{activePreset.keyHint}</span>
                 ) : null}

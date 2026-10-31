@@ -151,6 +151,94 @@ const URL_TERMINATORS = new Set(['<', '>', '"', "'", '`', '“', '”', '‘', '
 const TRAILING_PUNCTUATION = new Set(['.', ',', ';', ':', '!', '?', '。', '，', '、', '；', '：', '！', '？'])
 
 /**
+ * 从一段文案里抽出**所有** http(s) 链接（按出现顺序）。
+ *
+ * 分享文案里不止一条链接：B站 的分享会带上「UP 主主页」「活动页」，
+ * 有些机型还会把视频链接与「打开客户端」的落地页一起塞进来。只取第一个
+ * 会抽到一条跟视频无关的链接，然后后端一路解析失败，用户看到的是
+ * 「视频不存在或链接有误」——而链接其实没抄错。
+ */
+export function extractAllUrls(text: string): string[] {
+  if (!text) return []
+  const urls: string[] = []
+  let from = 0
+  while (from < text.length) {
+    const start = text.slice(from).search(/https?:\/\//i)
+    if (start === -1) break
+    const absolute = from + start
+    let end = absolute
+    for (let i = absolute; i < text.length; i += 1) {
+      if (isUrlTerminator(text[i])) break
+      end = i + 1
+    }
+    let candidate = text.slice(absolute, end)
+    while (candidate.length > 0 && TRAILING_PUNCTUATION.has(candidate[candidate.length - 1])) {
+      candidate = candidate.slice(0, -1)
+    }
+    if (candidate.length > 0) urls.push(candidate)
+    from = end > absolute ? end : absolute + 1
+  }
+  return urls
+}
+
+/**
+ * 从混杂文本里挑出**最像视频链接**的那一条。
+ *
+ * 优先级（从高到低）：
+ * 1. 路径能直接命中平台的 `videoIdPatterns`（`/video/BV…`、`/video/av…`）——
+ *    这是真正的视频页，最该被选中；
+ * 2. 域名命中平台（含短链域名）—— 认得是这个站，但可能是主页 / 活动页；
+ * 3. 第一条 http(s) 链接 —— 一条都不认得时也返回，交给后续
+ *    `unsupported` / `unavailable` 分支给出准确提示。不能因为「不像视频」
+ *    就静默丢掉，那样用户连报错都看不到。
+ *
+ * ## 为什么第 1 档必须排在域名匹配之前
+ *
+ * `space.bilibili.com/123` 与 `www.bilibili.com/video/BV…` 都会命中
+ * `bilibili.com` 的 `hostPatterns`。只按域名挑的话，遇到「UP 主主页 + 视频页」
+ * 这种分享文案，抽到的是主页 —— 后端解析主页当然失败，用户看到的是
+ * 「视频不存在或链接有误」，而他把链接抄得一字不差。
+ */
+export function extractVideoUrl(text: string): string | null {
+  const urls = extractAllUrls(text)
+  if (urls.length === 0) return null
+
+  const parse = (candidate: string): URL | null => {
+    try {
+      return new URL(candidate)
+    } catch {
+      return null
+    }
+  }
+
+  // 第 1 档：路径里能直接取到 videoId
+  for (const candidate of urls) {
+    const url = parse(candidate)
+    if (!url) continue
+    const hit = Object.values(PLATFORM_REGISTRY).some((meta) =>
+      meta.videoIdPatterns.some((pattern) => pattern.test(url.pathname)),
+    )
+    if (hit) return candidate
+  }
+
+  // 第 2 档：域名属于某个平台（含 b23.tv 这类分享短链）
+  for (const candidate of urls) {
+    const url = parse(candidate)
+    if (!url) continue
+    const host = url.hostname.toLowerCase()
+    const hit = Object.values(PLATFORM_REGISTRY).some(
+      (meta) =>
+        meta.hostPatterns.some((pattern) => pattern.test(host)) ||
+        meta.shareHostPatterns.some((pattern) => pattern.test(host)),
+    )
+    if (hit) return candidate
+  }
+
+  // 第 3 档：随便哪条，让后端/用户拿到真实反馈
+  return urls[0]
+}
+
+/**
  * 解析用户输入的视频链接。
  * - 裸 AV/BV 号（`BV1xx411c7mD` / `av170001`）→ 补成 B站 链接再走正常流程
  * - 混杂在分享文案里的链接（`【标题】 https://b23.tv/xxx 复制打开`）→ 先抽链接
@@ -175,7 +263,9 @@ export function resolveVideoUrl(rawUrl: string): ResolveResult {
 
   // 分享文案里夹着链接是常态。必须先抽出来再解析：整段 `new URL` 要么抛错，
   // 要么（更糟）静默把尾随文字编码进 path，得到一个不存在的 videoId。
-  const candidate = extractFirstUrl(trimmed) ?? trimmed
+  // 用 extractVideoUrl 而不是 extractFirstUrl：文案里可能有多条链接，
+  // 固定取第一条会抽到 UP 主主页之类跟视频无关的地址。
+  const candidate = extractVideoUrl(trimmed) ?? trimmed
 
   let url: URL
   try {

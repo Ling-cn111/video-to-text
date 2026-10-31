@@ -33,8 +33,15 @@
 export const UPDATE_ENDPOINT =
   'https://github.com/Ling-cn111/video-to-text/releases/latest/download/latest.json'
 
-/** 手动下载页：检查失败时的兜底出口 */
-export const RELEASES_PAGE = 'https://github.com/Ling-cn111/video-to-text/releases/latest'
+/**
+ * 手动下载页：检查失败时的兜底出口。
+ *
+ * 指向 `/releases` 列表页而不是 `/releases/latest`。`latest` 会 302 到
+ * **最新一个非 prerelease 的 tag**，所以只要新版 Release 还没建好，用户点
+ * 「打开发布页」看到的是上一个版本的下载页 —— 明明装的是新包，页面却在发旧版，
+ * 看起来像「按钮没生效」。列表页永远能看全，不会因为 tag 还没建而误导。
+ */
+export const RELEASES_PAGE = 'https://github.com/Ling-cn111/video-to-text/releases'
 
 /** 启动后多久做第一次检查（毫秒）。太早会与首屏渲染、转写请求抢带宽 */
 export const FIRST_CHECK_DELAY_MS = 8000

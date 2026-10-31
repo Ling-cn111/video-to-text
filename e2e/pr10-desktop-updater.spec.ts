@@ -106,12 +106,16 @@ test.describe("桌面端自动更新", () => {
   });
 
   test("回归 30f：端点与下载页指向同一个仓库", () => {
-    // 端点是 latest.json，下载页是 releases/latest —— 两者必须同仓库，
+    // 端点是 latest.json，下载页是 Release 列表页 —— 两者必须同仓库，
     // 否则会出现「检查到更新但点进去是另一个项目的 Release」
     expect(UPDATE_ENDPOINT).toContain("Ling-cn111/video-to-text");
     expect(UPDATE_ENDPOINT.endsWith("latest.json")).toBe(true);
     expect(RELEASES_PAGE).toContain("Ling-cn111/video-to-text");
-    expect(RELEASES_PAGE.endsWith("releases/latest")).toBe(true);
+    // 下载页**不能**用 /releases/latest：GitHub 会把它 302 到最新一个非
+    // prerelease 的 tag。新包配旧 Release 页面时，用户看到的是旧版本，会以为
+    // 「打开发布页这个按钮根本没生效」（v0.1.6 真机反馈原话）。
+    expect(RELEASES_PAGE.endsWith("releases")).toBe(true);
+    expect(RELEASES_PAGE).not.toContain("releases/latest");
 
     // 超时必须短于复查间隔，否则上一轮还没超时就开始下一轮，请求会堆起来
     expect(CHECK_TIMEOUT_MS).toBeLessThan(RECHECK_INTERVAL_MS);
