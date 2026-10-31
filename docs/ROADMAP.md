@@ -46,7 +46,7 @@
 
 **目标**：在 PWA 之外提供原生应用分发。
 
-- 桌面端（Windows）：**已交付** ✅ —— Tauri 2 + Next 静态导出，安装包走 GitHub Release（当前 v0.1.6，`.msi` / `.exe`）。**v0.1.5 起带自动更新**：`tauri-plugin-updater` + 签名校验，推 `v*` tag 由 `release-desktop.yml` 自动构建发布。打包流程与踩坑见 [desktop-packaging](desktop-packaging.md)，不变量见 [frontend-features](frontend-features.md) §15
+- 桌面端（Windows）：**已交付** ✅ —— Tauri 2 + Next 静态导出，安装包走 GitHub Release（当前 v0.1.7，`.msi` / `.exe`）。**v0.1.5 起带自动更新**：`tauri-plugin-updater` + 签名校验，推 `v*` tag 由 `release-desktop.yml` 自动构建发布。打包流程与踩坑见 [desktop-packaging](desktop-packaging.md)，不变量见 [frontend-features](frontend-features.md) §15
 - 桌面端（macOS）：**未启动** —— 同一套 `src-tauri` 配置，但需要 macOS 机器签名与公证；当前仓库无对应 CI job
 - 移动端（Android）：**已发布** ✅ —— Capacitor 8 包壳，`pnpm build:mobile` 复用桌面端的静态导出脚本（`scripts/build-shell.mjs` 的 `mobile` 目标），前端资源打进 APK 直连后端，**不依赖域名可达性**。图标、启动图、release 签名配置均已就位，v0.1.4 起在 GitHub Release 分发 APK，v0.1.5 起与桌面端同版本号发布，**v0.1.7 起 APK 由 CI 产出**（`release-desktop.yml` 的 `android` job，不再需要本地手工 `gh release upload`）
   - 构建：`pnpm build:mobile` → `npx cap sync android` → `cd android && ./gradlew --init-script gradle/init-mirrors.gradle assembleDebug`
