@@ -97,8 +97,63 @@ export function normalizeVideoInput(raw: string): string {
 }
 
 /**
+ * 从一段混杂文本里抽出第一个 http(s) 链接。
+ *
+ * ## 为什么必须有它
+ *
+ * 用户几乎从不「复制一个干净的链接」。B站 App 的分享按钮给出的是一整段：
+ *
+ * ```
+ * 【标题】 看看这个 https://b23.tv/AbCdEfG 复制打开
+ * ```
+ *
+ * 直接 `new URL(整段)` 会失败（有空格），或者更糟——静默成功但把尾随文字
+ * 百分号编码进 path（`BV1xx411c7mD%20%E5%A4%8D%E5%88%B6...`），
+ * 于是用户拿到一个「视频不存在」。这是深链/分享意图的前置能力：
+ * 原生侧送进来的永远是整段分享文案。
+ *
+ * ## 为什么用「逐字符扫描」而不是一个宽松正则
+ *
+ * URL 里合法但中文文案里常见的字符太多了（`）`、`】`、`，`）。一个
+ * `\S+` 的正则会把后面的中文一起吞掉。这里显式在遇到空白、中文、
+ * 成对括号引号时截断，比事后清理更不容易出错。
+ */
+export function extractFirstUrl(text: string): string | null {
+  if (!text) return null
+  const start = text.search(/https?:\/\//i)
+  if (start === -1) return null
+
+  let end = start
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i]
+    if (isUrlTerminator(ch)) break
+    end = i + 1
+  }
+
+  // 去掉 URL 末尾的标点：`https://b23.tv/abc。` 里的句号不属于链接
+  let candidate = text.slice(start, end)
+  while (candidate.length > 0 && TRAILING_PUNCTUATION.has(candidate[candidate.length - 1])) {
+    candidate = candidate.slice(0, -1)
+  }
+  return candidate.length > 0 ? candidate : null
+}
+
+/** 出现在链接里就说明链接已经结束的字符 */
+function isUrlTerminator(ch: string): boolean {
+  if (/\s/.test(ch)) return true
+  // 中文与全角标点：URL 里不可能出现（会先被百分号编码）
+  if (/[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/.test(ch)) return true
+  return URL_TERMINATORS.has(ch)
+}
+
+const URL_TERMINATORS = new Set(['<', '>', '"', "'", '`', '“', '”', '‘', '’', '（', '）', '(', ')', '【', '】', '「', '」'])
+
+const TRAILING_PUNCTUATION = new Set(['.', ',', ';', ':', '!', '?', '。', '，', '、', '；', '：', '！', '？'])
+
+/**
  * 解析用户输入的视频链接。
  * - 裸 AV/BV 号（`BV1xx411c7mD` / `av170001`）→ 补成 B站 链接再走正常流程
+ * - 混杂在分享文案里的链接（`【标题】 https://b23.tv/xxx 复制打开`）→ 先抽链接
  * - 格式非法（无法 URL 化、非 http(s)）→ { ok: false, reason: 'invalid' }
  * - 域名不在平台注册表 → { ok: false, reason: 'unsupported' }
  * - 域名认得但当前构建不支持该平台 → { ok: false, reason: 'unavailable' }
@@ -118,9 +173,13 @@ export function resolveVideoUrl(rawUrl: string): ResolveResult {
     return { ok: true, platform: bare.platform, videoId: bare.videoId }
   }
 
+  // 分享文案里夹着链接是常态。必须先抽出来再解析：整段 `new URL` 要么抛错，
+  // 要么（更糟）静默把尾随文字编码进 path，得到一个不存在的 videoId。
+  const candidate = extractFirstUrl(trimmed) ?? trimmed
+
   let url: URL
   try {
-    url = new URL(trimmed)
+    url = new URL(candidate)
   } catch {
     return { ok: false, reason: 'invalid' }
   }
@@ -163,6 +222,29 @@ function fallbackVideoId(url: URL): string {
     0,
   )
   return `demo${digest.toString(36)}`
+}
+
+/**
+ * 由已解析的 `VideoInfo` 重建规范链接。
+ *
+ * ## 为什么需要它
+ *
+ * B站 App 分享出来的是 `https://b23.tv/AbCdEfG` 这类短链。后端有两处快路径
+ * 只认 `bilibili.com` 域名：
+ * - `backend/app/services/subtitles.py:293-301` 的 `_extract_bvid`
+ * - `backend/app/services/audio.py:138-141` 的 `_extract_bvid`
+ *
+ * 短链命中不了它们，于是字幕直取与 playurl 音频直取双双失效，退回
+ * yt-dlp 下载 + ASR —— 结果一样，但慢很多。既然前端已经从链接里解析出了
+ * videoId，用 videoId 重建 canonical 链接送后端，两条快路径就都活了。
+ *
+ * 认不出模板（未来的非 B站 平台）时返回 null，调用方保留原始链接。
+ */
+export function canonicalUrlFor(video: { platform: Platform; videoId: string }): string | null {
+  if (video.platform !== 'bilibili') return null
+  // av 号同样可以走 /video/av<digits>，B站 会自己 302 到 BV 页
+  if (!/^(BV[0-9A-Za-z]+|av\d+)$/.test(video.videoId)) return null
+  return `https://www.bilibili.com/video/${video.videoId}`
 }
 
 export { getPlatformMeta }
