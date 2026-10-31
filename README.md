@@ -34,12 +34,10 @@
 校验和（`certutil -hashfile <文件> SHA256`）：
 
 ```
-<待 v0.1.7 产物发布后按实际下载字节填入>  video-to-text_0.1.7_x64-setup.exe
-<待 v0.1.7 产物发布后按实际下载字节填入>  video-to-text_0.1.7_x64_zh-CN.msi
+e55bb2590206fc2cdf39ac7ab01f089350cd6e3fc5ac14b57d5a263da1898716  video-to-text_0.1.7_x64-setup.exe
+a8b89a5c437a020abbf7d1feb2afcea4a499503a98bf004f1b2f45e773075776  video-to-text_0.1.7_x64_zh-CN.msi
 ```
 
-> **不写死旧版本的校验和**：CI 构建与本地构建的字节不同（MSI 内嵌时间戳等），
-> 抄上一版的哈希会让真心校验的用户以为自己下到了坏包。发版后按 Release 实际资产重算。
 
 > **请使用 v0.1.7**：首页可以填热词引导语音识别认准专有名词；APK 改由 CI 与桌面端同一次发版产出，不会再出现「桌面端已更新、手机端还是旧的」。已装旧版的用户可在顶栏「检查更新」（手机端在设置面板「版本更新」）里升级。详见 [v0.1.7 Release 说明](https://github.com/Ling-cn111/video-to-text/releases/tag/v0.1.7)。
 > 安装包未做代码签名，Windows SmartScreen 会提示「未知发布者」，点「更多信息 → 仍要运行」即可。
@@ -53,7 +51,7 @@
 校验和（`sha256sum <文件>`）：
 
 ```
-<待 v0.1.7 产物发布后按实际下载字节填入>  video-to-text_0.1.7_android.apk
+072b18364af995f3261ebadd3328400e0e616456b5919864453b6f6df9b49ae1  video-to-text_0.1.7_android.apk
 ```
 
 > 安装包已用固定 keystore 签名，后续版本可直接覆盖升级；首次安装需在系统里允许「安装未知来源应用」。
