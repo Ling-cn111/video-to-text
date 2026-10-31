@@ -34,8 +34,8 @@
 校验和（`certutil -hashfile <文件> SHA256`）：
 
 ```
-<待 v0.1.8 产物发布后按实际下载字节填入>  video-to-text_0.1.8_x64-setup.exe
-<待 v0.1.8 产物发布后按实际下载字节填入>  video-to-text_0.1.8_x64_zh-CN.msi
+d42ca13efc158429d311694b274c975a0f9539a0b8e40285b5f917d7f6c0064c  video-to-text_0.1.8_x64-setup.exe
+7d6b04f7fa41c2aea9781258f50200cd911cfe334a48d5a2e95c6c43028a3fdb  video-to-text_0.1.8_x64_zh-CN.msi
 ```
 
 
@@ -51,7 +51,7 @@
 校验和（`sha256sum <文件>`）：
 
 ```
-<待 v0.1.8 产物发布后按实际下载字节填入>  video-to-text_0.1.8_android.apk
+d7bb52ba26d0f07b3f5a8577f97310c2ba94b4180056831f9f7371af07fe5174  video-to-text_0.1.8_android.apk
 ```
 
 > 安装包已用固定 keystore 签名，后续版本可直接覆盖升级；首次安装需在系统里允许「安装未知来源应用」。
