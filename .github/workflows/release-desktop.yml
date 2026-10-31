@@ -216,7 +216,14 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      # `packages` 必须显式写：action 默认值是 `tools platform-tools`，而新版
+      # cmdline-tools 的 sdkmanager 里已经没有 `tools` 这个包了，会直接
+      # "Warning: Failed to find package 'tools'" + exit 1（v0.1.7 首次真跑就撞上）。
+      # 这里只需要 platform-tools（adb/sdkmanager）与 build-tools（apksigner/aapt2），
+      # Gradle 自己会按 compileSdk 装 platform 与 build-tools 具体版本。
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Verify tag matches version
         id: version
