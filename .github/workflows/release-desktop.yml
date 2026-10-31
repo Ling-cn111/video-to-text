@@ -216,7 +216,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 必须 22+：`@capacitor/cli` 的 engines 是 `>=22.0.0`，Node 20 上
+          # `npx cap sync` 直接 `[fatal] The Capacitor CLI requires NodeJS >=22.0.0`
+          # （v0.1.7 第二次真跑撞到）。桌面端 job 用 20 不受影响（不跑 cap）。
+          node-version: 22
           cache: pnpm
 
       # Capacitor 8 要求 JDK 21；ubuntu-latest 预装的 17 不够用（AGP 8.13 直接报
@@ -324,9 +327,14 @@ jobs:
           APK="app/build/outputs/apk/release/app-release.apk"
           test -f "$APK" || { echo "::error::没有产出 APK"; exit 1; }
           # 签名必须是 v2 及以上（v1 只是给 Android 6 及以下兜底，minSdk 24 用不到）
+          #
+          # 用退出码判断，不要 grep "verified"：`--print-certs` 的输出里**没有**
+          # 那个词（只有加 `--verbose` 才有 "Verified using v2 scheme: true"）。
+          # 一开始写成 grep "verified" 时，签名完全正常的包也会被判失败。
           BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" | tee /tmp/certs.txt
-          grep -qi "verified" /tmp/certs.txt || { echo "::error::APK 签名校验未通过"; exit 1; }
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK" | tee /tmp/certs.txt
+          grep -qi "Verified using v2 scheme .* true" /tmp/certs.txt \
+            || { echo "::error::APK 没有 v2 签名，装不上"; exit 1; }
           grep -q "SHA-256" /tmp/certs.txt || { echo "::error::拿不到证书指纹，签名可能没生效"; exit 1; }
           # 版本号必须与 tag 一致：手工漏改 build.gradle 时这里能拦住
           AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
