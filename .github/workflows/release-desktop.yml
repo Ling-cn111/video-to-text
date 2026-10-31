@@ -314,9 +314,14 @@ jobs:
 
       # 不用 init-mirrors.gradle：那是给国内网络绕开 dl.google.com 重置用的。
       # GitHub 托管 runner 在海外，官方仓库本来就通，多加一层镜像只会多一次解析。
+      #
+      # 用 `bash gradlew` 而不是 `./gradlew`：可执行位是 git 里的元数据，只有 main 上
+      # 补过之后的新 tag 才有；已发布的 tag（如 v0.1.7）那份 commit 里 gradlew 仍是
+      # 100644，Linux 上执行会 Permission denied（exit 126）。走 `bash` 显式解释
+      # 就能跨过这个历史包袱，不必 force-push 已经发布出去的 tag。
       - name: Build release APK
         working-directory: android
-        run: ./gradlew assembleRelease --no-daemon
+        run: bash gradlew assembleRelease --no-daemon
 
       - name: Verify APK signature and version
         id: apk
