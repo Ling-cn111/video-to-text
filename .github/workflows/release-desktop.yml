@@ -29,6 +29,11 @@ on:
       tag:
         description: "要发布的 tag（例如 v0.1.5，需已存在）"
         required: true
+      dry_run:
+        description: "只构建不发布（验证流水线用）"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: release-desktop-${{ github.ref }}
@@ -146,6 +151,9 @@ jobs:
           ls -l dist/
 
       - name: Publish release
+        # dry_run 时只构建不发布：用来验证流水线本身（例如改了 Android job 之后），
+        # 不用真的开一个新版本、也不用删一个已经发出去的 Release
+        if: ${{ !inputs.dry_run }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -169,3 +177,162 @@ jobs:
               --generate-notes \
               "${ASSETS[@]}"
           fi
+
+  # ---------------------------------------------------------------------------
+  # Android APK：与桌面端同一个 tag、同一个 Release。
+  #
+  # 为什么必须自动化：v0.1.4 ~ v0.1.6 的 APK 都是我本机 `gradlew assembleRelease` 之后
+  # 手工 `gh release upload` 上去的。手工步骤的问题不是慢，是**会忘**——
+  # Release 页面挂着桌面端新版本、手机端还是旧的，用户装上就以为是新功能没生效。
+  #
+  # 为什么单独一个 job 而不是塞进 desktop job：Tauri 的 Windows 安装包必须在
+  # windows-latest 上构建（WiX / NSIS 是 Windows 工具链），而 Android 更快更省钱地跑
+  # 在 ubuntu-latest（还要用 Linux 下的 JDK 与 SDK 工具链）。两个平台的依赖也没有交集。
+  #
+  # 为什么用 `needs: build`：APK 要传到**已经创建好的** Release 上。反过来的话，
+  # 两个 job 同时 `gh release create` 会互相踩，后到的那个直接失败。
+  # ---------------------------------------------------------------------------
+  android:
+    name: build & upload APK
+    needs: build
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # Capacitor 8 要求 JDK 21；ubuntu-latest 预装的 17 不够用（AGP 8.13 直接报
+      # "Android Gradle plugin requires Java 21"）
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Verify tag matches version
+        id: version
+        shell: bash
+        env:
+          TAG_NAME: ${{ inputs.tag || github.ref_name }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          if [ "$TAG_NAME" != "v$VERSION" ]; then
+            echo "::error::tag $TAG_NAME 与 package.json 的版本 v$VERSION 不一致"
+            exit 1
+          fi
+          # Android 的 versionName 也是独立一份，v0.1.6 曾漏改（APK 里还是 0.1.5）
+          GRADLE_VERSION=$(grep -m1 'versionName "' android/app/build.gradle | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ "$GRADLE_VERSION" != "$VERSION" ]; then
+            echo "::error::android/app/build.gradle 的 versionName 是 $GRADLE_VERSION，应为 $VERSION"
+            exit 1
+          fi
+          echo "构建版本：$VERSION（tag $TAG_NAME）"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 静态壳没有 Node 服务端，后端地址必须在构建期内联成绝对地址。
+      # 注意 build-shell.mjs 优先读 SHELL_API_BASE，其次 .env.local 的 BACKEND_ORIGIN——
+      # 后者被 .gitignore 忽略，CI 上不存在，所以这里必须显式给。
+      - name: Build mobile bundle
+        env:
+          SHELL_API_BASE: ${{ vars.SHELL_API_BASE || 'https://video-ttext-api-thuxmkmghu.cn-hangzhou.fcapp.run' }}
+        run: pnpm build:mobile
+
+      - name: Sync Capacitor android project
+        run: npx cap sync android
+
+      # 签名密钥从 Secrets 还原。keystore.properties 是 gitignore 的，CI 上没有它，
+      # build.gradle 会跳过 signingConfigs.release → assembleRelease 产出的 APK
+      # 没有签名，装不上，而且升级会丢（Android 用证书判定是不是同一个应用）。
+      # 所以这里不还原就直接失败，不要产出一个"看起来成功"的废包。
+      - name: Restore release keystore
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::缺少 secret ANDROID_KEYSTORE_BASE64，无法签名 APK"
+            echo "::error::生成方式：base64 -w0 vtt-release.jks | pbcopy（或 certutil -encode）"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/keystore"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore/vtt-release.jks"
+          echo "已还原 keystore（$(stat -c%s "$RUNNER_TEMP/keystore/vtt-release.jks") 字节）"
+
+      - name: Write keystore.properties
+        shell: bash
+        env:
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          # 三个值都从 Secrets 来；缺任何一个都直接失败，不要用占位符糊过去
+          for name in STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::缺少 secret $name"
+              exit 1
+            fi
+          done
+          cat > android/keystore.properties <<EOF
+          storeFile=$RUNNER_TEMP/keystore/vtt-release.jks
+          storePassword=$STORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+
+      # 不用 init-mirrors.gradle：那是给国内网络绕开 dl.google.com 重置用的。
+      # GitHub 托管 runner 在海外，官方仓库本来就通，多加一层镜像只会多一次解析。
+      - name: Build release APK
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Verify APK signature and version
+        id: apk
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          APK="app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK" || { echo "::error::没有产出 APK"; exit 1; }
+          # 签名必须是 v2 及以上（v1 只是给 Android 6 及以下兜底，minSdk 24 用不到）
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" | tee /tmp/certs.txt
+          grep -qi "verified" /tmp/certs.txt || { echo "::error::APK 签名校验未通过"; exit 1; }
+          grep -q "SHA-256" /tmp/certs.txt || { echo "::error::拿不到证书指纹，签名可能没生效"; exit 1; }
+          # 版本号必须与 tag 一致：手工漏改 build.gradle 时这里能拦住
+          AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
+          "$AAPT" dump badging "$APK" | grep -E "^(package|sdkVersion|targetSdkVersion)" | tee /tmp/badging.txt
+          grep -q "versionName='$VERSION'" /tmp/badging.txt || { echo "::error::APK 里的 versionName 不是 $VERSION"; exit 1; }
+          echo "apk=dist/video-to-text_${VERSION}_android.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Stage APK with ASCII name
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk "dist/video-to-text_${VERSION}_android.apk"
+          ls -l dist/
+
+      - name: Upload APK to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          gh release upload "$TAG_NAME" \
+            "dist/video-to-text_${VERSION}_android.apk" \
+            --clobber

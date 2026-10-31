@@ -46,12 +46,12 @@
 
 **目标**：在 PWA 之外提供原生应用分发。
 
-- 桌面端（Windows）：**已交付** ✅ —— Tauri 2 + Next 静态导出，安装包走 GitHub Release（当前 v0.1.5，`.msi` / `.exe`）。**v0.1.5 起带自动更新**：`tauri-plugin-updater` + 签名校验，推 `v*` tag 由 `release-desktop.yml` 自动构建发布。打包流程与踩坑见 [desktop-packaging](desktop-packaging.md)，不变量见 [frontend-features](frontend-features.md) §15
+- 桌面端（Windows）：**已交付** ✅ —— Tauri 2 + Next 静态导出，安装包走 GitHub Release（当前 v0.1.7，`.msi` / `.exe`）。**v0.1.5 起带自动更新**：`tauri-plugin-updater` + 签名校验，推 `v*` tag 由 `release-desktop.yml` 自动构建发布。打包流程与踩坑见 [desktop-packaging](desktop-packaging.md)，不变量见 [frontend-features](frontend-features.md) §15
 - 桌面端（macOS）：**未启动** —— 同一套 `src-tauri` 配置，但需要 macOS 机器签名与公证；当前仓库无对应 CI job
-- 移动端（Android）：**已发布** ✅ —— Capacitor 8 包壳，`pnpm build:mobile` 复用桌面端的静态导出脚本（`scripts/build-shell.mjs` 的 `mobile` 目标），前端资源打进 APK 直连后端，**不依赖域名可达性**。图标、启动图、release 签名配置均已就位，v0.1.4 起在 GitHub Release 分发 APK，v0.1.5 起与桌面端同版本号发布
+- 移动端（Android）：**已发布** ✅ —— Capacitor 8 包壳，`pnpm build:mobile` 复用桌面端的静态导出脚本（`scripts/build-shell.mjs` 的 `mobile` 目标），前端资源打进 APK 直连后端，**不依赖域名可达性**。图标、启动图、release 签名配置均已就位，v0.1.4 起在 GitHub Release 分发 APK，v0.1.5 起与桌面端同版本号发布，**v0.1.7 起 APK 由 CI 产出**（`release-desktop.yml` 的 `android` job，不再需要本地手工 `gh release upload`）
   - 构建：`pnpm build:mobile` → `npx cap sync android` → `cd android && ./gradlew --init-script gradle/init-mirrors.gradle assembleDebug`
   - **系统分享接收已打通**：在 B站 App 点「分享 → 视频转文字」直接开转。manifest 只声明 `SEND` + `text/plain`（不声明 `BROWSABLE`，否则每点一次 B站 链接都会弹选择框）；原生插件 `ShareIntentPlugin` 自写（`@capacitor/app` 只处理 `ACTION_VIEW`）；JS 侧 `use-share-intent` 抽链接并把 `b23.tv` 短链还原成 `bilibili.com`（短链会让后端字幕 / playurl 两条快路径失效）
-  - 踩坑与不变量见 [frontend-features](frontend-features.md) §16（`androidScheme` 必须 https、`server.url` 不能配、镜像 init script 不能省、keystore 必须备份）与 §17（分享接收五个致命点）
+  - 踩坑与不变量见 [frontend-features](frontend-features.md) §16（`androidScheme` 必须 https、`server.url` 不能配、镜像 init script 不能省、keystore 必须备份）、§17（分享接收五个致命点）与 §18（APK 必须由 CI 产出、签名密钥缺失即失败）
 - 本地文件上传（M3）：**未启动** —— 需 `@capacitor/camera` / `filesystem` 选本地视频 + 后端 multipart 上传，并新增 `FILE_TOO_LARGE` / `FILE_FORMAT_UNSUPPORTED` 两个错误码（前端 `types.ts` / `api-server.ts` / `error-titles.ts` + 后端 `errors.py` 四处同步，见 `docs/api-contract.md` §3）
 - 移动端（iOS）：**未启动** —— 打包必须有 macOS + Xcode，当前开发机是 Windows。同一套前端资源，需补 `npx cap add ios` 与 macOS CI job
 - PWA（M1）与 M4 互补：PWA 即装即用（需域名可达），打包 App 覆盖系统分享与离线启动

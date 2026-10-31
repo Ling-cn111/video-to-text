@@ -15,41 +15,45 @@
 - **进度页给的是真实反馈**：当前阶段剩余时间预估、按阶段自动退避的轮询（10 秒内 800ms → 之后 3s）、切到后台暂停轮询
 - **自带 API Key（BYOK，可自由换服务商）**：右上角「API 设置」可填自己的 **Key + 接口地址 + 模型名**，任何兼容 OpenAI `chat/completions` 的服务商都能用（DeepSeek / 百炼 / Moonshot / 智谱 / 硅基流动 / OpenAI / 自建中转），用各自的额度、不占站点配额；Key 只存在本机浏览器，生成总结时随请求头发给后端，不进请求体、不落库、不写日志。语音识别用的是免费模型，不需要填 Key
 - **直接输入视频号**：`BV1xx411c7mD`、`av170001` 这类裸号可以直接粘进首页输入框，不必凑出完整链接
+- **热词可选填**：人名 / 产品名 / 专业术语（逗号或顿号分隔，最多 12 个）会进语音识别的提示词，减少「听得见音但猜错字」；命中字幕快路径时用不到，其余流程不受影响
 - **限流有明确说法**：触发 429 时显示「请求太频繁」并给出冷却倒计时，冷却期内禁用重试（重试本身也是 POST，必然再撞限流）
 
 | | 入口 |
 | --- | --- |
 | 在线体验 | <https://video-to-text-six.vercel.app> |
-| 桌面端下载（Windows） | [**v0.1.6 · .exe 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.6/video-to-text_0.1.6_x64-setup.exe) ／ [全部 Release](https://github.com/Ling-cn111/video-to-text/releases/latest) |
-| 手机端下载（Android） | [**v0.1.6 · .apk 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.6/video-to-text_0.1.6_android.apk) — 3.8 MB，Android 7.0+，覆盖安装即可升级 |
+| 桌面端下载（Windows） | [**v0.1.7 · .exe 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.7/video-to-text_0.1.7_x64-setup.exe) ／ [全部 Release](https://github.com/Ling-cn111/video-to-text/releases/latest) |
+| 手机端下载（Android） | [**v0.1.7 · .apk 直链**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.7/video-to-text_0.1.7_android.apk) — 3.8 MB，Android 7.0+，覆盖安装即可升级 |
 
 ### 桌面端下载
 
-当前版本 **v0.1.6**，点文件名直接下载（无需先进 Release 页找）：
+当前版本 **v0.1.7**，点文件名直接下载（无需先进 Release 页找）：
 
-- [**video-to-text_0.1.6_x64-setup.exe**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.6/video-to-text_0.1.6_x64-setup.exe) — 3.5 MB，NSIS，普通用户双击安装，**无需管理员权限**（推荐）
-- [**video-to-text_0.1.6_x64_zh-CN.msi**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.6/video-to-text_0.1.6_x64_zh-CN.msi) — 4.8 MB，WiX，适合企业组策略 / 静默分发
+- [**video-to-text_0.1.7_x64-setup.exe**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.7/video-to-text_0.1.7_x64-setup.exe) — 3.5 MB，NSIS，普通用户双击安装，**无需管理员权限**（推荐）
+- [**video-to-text_0.1.7_x64_zh-CN.msi**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.7/video-to-text_0.1.7_x64_zh-CN.msi) — 4.8 MB，WiX，适合企业组策略 / 静默分发
 
 校验和（`certutil -hashfile <文件> SHA256`）：
 
 ```
-cd71331d4d4db7ebb6463effabd0abd41fe83910481009454cc6a5a4e2ea42ff  video-to-text_0.1.6_x64-setup.exe
-2eb8189d7b96f2d56c5e0536a74ff122e122896b06005a1f55351d13ae511a23  video-to-text_0.1.6_x64_zh-CN.msi
+<待 v0.1.7 产物发布后按实际下载字节填入>  video-to-text_0.1.7_x64-setup.exe
+<待 v0.1.7 产物发布后按实际下载字节填入>  video-to-text_0.1.7_x64_zh-CN.msi
 ```
 
-> **请使用 v0.1.6**：手机端可以直接从 B站 分享进来转写、能在设置面板里检查更新；桌面端修好了「打开发布页没反应」，发布页也不会再落到旧版本。已装 v0.1.5 的用户可在顶栏「检查更新」里自动升级。更早版本请手动覆盖安装一次（老版本没有更新器）。详见 [v0.1.6 Release 说明](https://github.com/Ling-cn111/video-to-text/releases/tag/v0.1.6)。
+> **不写死旧版本的校验和**：CI 构建与本地构建的字节不同（MSI 内嵌时间戳等），
+> 抄上一版的哈希会让真心校验的用户以为自己下到了坏包。发版后按 Release 实际资产重算。
+
+> **请使用 v0.1.7**：首页可以填热词引导语音识别认准专有名词；APK 改由 CI 与桌面端同一次发版产出，不会再出现「桌面端已更新、手机端还是旧的」。已装旧版的用户可在顶栏「检查更新」（手机端在设置面板「版本更新」）里升级。详见 [v0.1.7 Release 说明](https://github.com/Ling-cn111/video-to-text/releases/tag/v0.1.7)。
 > 安装包未做代码签名，Windows SmartScreen 会提示「未知发布者」，点「更多信息 → 仍要运行」即可。
 > 安装后不依赖域名可达性：桌面端直接连后端 API，不受 `*.vercel.app` 被墙影响。
 > `github.com` 在国内可能连不上，若下载失败需自备代理；网页端本身不受此影响。更新检查也走 GitHub，连不上时会静默跳过，可在顶栏「检查更新」里手动重试或打开发布页。
 
 ### 手机端（Android）
 
-**已发布安装包**：下载 [**video-to-text_0.1.6_android.apk**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.6/video-to-text_0.1.6_android.apk)（3.8 MB）传到手机安装即可，无需 Android Studio，也不需要域名可达。
+**已发布安装包**：下载 [**video-to-text_0.1.7_android.apk**](https://github.com/Ling-cn111/video-to-text/releases/download/v0.1.7/video-to-text_0.1.7_android.apk)（3.8 MB）传到手机安装即可，无需 Android Studio，也不需要域名可达。
 
 校验和（`sha256sum <文件>`）：
 
 ```
-3e209bcedaa17904f0c898dafb3cd478940313ef6b9eebfe97292cb4dca1ced9  video-to-text_0.1.6_android.apk
+<待 v0.1.7 产物发布后按实际下载字节填入>  video-to-text_0.1.7_android.apk
 ```
 
 > 安装包已用固定 keystore 签名，后续版本可直接覆盖升级；首次安装需在系统里允许「安装未知来源应用」。
@@ -80,6 +84,9 @@ cd android
 ```
 
 发布版签名：把 `android/keystore.properties.example` 复制成 `keystore.properties` 并填入 keystore 路径与密码，然后 `assembleRelease`。**keystore 必须备份**——丢了之后已安装用户永远无法升级。
+
+> **日常发版不用自己跑这些**：推 `v*` tag 会触发 `release-desktop.yml`，桌面端与 APK 都由 CI 构建并上传到同一个 Release。
+> 上面的命令是本地想先看一眼产物时才用。
 
 > **`--init-script gradle/init-mirrors.gradle` 不能省**：Capacitor 子工程的 `build.gradle` 把 `google()` 排在最前，
 > 直连 `dl.google.com` 在国内会卡十几分钟再超时失败。这个 init script 在子工程脚本求值前插入阿里云镜像。
@@ -226,7 +233,7 @@ src-tauri/                # Tauri 桌面端壳
 - PWA 在国内手机暂不可安装：`*.vercel.app` 被 DNS 污染与 SNI 阻断，需换自定义域名
 - 桌面端安装包未做代码签名，SmartScreen 会提示「未知发布者」；**v0.1.5 起有自动更新**（检查走 GitHub，国内可能连不上，此时静默跳过，可手动点「检查更新」）
 - **Android 安装包未上应用商店**，只发在 GitHub Release（需自行下载 APK 侧载，国内访问 `github.com` 可能需代理）；iOS 需 macOS + Xcode，未启动
-- Android 包的最低系统要求是 **Android 7.0（API 24）**，targetSdk 36；自行打包需 JDK 17+ 与 Android SDK（无需 Android Studio）
+- Android 包的最低系统要求是 **Android 7.0（API 24）**，targetSdk 36；自行打包需 JDK 21 与 Android SDK（无需 Android Studio；本机工具链放在 `D:\vtt-toolchain`，路径由 `android/local.properties` 与 `android/keystore.properties` 指定，两者都不入库）
 
 ## 协作规范
 

@@ -8,6 +8,7 @@ import type {
   StartTaskResponse,
   SummarizeRequest,
   Summary,
+  TranscribeEngine,
   VideoInfo,
 } from '@/lib/types'
 
@@ -32,13 +33,25 @@ const mockApi: ApiClient = {
       ),
     ),
 
-  /** POST /api/transcribe：创建转写任务（url 参数仅在真实模式使用，Mock 忽略） */
-  startTranscription: (videoId: string, video?: VideoInfo): Promise<StartTaskResponse> =>
+  /**
+   * POST /api/transcribe：创建转写任务。
+   *
+   * url / engine / hotwords 三个参数 Mock 都不使用（Mock 的 taskId 自带上下文），
+   * 但仍要原样发出去：E2E 靠拦截这个请求体来证明「热词真的被带上了」——如果这里
+   * 悄悄丢掉字段，Mock 模式下测不到、真实模式下才炸，是最难查的那类问题。
+   */
+  startTranscription: (
+    videoId: string,
+    video?: VideoInfo,
+    url?: string,
+    engine?: TranscribeEngine,
+    hotwords?: string[],
+  ): Promise<StartTaskResponse> =>
     toJson(
       fetch('/api/transcribe', {
         method: 'POST',
         headers: JSON_HEADERS,
-        body: JSON.stringify({ videoId, video }),
+        body: JSON.stringify({ videoId, video, url, engine, hotwords }),
       }).catch(throwNetworkError),
     ),
 

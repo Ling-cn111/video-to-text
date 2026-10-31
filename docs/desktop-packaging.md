@@ -181,14 +181,14 @@ Tauri 的更新机制是「**签名 + 一份 JSON 清单**」，两者缺一不�
 
 1. **一次性**：生成密钥对并离线保存私钥
    ```bash
-   pnpm tauri signer generate -w D:/tauri-keys/vtt-updater.key --ci
+   pnpm tauri signer generate -w D:/vtt-toolchain/tauri-keys/vtt-updater.key --ci
    ```
    公钥填进 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`（已填好，改密钥才需要动）。
    **私钥丢失 = 已安装客户端永远收不到自动更新**，必须离线备份；私钥入库等于任何人都能发更新。
 
 2. **每次构建**：把私钥通过环境变量传给 bundler，`bundle.createUpdaterArtifacts: true` 会让它额外产出 `.sig`
    ```bash
-   TAURI_SIGNING_PRIVATE_KEY="$(cat D:/tauri-keys/vtt-updater.key)" \
+   TAURI_SIGNING_PRIVATE_KEY="$(cat D:/vtt-toolchain/tauri-keys/vtt-updater.key)" \
    TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" \
    pnpm tauri build
    ```
@@ -208,6 +208,33 @@ Tauri 的更新机制是「**签名 + 一份 JSON 清单**」，两者缺一不�
 不用改客户端。发版流程已自动化：推 `v*` tag 触发 `.github/workflows/release-desktop.yml`，
 它在装依赖前先校验三处版本号一致（`package.json` / `tauri.conf.json` / `Cargo.toml`），
 然后构建 → 签名 → 生成 `latest.json` → `gh release create`。
+
+**同一工作流还有第二个 job `android`**（v0.1.7 起）：`needs: build`，在 `ubuntu-latest` 上跑
+`pnpm build:mobile` → `npx cap sync android` → `./gradlew assembleRelease` → `gh release upload`，
+把 `video-to-text_<version>_android.apk` 追加到同一个 Release。
+
+为什么不并进桌面端那个 job / 为什么必须走 CI：
+
+- **工具链没有交集**：Windows runner + Rust/NSIS/WiX vs Linux + JDK 21 + Android SDK，塞进一个 job
+  只会让两边都装一遍对方的东西。
+- **`needs: build` 是硬约束**：APK 要传进已建好的 Release；两个 job 同时 `gh release create` 会互踩。
+- **手工上传的问题不是慢，是会忘**：v0.1.4 ~ v0.1.6 的 APK 一直是本地 `assembleRelease` 后手补，
+  Release 页因此常常「桌面端已是新版本、手机端还是旧的」，用户装上以为新功能没生效。
+
+四条不能动的约束：
+
+1. 签名密钥从 Secrets 还原（`ANDROID_KEYSTORE_BASE64` / `ANDROID_KEYSTORE_PASSWORD` /
+   `ANDROID_KEY_ALIAS` / `ANDROID_KEY_PASSWORD`），**任缺一个必须 fail**。`android/app/build.gradle`
+   在缺 `keystore.properties` 时会静默跳过 `signingConfigs.release`，产出一个装不上的废包 ——
+   这比构建失败更糟，因为它看起来是绿的。
+2. `versionName` 必须与 tag 一致（CI 用 `aapt2 dump badging` 拦）。**它和桌面端三处版本号是两份
+   独立的配置**，v0.1.6 发版时 `build.gradle` 漏改，APK 里还是 0.1.5。
+3. 上传必须带 `--clobber`，重跑流水线时资产已存在。
+4. **不要给 Android job 加 `--init-script gradle/init-mirrors.gradle`** —— 那是给国内网络绕
+   `dl.google.com` 重置用的，海外 runner 官方仓库本来通，多加一层只是多一次解析。
+
+手动触发流水线时可传 `dry_run: true`：只构建不发布（`Publish release` 与整个 `android` job
+都带 `if: ${{ !inputs.dry_run }}`），用于验证改动而不开新版本。
 
 **已知限制**：端点在 `github.com` 上，国内可能不可达。检查失败时客户端静默跳过（自动检查）或
 提示失败原因 + 给出 Release 页链接（手动检查）。要覆盖国内用户需把 `latest.json` 与安装包

@@ -26,6 +26,7 @@ export interface ApiClient {
     video?: VideoInfo,
     url?: string,
     engine?: TranscribeEngine,
+    hotwords?: string[],
   ) => Promise<StartTaskResponse>
   getTask: (taskId: string) => Promise<GetTaskResponse>
   summarize: (request: SummarizeRequest) => Promise<Summary>

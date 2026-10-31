@@ -35,13 +35,22 @@ export const realApi: ApiClient = {
     video?: VideoInfo,
     url?: string,
     engine?: TranscribeEngine,
+    hotwords?: string[],
   ): Promise<StartTaskResponse> =>
     toJson(
       fetch(apiUrl('/transcribe'), {
         method: 'POST',
         // 云端 ASR 用的是站点的免费模型 Key，界面不再收集用户自带的 ASR Key
         headers: JSON_HEADERS,
-        body: JSON.stringify({ videoId, video, url, engine }),
+        // hotwords 为空数组时不发这个字段：后端 schema 是可选的，省略等价于「没填」，
+        // 而 [] 虽然也能通过校验，但属数据库/日志里多一个无意义的键
+        body: JSON.stringify({
+          videoId,
+          video,
+          url,
+          engine,
+          ...(hotwords && hotwords.length > 0 ? { hotwords } : {}),
+        }),
       }).catch(throwNetworkError),
     ),
 

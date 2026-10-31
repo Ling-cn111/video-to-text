@@ -206,7 +206,7 @@
 | 解析失败一律「不比当前新」 | `parseVersion` 无法解析时返回 `null`，`compareVersions` 返回 0，`isNewerVersion` 返回 false。**宁可漏一次更新，也不要因为端点返回了奇怪的版本号就提示用户装一个坏包**（E2E 回归 30b） |
 | 降级不算更新 | `isNewerVersion("0.1.3", "0.1.4") === false`。否则回滚发版时会让所有用户被提示「更新」到旧版。插件层 `check()` 本身也允许同版本，所以拿到 Update 后还要用 `getVersion()` 复检一次 |
 | 进度总量未知时不猜 | `progressPercent(downloaded, total)` 在 `total` 缺失或 ≤0 时返回 `null`，界面切成不确定态。**不许用已下载字节数瞎算百分比**——跳来跳去的进度条比没有更让人困惑（E2E 回归 30d） |
-| 签名不可绕过 | `tauri.conf.json` 的 `plugins.updater.pubkey` 是公钥，私钥离线保存（`D:/tauri-keys/vtt-updater.key`，**不入库**）。`bundle.createUpdaterArtifacts: true` 让 `tauri build` 产出 `.sig`。`scripts/make-latest-json.mjs` **在没有 `.sig` 时直接失败退出**——这是故意的：宁可发版失败，也不要发一个客户端装不上的更新。私钥丢失 = 已安装客户端永远收不到自动更新，必须离线备份 |
+| 签名不可绕过 | `tauri.conf.json` 的 `plugins.updater.pubkey` 是公钥，私钥离线保存（`D:/vtt-toolchain/tauri-keys/vtt-updater.key`，**不入库**）。`bundle.createUpdaterArtifacts: true` 让 `tauri build` 产出 `.sig`。`scripts/make-latest-json.mjs` **在没有 `.sig` 时直接失败退出**——这是故意的：宁可发版失败，也不要发一个客户端装不上的更新。私钥丢失 = 已安装客户端永远收不到自动更新，必须离线备份 |
 | `latest.json` 不入库 | 每次发版内容都不同（签名 + 时间戳），入库只制造无意义 diff。由 `release-desktop.yml` 现生成现上传，`.gitignore` 已忽略 `/latest.json` |
 | 端点与下载页必须同仓库、且下载页不能用 `latest` | `UPDATE_ENDPOINT` 指向 `releases/latest/download/latest.json`（**这个必须带 `latest`**，那是 Tauri updater 的固定端点路径），而 `RELEASES_PAGE` 指向 `releases` **列表页**、不是 `releases/latest`，两者都在 `Ling-cn111/video-to-text`。指向不同仓库会出现「检查到更新但点进去是另一个项目」；用 `releases/latest` 则会被 GitHub 302 到**最后一个非 prerelease 的 tag**——新版本已经装上了但对应 Release 还没建时，用户点开看到的是上一个版本，观感就是「这个按钮根本没生效」（v0.1.6 真机反馈原话「0.16版本打开发布页还是0.15版本的」；E2E 回归 30f / 33 断言 `RELEASES_PAGE` 不含 `releases/latest`） |
 | 下载页链接是已知限制 | 端点在 GitHub 上，国内可能不可达。这是当前方案的取舍，**不要为了「看起来更完整」把失败文案改成成功**。后续若要覆盖国内用户，需要把 `latest.json` 与安装包放到可达域名（如阿里云 FC 反代），属独立改造 |
@@ -250,7 +250,24 @@
 | 分享后直接开转 | 用户从 B站 点「分享 → 视频转文字」，意图已经明确，直接 `submitUrl` + 跳进度页，**不再要求回首页确认一次**。这与首页表单的交互刻意不同：表单是「用户主动来粘贴」，需要确认；分享是「用户已经在别处确认过了」 |
 | 产物里必须有原生插件与 JS 监听 | `node scripts/verify-shell.mjs mobile` 扫描 `out/` 的 JS 产物，断言含 `ShareIntent` 与分享失败提示文案。**只断言原生插件存在是不够的**：JS 侧不注册监听器的话，用户分享过来会落在首页什么都不发生，而构建日志全绿 |
 
-## 18. 回归检查清单（改前端后必跑）
+## 18. 热词与 APK 自动发布（PR14 新增）
+
+| 功能 | 锁定要求 |
+| --- | --- |
+| 热词只影响 ASR | `hotwords` 经 `StartTranscribeRequest` → `transcribe.py` → `asr.py` 的 `build_initial_prompt`，最终变成 `initial_prompt`。**它不改变识别结果的范围，只引导写法**。命中字幕快路径时用不到（字幕是 UP 主上传的文本），但前端仍然照传：用户不知道这次会走哪条路径，行为不该随路径变化（E2E 回归 34c） |
+| 热词必须真的进请求体 | `parseHotwords(get().hotwordsText)` 是 `submitUrl` 与 `retry` 两处的**必填参数**（`ApiClient.startTranscription` 的第 5 个位置）。只在 UI 上做输入框、提交时丢掉字段，是最难发现的那类 bug：Mock 模式下看不出，真实模式下也不报错，只是「识别质量没变化」（E2E 回归 34c 拦 `/api/transcribe` 请求体断言） |
+| 解析必须容忍随手敲的分隔符 | `src/lib/hotwords.ts` 的 `SEPARATORS = /[，,、;；\s]+/`：中英文逗号、顿号、分号、空白、换行统统当分隔。用户不会为输入框改变打字习惯（E2E 回归 34） |
+| 去重按忽略大小写 | `Transformer` 与 `transformer` 算同一个，但 `Transformer` 与 `Transformers` 是两个词（复数可能是另一个产品名）。顺序保留输入顺序——后端按顺序拼提示词，靠前的权重更靠前（E2E 回归 34） |
+| 长度与条数必须有上限 | 单条 `MAX_HOTWORD_CHARS = 20`、最多 `MAX_HOTWORDS = 12`、合计 `MAX_HOTWORDS_TOTAL_CHARS = 100`。后端 `_INITIAL_PROMPT_MAX_CHARS = 200` 是「热词 + 标题」的总预算，标题常见的 20-40 字要留位置；**超了会被后端静默截断**，用户填 50 个只会得到「前几个生效、后面的没反应」（E2E 回归 34b） |
+| 存原始文本，不存解析结果 | localStorage 键 `hotwords`，值就是用户在输入框里敲的那一串。存解析后的数组会让分隔符被规范化成「、」，用户下次回来想继续编辑时发现自己敲的逗号都变了，会以为输入被吞（E2E 回归 34e） |
+| 默认收起、填过就展开 | 热词是「只在识别质量不好时才想起来」的功能，摊开在首屏会让「粘贴链接 → 点解析」的主路径多一个必读区块。`open = expanded || hasWords`：填过词后下次进来保持展开，因为还要改（E2E 回归 34e） |
+| APK 必须由 CI 产出 | `release-desktop.yml` 里必须有独立的 `android` job（`needs: build`，`runs-on: ubuntu-latest`）。**历史教训**：v0.1.4 ~ v0.1.6 的 APK 都是本地 `assembleRelease` 后手工 `gh release upload`，Release 页面因此常常「桌面端已是新版本、手机端还是旧的」，用户装上以为新功能没生效（E2E 回归 34f） |
+| 签名密钥必须从 Secrets 还原且缺失即失败 | `ANDROID_KEYSTORE_BASE64` → 写 `$RUNNER_TEMP/keystore/vtt-release.jks`，四个 Secret 缺任何一个都 `exit 1`。`build.gradle` 在缺 `keystore.properties` 时会**跳过 `signingConfigs.release`**，产出的 APK 无签名、装不上、也覆盖不了已安装版本——「构建成功但废包」比构建失败更糟（E2E 回归 34f） |
+| APK 版本号必须与 tag 一致 | CI 在构建后 `aapt2 dump badging` 校验 `versionName='<version>'`，不一致直接失败。v0.1.6 发版时 `build.gradle` 的 `versionName` 曾漏改（APK 里还是 0.1.5）：**它和桌面端三处版本号是两份独立的配置，不能只改一边** |
+| 上传必须 `--clobber` | 重跑流水线时资产已存在，不加这个参数 `gh release upload` 直接失败。桌面端与 Android 两个 job 都可能重跑，这条对两者都成立 |
+| 不要给 Android job 加 `init-mirrors.gradle` | `android/gradle/init-mirrors.gradle` 是给**国内网络**绕开 `dl.google.com` 重置用的。GitHub 托管 runner 在海外，官方仓库本来就通，多加一层镜像只会多一次解析开销 |
+
+## 19. 回归检查清单（改前端后必跑）
 
 - [ ] 结果页默认显示「全文阅读」，文章排版无时间戳
 - [ ] Tab 可切换到「时间戳定位」，列表 + 复制功能正常
@@ -329,6 +346,12 @@
 - [ ] 短链末段不是 BV 号时 `canonicalUrlFor` 返回 `null`、保留原短链交给后端展开，**不许拼 `https://www.bilibili.com/video/<短链末段>`**（E2E 回归 33d）
 - [ ] 后端短链展开：只认 `b23.tv`、每一跳过白名单、终点必须含 `/video/`、任何异常返回 `None` 交回原链接；`parse_video_url` 与 `_resolve_target_url` 两处都接入（后端 `tests/test_short_link.py` 11 项）
 - [ ] 「取 Key」跟随草稿里的服务商，不等保存；`keyUrl` 为空时渲染 `byok-key-url-absent` 而不是死链（E2E 回归 33e + `verify-shell.mjs mobile` 的「API 设置」文字可见两项）
+- [ ] 热词解析：中英文逗号 / 顿号 / 分号 / 空白 / 换行都能分隔；`Transformer` 与 `transformer` 合并且 `Transformers` 不合并；顺序按输入顺序（E2E 回归 34）
+- [ ] 热词上限：单条 ≤20 字、最多 12 条、合计 ≤100 字，超了在**前端**就收敛（不靠后端截断）（E2E 回归 34b）
+- [ ] 热词真的进请求体：`POST /api/transcribe` 的 body 里能看到 `hotwords` 数组（E2E 回归 34c）
+- [ ] 没填词时不带非空热词：`body.hotwords ?? []` 为空数组（Mock 发 `[]`、真实端省略，两种实现都允许）（E2E 回归 34d）
+- [ ] 热词存原始文本：`localStorage.hotwords` 保留用户敲的分隔符，刷新后输入框回填且保持展开（E2E 回归 34e）
+- [ ] 发版工作流必须含 `android` job（`needs: build` + `runs-on: ubuntu-latest`），签名密钥从 Secrets 还原且缺失即失败，APK 版本号与 tag 一致、上传带 `--clobber`（E2E 回归 34f）
 - [ ] `latest.json` 的签名能解出 `version:` 与安装包文件名，URL 与 tag 一致（发版前用 `make-latest-json.mjs` 的输出核对）
 - [ ] 发版前三处版本号一致：`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`（`release-desktop.yml` 会拦）
 - [ ] `pnpm lint && pnpm build` 通过

@@ -32,9 +32,19 @@
   "videoId": "BV1xx411c7mD",   // 必填
   "video": { /* VideoInfo，可选，透传解析结果 */ },
   "url": "https://www.bilibili.com/video/BV1xx411c7mD",  // 真实后端用
-  "engine": "local"            // 可选："local" | "cloud"；不传由后端按能力自动挑
+  "engine": "local",           // 可选："local" | "cloud"；不传由后端按能力自动挑
+  "hotwords": ["Transformer", "字节跳动"]  // 可选：热词，引导 ASR 识别专有名词
 }
 ```
+
+`hotwords` 的行为：
+
+- **进 `initial_prompt`**：后端把它们和视频标题拼成一句提示（`build_initial_prompt`），
+  总长截断到 200 字符。人名、产品名、专业术语这类「听得出音但容易猜错字」的词收益最大。
+- **只影响 ASR**：命中字幕快路径时用不到（字幕是 UP 主上传的文本，没有识别过程）。
+  前端仍然照传——用户不知道这次会走哪条路径，行为不该随路径变化。
+- **缺省 / 空数组等价**：不传就是不填，后端不会因此报错。超过 12 个或单条超过 20 字
+  会在前端就被收敛掉（见 `src/lib/hotwords.ts`），不会出现「填了 50 个只生效 3 个」的困惑。
 
 `engine` 的行为：
 
