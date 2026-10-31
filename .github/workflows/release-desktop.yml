@@ -329,7 +329,9 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.value }}
         run: |
-          APK="app/build/outputs/apk/release/app-release.apk"
+          # 路径必须带 `android/`：这个 step 没有 working-directory，
+          # 在仓库根跑。写成 `app/build/...` 会 `没有产出 APK` 而明明构建成功了。
+          APK="android/app/build/outputs/apk/release/app-release.apk"
           test -f "$APK" || { echo "::error::没有产出 APK"; exit 1; }
           # 签名必须是 v2 及以上（v1 只是给 Android 6 及以下兜底，minSdk 24 用不到）
           #
