@@ -17,6 +17,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useApiSettingsOpenSignal } from '@/hooks/use-api-settings'
 import { notifyByokChanged } from '@/hooks/use-byok-status'
+import { openExternal } from '@/lib/external-link'
+import { IS_MOBILE_SHELL } from '@/lib/runtime'
+import { MobileUpdateSection } from '@/components/layout/mobile-update-section'
 import { clearSummaryCache } from '@/stores/task-store'
 import {
   EMPTY_LLM_CONFIG,
@@ -318,15 +321,15 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
                 </p>
               ) : null}
               <div className="flex flex-wrap gap-x-3 gap-y-1">
-                <a
-                  href={keyUrl}
-                  target="_blank"
-                  rel="noreferrer noopener"
+                <button
+                  type="button"
+                  onClick={() => void openExternal(keyUrl)}
                   className="inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  data-testid="byok-key-url"
                 >
                   {keyUrlName} 取 Key
                   <ExternalLink className="size-3" aria-hidden />
-                </a>
+                </button>
                 {activePreset?.keyHint ? (
                   <span className="text-xs text-muted-foreground">{activePreset.keyHint}</span>
                 ) : null}
@@ -342,6 +345,9 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
             AI 服务商，用完即丢弃：不写入任务记录、不写进日志、不随任务存下来。公用电脑上用完建议清除。
           </p>
         </div>
+
+        {/* 只有 Android 壳需要「检查更新」：网页刷新即最新，桌面端在顶栏有独立入口 */}
+        {IS_MOBILE_SHELL ? <MobileUpdateSection /> : null}
 
         <DialogFooter className="items-center justify-between gap-2 sm:justify-between">
           <Button

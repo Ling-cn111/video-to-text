@@ -11,8 +11,16 @@
 const BUILD_TARGET = process.env.BUILD_TARGET ?? "";
 const isStaticShell = BUILD_TARGET === "desktop" || BUILD_TARGET === "mobile";
 
+// 前端要知道自己跑的是哪个版本：移动端「检查更新」得拿它和 GitHub 上的最新版比。
+// 桌面端从 Tauri 的 getVersion() 拿（安装包内嵌的版本），这里只服务静态壳的前端。
+import { readFileSync } from "node:fs";
+const PKG_VERSION = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  env: {
+    NEXT_PUBLIC_APP_VERSION: PKG_VERSION,
+  },
   ...(isStaticShell
     ? {
         // 产物写到 out/：桌面端由 Tauri 的 asset 协议加载（src-tauri/tauri.conf.json 的
