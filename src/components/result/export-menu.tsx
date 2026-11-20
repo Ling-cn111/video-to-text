@@ -32,7 +32,8 @@ interface ExportMenuProps {
  * 很容易下错文件（拿到一份没有时间戳的「字幕」）。
  *
  * 移动端壳内点导出会拉起系统分享面板（保存到文件 / 发给微信等），
- * 网页与桌面端仍是下载。两条路径的提示文案不同，不能共用「已开始下载」。
+ * 桌面端壳内会弹系统「另存为」对话框（可选目标文件夹），网页端仍是下载。
+ * 三条路径的提示文案不同，不能共用「已开始下载」。
  */
 export function ExportMenu({ video, paragraphs, transcript }: ExportMenuProps) {
   /** 按结果给提示：用户取消不报错，真失败才提示换方式 */
@@ -42,7 +43,13 @@ export function ExportMenu({ video, paragraphs, transcript }: ExportMenuProps) {
       toast.error('导出失败，请重试或换一种格式')
       return
     }
-    toast.success(outcome === 'shared' ? '已打开分享面板，选一个应用保存' : '已开始下载')
+    toast.success(
+      outcome === 'shared'
+        ? '已打开分享面板，选一个应用保存'
+        : outcome === 'saved'
+          ? '已保存到所选文件夹'
+          : '已开始下载',
+    )
   }
 
   const handleExport = async (format: 'txt' | 'md') => {

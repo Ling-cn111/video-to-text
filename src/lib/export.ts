@@ -79,7 +79,8 @@ export function buildSubtitleFilename(format: SubtitleFormat, video: VideoInfo):
  * 把内容交给系统：移动端壳内走原生分享，网页 / 桌面端走分享或下载。
  *
  * 历史实现是裸的 `blob:` + `<a download>`，在 Android WebView 里会变成新窗口
- * 或静默失败；改造后统一走 `shareTextFile` 的三级降级（见 src/lib/share-file.ts）。
+ * 或静默失败；改造后统一走 `shareTextFile` 的分级降级（见 src/lib/share-file.ts）：
+ * 桌面壳内弹系统「另存为」对话框，移动端壳内走原生分享，网页端走分享或下载。
  *
  * 返回值语义：`cancelled` 是用户主动关掉分享面板，**不是错误**，调用方不要报错。
  */
