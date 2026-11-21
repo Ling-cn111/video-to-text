@@ -56,6 +56,7 @@ Vercel（Next.js 前端，rewrites 代理）
 | VPC / 交换机 / 安全组 | 与 Redis 同 VPC；交换机在 FC 支持的可用区 | 见 §4.2，三个 ID 通过环境变量注入 |
 | FC 运行时 | `custom-container` | FC 3.0 + Serverless Devs `fc3` 组件 |
 | 前端 | Vercel（或任意 Next.js 托管） | `BACKEND_ORIGIN` 指向 FC 触发器地址 |
+| OSS bucket | 可选（M3 本地上传需要） | 同地域、私有、`uploads/` 前缀 1 天生命周期、最小权限 AK；完整步骤见 §4.4 |
 | 账号权限 | RAM 子账号：FC 部署 + ACR 推送/拉取（配 `FC_ROLE_ARN` 时另需 `ram:PassRole`） | 不要用主账号 AccessKey |
 
 ---
@@ -390,6 +391,65 @@ role: ${env('FC_ROLE_ARN', '')}
 > 填了 `FC_ROLE_ARN` 时，**部署账号**还需要 `ram:PassRole`（条件 `acs:Service = fc.aliyuncs.com`），否则把角色绑到函数上会失败；留空则不需要。
 > 用 `vpcConfig` 的显式配置（而非 `auto`）时，部署账号**不需要** VPC / ECS 写权限——创建 ENI 由 FC 服务关联角色完成。`vpcConfig: auto` 才需要 `vpc:CreateVpc` / `vpc:CreateVSwitch` / `ecs:CreateSecurityGroup` 等一串权限，而且它新建的是一个**空 VPC**，里面并没有你的 Redis，所以本项目不选它。
 
+### 4.4 OSS bucket（M3 本地上传，可选）
+
+「上传本地视频」功能需要对象存储做中转：FC HTTP 触发器的同步请求体上限是 **32MB（平台硬限制，不可配置）**，
+异步投递事件体上限 128KB——500MB 级源文件的字节无论走哪条函数链路都会被平台拒收。唯一可行通道是
+**客户端直传 OSS（预签名 PUT）**，后端只签发凭证与复核引用（`backend/app/services/storage.py`）。
+不配置 OSS 时功能整体不可用（`capabilities.fileUploadConfigured=false`，前端隐藏入口），其余功能不受影响。
+
+**一次性控制台操作（约 5 分钟）：**
+
+1. **建 bucket**：OSS 控制台 → 创建 Bucket。要点：
+   - **与 FC 同地域**（本仓库为 `cn-hangzhou`）——Worker 走内网 endpoint 下载，跨地域内网不通；
+   - **读写权限选「私有」**——上传凭证只能写后端生成的 key，读也只经 Worker；
+   - 名字任意（下文记作 `<bucket>`）。
+2. **配 CORS**：bucket → 数据安全 → 跨域设置 → 创建规则：
+   - 来源：`*`（Web / 桌面 / 移动三端的 Origin 各不相同，预签名 PUT 不带 Cookie，放宽来源没有凭证面）
+   - 允许 Methods：`PUT`、`HEAD`；允许 Headers：`*`；暴露 Headers：`ETag`；超时 7200。
+3. **配生命周期**：bucket → 数据管理 → 生命周期 → 创建规则：
+   - 策略「指定前缀」= `uploads/`，距最后修改 **1 天**后删除。
+   - 这是「对象堆积」的唯一兜底：转写成功后 Worker 会立即删对象，失败任务保留 ≤1 天供重试
+     （重试带原 objectKey 重派，用户不用重新上传），但任何清理失败的对象都靠这条规则过期。
+4. **建 RAM AccessKey（最小权限）**：RAM 控制台 → 用户 → 创建用户（只生成 AccessKey，用于函数签名），
+   授权**自定义策略**（最小权限，限定前缀）：
+
+   ```json
+   {
+     "Version": "1",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": ["oss:PutObject", "oss:GetObject", "oss:HeadObject", "oss:DeleteObject"],
+         "Resource": "acs:oss:*:*:<bucket>/uploads/*"
+       }
+     ]
+   }
+   ```
+
+   不要直接挂 `AliyunOSSFullAccess`——那等于把整个账号的 OSS 读写都交给 FC 函数。
+
+5. **注入部署机变量并重新部署**（与 REDIS_URL 同一层）：
+
+   ```bash
+   export OSS_BUCKET=<bucket>
+   export OSS_ENDPOINT=https://oss-cn-hangzhou.aliyuncs.com
+   export OSS_INTERNAL_ENDPOINT=https://oss-cn-hangzhou-internal.aliyuncs.com   # Worker 下载用（免流量费）
+   export OSS_ACCESS_KEY_ID=LTAI...
+   export OSS_ACCESS_KEY_SECRET=...
+   s deploy -t s.yaml      # OSS_* 在 api / worker 两个函数上都声明了
+   ```
+
+**费用说明（按 2026-11 刊例价核算，详见官方价格页）：** 对象「用完即删」+ 1 天生命周期 → 存储费趋近 0
+（500MB 存一整天 ≈ ¥0.002）；浏览器上传是流入（免费）；Worker 经**内网 endpoint** 取件（免费）；
+对象不对外提供下载，外网流出为 0。请求费（PUT/HEAD/GET/DELETE 各计一次，约 0.01 元/万次）在
+个人用量下可忽略——**实际月账单是几分钱量级**。Worker 临时磁盘升到 10GB 档按量计费，
+`instanceConcurrency=1` 的用量下同样可忽略。
+
+**验收**：部署后 `GET /api/capabilities` 应返回 `"fileUploadConfigured": true`；
+本地冒烟：起前端 + 后端（带 OSS_* env），传一个小 mp4 走通「上传 → 转写 → 导出」，
+再确认 OSS 控制台里 `uploads/` 前缀下没有遗留对象。
+
 ---
 
 ## 5. FC 配置：`s.yaml` 双函数模板
@@ -565,6 +625,17 @@ resources:
         TRUSTED_PROXY_CIDRS: ${env('TRUSTED_PROXY_CIDRS', '')}
         MAX_AUDIO_SIZE_MB: "100"
         EXTRACT_TIMEOUT_SECONDS: "30"
+        # ---- 本地文件上传（M3）----
+        # 四项全配 = 开启本地上传（capabilities.fileUploadConfigured）。
+        # API 侧只做预签名（离线）与 HEAD 复核，不经手文件字节。
+        OSS_BUCKET: ${env('OSS_BUCKET', '')}
+        OSS_ENDPOINT: ${env('OSS_ENDPOINT', '')}
+        OSS_ACCESS_KEY_ID: ${env('OSS_ACCESS_KEY_ID', '')}
+        OSS_ACCESS_KEY_SECRET: ${env('OSS_ACCESS_KEY_SECRET', '')}
+        OSS_INTERNAL_ENDPOINT: ${env('OSS_INTERNAL_ENDPOINT', '')}
+        OSS_UPLOAD_PREFIX: "uploads/"
+        # 源文件上限（MB）；与 worker 磁盘（10GB 档）匹配，装得下 500MB 源文件 + WAV
+        FILE_MAX_SIZE_MB: "500"
         # ---- 平台风控（B站 412）----
         # 机房出口 IP 是 B站风控重点，缺 Referer/UA 时易报 412。
         # 留空则沿用 yt-dlp 默认值；Cookie 是账号凭证，只经部署机注入。
@@ -631,9 +702,10 @@ resources:
       cpu: 2
       memorySize: 4096
       # 长视频转写；请对照当前地域配额确认上限，超限需在配额中心申请
-      # fc3 必填项，512MB 为最小值；16kHz WAV 会落 /tmp，接近 100MB 上限的
-      # 超长音频如遇「磁盘写满」，先调大这里再排查
-      diskSize: 512
+      # M3：临时磁盘只有 512MB / 10GB 两档，取 10GB——本地文件任务要装下
+      # 500MB 源文件（storage.download_to_temp 落 /tmp）+ ≤100MB 的 16kHz WAV；
+      # 512MB 档会让文件任务直接磁盘写满。10GB 按量计费，单实例并发 1 场景可忽略
+      diskSize: 10240
       timeout: 1800
       # 一实例一作业：内存模型最简单，避免多作业并发把内存打满
       instanceConcurrency: 1
@@ -672,6 +744,16 @@ resources:
         ASR_ENGINE_FALLBACK: ""
         MAX_AUDIO_SIZE_MB: "100"
         EXTRACT_TIMEOUT_SECONDS: "30"
+        # ---- 本地文件上传（M3）----
+        # Worker 从 OSS **内网 endpoint** 下载对象落 /tmp（免流量费）并转码；
+        # 与 API 侧同四项配置，缺失时 file 任务在 Worker 侧按普通失败处理
+        OSS_BUCKET: ${env('OSS_BUCKET', '')}
+        OSS_ENDPOINT: ${env('OSS_ENDPOINT', '')}
+        OSS_ACCESS_KEY_ID: ${env('OSS_ACCESS_KEY_ID', '')}
+        OSS_ACCESS_KEY_SECRET: ${env('OSS_ACCESS_KEY_SECRET', '')}
+        OSS_INTERNAL_ENDPOINT: ${env('OSS_INTERNAL_ENDPOINT', '')}
+        OSS_UPLOAD_PREFIX: "uploads/"
+        FILE_MAX_SIZE_MB: "500"
         # worker 才是真正下载音频、调 yt-dlp 的一方，风控参数必须两边一致
         BILI_USER_AGENT: ${env('BILI_USER_AGENT', '')}
         BILI_COOKIE: ${env('BILI_COOKIE', '')}
@@ -866,6 +948,7 @@ s deploy -t s.yaml
 | `BILI_USER_AGENT` | 空 / 真实浏览器 UA | B站风控覆盖项。留空沿用 yt-dlp 自带 UA；机房 IP 仍 412 时填一个真实浏览器 UA |
 | `BILI_COOKIE` | 空 / 浏览器整条 Cookie | B站风控兜底。含账号凭证，只经部署机环境变量注入，绝不提交仓库 |
 | `CLOUD_ASR_BASE_URL` / `CLOUD_ASR_MODEL` | 见 `.env.example` | 换服务商/模型时覆盖 |
+| `OSS_*` / `FILE_MAX_SIZE_MB` | 见 §4.4 与 `.env.example` | 本地上传（M3）四项齐备才开启；未配置时前端隐藏入口，其余功能不受影响 |
 
 > **⚠️ 环境变量键名不能以 `FC_` 开头。** 阿里云把 `FC_*` 保留给系统环境变量（`FC_FUNC_CODE_PATH`、`FC_HANDLER`、`FC_RUNTIME_API` 等），在函数上设置该前缀的自定义变量会被平台直接拒绝，表现为 **`s deploy` 阶段失败**（不是运行期报错，因此很难和业务代码联系起来）。所以 worker 地址/路径/超时用的是 `WORKER_URL` / `WORKER_PATH` / `ASYNC_TIMEOUT_SECONDS`。
 >

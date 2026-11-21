@@ -100,3 +100,48 @@ class SummarizeFailedError(AppException):
 
     def __init__(self, message: str = "AI 总结生成失败，请稍后重试"):
         super().__init__(code="SUMMARIZE_FAILED", message=message, status_code=502)
+
+
+class FileTooLargeError(AppException):
+    """上传的源文件超过大小上限（FILE_MAX_SIZE_MB）。
+
+    与 AudioTooLargeError（413，音频超 MAX_AUDIO_SIZE_MB）分开：一个是「上传的
+    源视频太大」（前端预校验 + 后端三重校验），一个是「转码后的音频太大」——
+    一个 500MB 的源文件完全可能因为太长在 extract_audio 阶段撞上后者。
+    """
+
+    def __init__(self, message: str = "文件过大，请上传 500MB 以内的视频"):
+        super().__init__(code="FILE_TOO_LARGE", message=message, status_code=413)
+
+
+class FileFormatUnsupportedError(AppException):
+    """上传的文件格式不受支持（扩展名白名单外）。
+
+    与 UnsupportedPlatformError（422，链接指向的平台不支持）对齐状态码：都是
+    「请求本体合法但能力范围外」，且两者动作主体都是用户换一个输入。
+    """
+
+    def __init__(self, message: str = "暂不支持该文件格式，请上传 mp4 / mov / webm 视频"):
+        super().__init__(code="FILE_FORMAT_UNSUPPORTED", message=message, status_code=422)
+
+
+class FileStorageNotConfiguredError(AppException):
+    """站点未配置 OSS（OSS_BUCKET 等）：本地上传功能整体不可用。
+
+    与 CloudNotConfiguredError 同型：「未配置的对应功能明确提示」，前端通过
+    /api/capabilities 的 fileUploadConfigured 预先隐藏入口，这条是兜底。
+    """
+
+    def __init__(self, message: str = "本地上传未开启：站点未配置对象存储（OSS_BUCKET 等）"):
+        super().__init__(code="FILE_STORAGE_NOT_CONFIGURED", message=message, status_code=400)
+
+
+class UploadedFileNotFoundError(AppException):
+    """转写请求引用的 OSS 对象不存在（预签名上传未完成就发起转写 / 对象已被清理）。
+
+    为什么不复用 INVALID_TASK：那条说的是「taskId 查无此任务」，这条说的是
+    「上传凭证指向的文件还没到位」，用户该做的动作不同（等上传完成 / 重新上传）。
+    """
+
+    def __init__(self, message: str = "上传的文件还未就绪，请等上传完成后再发起转写"):
+        super().__init__(code="FILE_NOT_FOUND", message=message, status_code=404)

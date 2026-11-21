@@ -252,3 +252,47 @@ def convert_to_wav_16k_mono(audio: io.BytesIO) -> io.BytesIO:
     if proc.returncode != 0:
         raise ParseFailedError("音频转换失败，请稍后重试")
     return io.BytesIO(stdout)
+
+
+def convert_file_to_wav_16k_mono(source_path: str) -> io.BytesIO:
+    """FFmpeg 从文件路径转 16kHz 单声道 WAV（M3 本地文件任务专用）。
+
+    与 convert_to_wav_16k_mono 的差别：输入是 storage.download_to_temp 落盘的
+    500MB 级源文件，ffmpeg 直接以路径为 `-i`（不进内存、不经 stdin），stdout
+    管道读回的 WAV 受 MAX_AUDIO_SIZE_MB 约束（约 52 分钟内容），内存安全。
+
+    FFmpeg 未安装（本地开发）时把源文件读入内存走 PyAV 解码兜底——线上镜像
+    恒有 ffmpeg，该分支只在本地出现，且读入前源文件已受 FILE_MAX_SIZE_MB 约束。
+    """
+    if not check_ffmpeg():
+        path = Path(source_path)
+        return io.BytesIO(path.read_bytes())
+
+    proc = subprocess.Popen(
+        [
+            "ffmpeg", "-y",
+            "-i", source_path,
+            "-ac", "1",      # 单声道
+            "-ar", "16000",  # 16kHz
+            "-f", "wav",
+            "pipe:1",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        stdout, _stderr = proc.communicate(timeout=_FFMPEG_TIMEOUT)
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        proc.communicate()
+        raise ParseFailedError("音频转换失败，请稍后重试") from exc
+    if proc.returncode != 0:
+        raise ParseFailedError("音频转换失败，请稍后重试")
+    wav = io.BytesIO(stdout)
+    if wav.getbuffer().nbytes > _size_limit_bytes():
+        # 内容太长（约 >52 分钟）：转码产物超「音频全程内存化」的上限。
+        # URL 路径在下载阶段就被 MAX_AUDIO_SIZE_MB 拦住，文件路径只能在这里拦截。
+        raise AudioTooLargeError(
+            "视频太长：转写服务当前仅支持约 50 分钟以内的内容，请裁剪后再试"
+        )
+    return wav

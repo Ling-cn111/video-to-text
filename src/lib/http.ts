@@ -2,12 +2,15 @@ import type {
   ApiErrorCode,
   ApiErrorBody,
   Capabilities,
+  FileRef,
   GetTaskResponse,
   HealthResponse,
   StartTaskResponse,
   SummarizeRequest,
   Summary,
   TranscribeEngine,
+  UploadInitRequest,
+  UploadInitResponse,
   VideoInfo,
 } from '@/lib/types'
 
@@ -25,6 +28,23 @@ export interface ApiClient {
     videoId: string,
     video?: VideoInfo,
     url?: string,
+    engine?: TranscribeEngine,
+    hotwords?: string[],
+  ) => Promise<StartTaskResponse>
+  /**
+   * M3 本地文件上传三步：init（签发凭证）→ 直传 OSS（字节不经后端）→ 创建 file 任务。
+   * mock 实现不真发网络（假 URL + 模拟进度）；real 实现见 real-api.ts。
+   */
+  initFileUpload: (request: UploadInitRequest) => Promise<UploadInitResponse>
+  /** 直传文件到 uploadUrl（预签名 PUT）；onProgress 报告 0-100 百分比 */
+  uploadFileToOss: (
+    file: File,
+    uploadUrl: string,
+    onProgress?: (percent: number) => void,
+    signal?: AbortSignal,
+  ) => Promise<void>
+  startFileTranscription: (
+    fileRef: FileRef,
     engine?: TranscribeEngine,
     hotwords?: string[],
   ) => Promise<StartTaskResponse>
@@ -110,4 +130,43 @@ export async function toJson<T>(response: Promise<Response>): Promise<T> {
   }
   if (!response_.ok) throw await parseErrorResponse(response_)
   return response_.json() as Promise<T>
+}
+
+/**
+ * 预签名 PUT 直传（M3）：XHR 而不是 fetch——只有 XHR 的 upload.onprogress
+ * 能给出真实上传进度。为什么用 fetch/XHR 直连 OSS：字节不经后端（FC 请求体
+ * 上限 32MB），uploadUrl 由后端 /api/upload/init 签发（唯一来自网络的 URL）。
+ *
+ * Content-Type 必须与签名一致：init 时把 mimeType 传给后端参与签名，这里
+ * 显式设置同一个值；file.type 为空（少数浏览器/扩展名）两边都省略。
+ */
+export function putFileToUrl(
+  uploadUrl: string,
+  file: File,
+  mimeType: string,
+  onProgress?: (percent: number) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('PUT', uploadUrl)
+    if (mimeType) xhr.setRequestHeader('Content-Type', mimeType)
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && onProgress) {
+        onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)))
+      }
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve()
+      } else {
+        reject(new ApiError('NETWORK_ERROR', `文件上传失败（HTTP ${xhr.status}）`, xhr.status))
+      }
+    }
+    xhr.onerror = () => reject(new ApiError('NETWORK_ERROR', '网络异常，文件上传失败', 0))
+    xhr.onabort = () => reject(new ApiError('NETWORK_ERROR', '上传已取消', 0))
+    // 上传可达 500MB / 数十分钟：必须支持取消（进度条上的取消按钮）
+    signal?.addEventListener('abort', () => xhr.abort(), { once: true })
+    xhr.send(file)
+  })
 }

@@ -3,10 +3,13 @@
 已实现：
 - `POST /api/parse`：yt-dlp 解析 B站视频链接 → `{ title, cover, duration, platform, videoId }`
 - `POST /api/transcribe`：创建转写任务（默认 `ENQUEUE_MODE=inline` 走 BackgroundTasks 异步执行）→ `{ taskId, status, progress, stage }`；可选 `engine` 字段手动选择转写引擎（`local` 默认 / `cloud`，见下文云端 ASR 章节）
+- `POST /api/upload/init`：签发本地上传凭证（M3）→ `{ uploadUrl, objectKey, expiresIn }`。**只收元数据、不收文件字节**——FC 请求体上限 32MB，字节由浏览器直传 OSS（预签名 PUT）；三步链路与安全约束见 docs/api-contract.md §2.0 与 docs/serverless-deploy.md §4.4
 - `GET /api/transcribe/{taskId}`：轮询任务 → `{ status, stage, progress, transcript, plainText, video?, error?, transcriptSource? }`
 - `POST /api/summarize`：AI 总结（无状态）→ 请求 `{ transcript, title, duration }`，响应 `{ summary, keyPoints: [{time,text}], chapters: [{title,timeStart,timeEnd,note}] }`；keyPoints 时间戳强制取自原 transcript（后端就近吸附校验）
 
 转写流水线：**分层字幕快路径**（yt-dlp CC 字幕 → B站弹幕元数据接口 AI 字幕，命中即秒级返回）→ 否则 yt-dlp 下载音轨 → FFmpeg 转 16kHz 单声道 WAV →（可选）Demucs 人声分离 → faster-whisper 本地推理（或云端 API）。转写时把**热词 + 视频标题组合为 `initial_prompt`** 传入以引导专有名词识别；输出经轻量后处理（**zhconv 繁→简**、折叠 3 次以上的明显重复词、按语言补齐句末标点）。transcript 格式与前端契约一致：`[{ time, text }]`，并带 `transcriptSource` 来源标记（subtitle_cc / subtitle_ai / asr，前端据此显示「来源：B站字幕」Badge）。
+
+> **本地文件任务（M3）**：`kind=file` 的任务没有链接语义——跳过字幕快路径，Worker 从 OSS **内网 endpoint** 把源文件流式落 /tmp（500MB 不进内存），ffmpeg 按**文件路径**转码，之后与 URL 任务在人声分离 / ASR 汇合。真实时长按 WAV 字节数精确回填（32000 字节/秒）；转写成功后删除 OSS 对象，失败保留 ≤1 天供重试（bucket 生命周期规则兜底）。
 
 > **音频去磁盘化（S1-B）**：下载 / FFmpeg 转换 / ASR 全程以内存 `BytesIO` 流转，不写工作目录（`AUDIO_DIR` 已移除）。yt-dlp 取直链后经 httpx 流式拉入内存（拿不到直链时回退系统临时目录，读完即删）；FFmpeg 走管道（`pipe:0` → `pipe:1`）；云端 ASR 直接以内存 bytes 上传。仅 demucs / qwen3 / funasr 等「只认文件路径」的组件落盘到系统临时目录并**即用即删**。音频大小上限 `MAX_AUDIO_SIZE_MB`（默认 100），超限抛 `AUDIO_TOO_LARGE`（「音频过大，暂不支持」），避免整块载入 OOM。
 
@@ -112,6 +115,12 @@ pnpm dev                        # 等价于 npm run dev
 | `WHISPER_MODEL` | `base` | 本地模型：`tiny` / `base` / `small` / `medium` / `large-v3`（越大越准越慢，首次自动下载）。**准确率建议：本地 CPU 用 `small` 或 `medium`；GPU 环境建议 `large-v3`**。CER 实测数据见 docs/asr-benchmark.md |
 | `WHISPER_COMPUTE_TYPE` | `int8` | CPU 推荐 int8 |
 | `MAX_AUDIO_SIZE_MB` | `100` | 音频大小上限（MB，S1-B 内存化）。下载时按 content-length 预检 + 边拉边累计，超限抛 `AUDIO_TOO_LARGE`（「音频过大，暂不支持」），避免整块载入 OOM |
+| `FILE_MAX_SIZE_MB` | `500` | 本地上传**源文件**上限（MB，M3）。与 `MAX_AUDIO_SIZE_MB` 是两个维度（源视频 vs 转码后 WAV）；三重校验：upload/init 声明 → transcribe HEAD 实际大小 → Worker 下载复核 |
+| `FILE_ALLOWED_EXTENSIONS` | `mp4,mov,webm` | 上传扩展名白名单（全小写，逗号分隔） |
+| `OSS_BUCKET` / `OSS_ENDPOINT` / `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | 空 | OSS 四项，**全部配置才开启本地上传**（`capabilities.fileUploadConfigured`），任一缺失报 `FILE_STORAGE_NOT_CONFIGURED`。bucket 创建 / CORS / 生命周期 / 最小权限 AK 见 docs/serverless-deploy.md §4.4 |
+| `OSS_INTERNAL_ENDPOINT` | 空 | Worker 下载对象用**内网** endpoint（同地域 VPC 内免流量费）；留空回退公网 endpoint |
+| `OSS_PRESIGN_EXPIRES_SECONDS` | `7200` | 预签名 PUT URL 有效期（秒） |
+| `OSS_UPLOAD_PREFIX` | `uploads/` | 上传对象 key 前缀（须以 / 结尾），生命周期规则按它兜底 |
 | `CLOUD_ASR_BASE_URL` | `https://api.siliconflow.cn/v1` | 云端 ASR 服务地址（OpenAI 兼容），见下节 |
 | `CLOUD_ASR_API_KEY` | 空 | 云端模式必填，见下节 |
 | `CLOUD_ASR_MODEL` | `XingChenAGI/XingChenASR-V3.2-Ultra` | 云端模型名 |

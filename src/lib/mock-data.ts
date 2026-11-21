@@ -102,10 +102,42 @@ const DOUYIN_DATA: MockVideoData = {
   },
 }
 
+const LOCAL_DATA: MockVideoData = {
+  video: {
+    // 文件任务的标题来自用户上传的文件名（store 合成 VideoInfo 时透传），
+    // 这里只兜底「合成链路断了」的情形
+    title: '本地视频.mp4',
+    cover: '',
+    duration: 0,
+  },
+  transcript: [
+    { time: 0, text: '大家好，这份文件是刚刚从本地上传的，用来演示「上传本地视频也能转写」这条链路。' },
+    { time: 18, text: '和链接转写一样，上传之后同样经过提取音频、语音识别两个阶段，生成带时间戳的文字稿。' },
+    { time: 41, text: '本地文件的场景很实际：手机里的会议录像、录屏课程、没有公开链接的访谈，都能直接转成文字。' },
+    { time: 66, text: '文件在转写完成后就会从服务器删除，不会长期保存，请放心使用。' },
+    { time: 90, text: '导出和阅读体验与链接转写完全一致，支持 TXT、Markdown、SRT 和 VTT。' },
+    { time: 112, text: '这就是本地文件转写的全部演示内容，希望对你的工作流有帮助。' },
+  ],
+  summary: {
+    summary: '一段本地演示视频：说明本地上传的文件与链接转写共用同一条流水线，转写完成后文件即被删除。',
+    keyPoints: [
+      { time: 0, text: '本地上传与链接转写走同一条「提取音频 → 语音识别」流水线。' },
+      { time: 41, text: '适用场景：会议录像、录屏课程、没有公开链接的访谈。' },
+      { time: 66, text: '文件在转写完成后即被删除，不长期保存。' },
+    ],
+    chapters: [
+      { title: '开场与场景', timeStart: 0, timeEnd: 41, note: '演示本地文件上传转写；说明适用场景。' },
+      { title: '隐私与导出', timeStart: 41, timeEnd: 112, note: '转写完成即删文件；导出体验与链接转写一致。' },
+    ],
+  },
+}
+
 const DATA_BY_PLATFORM: Record<Platform, MockVideoData> = {
   bilibili: BILIBILI_DATA,
   douyin: DOUYIN_DATA,
+  local: LOCAL_DATA,
 }
+
 
 export function getMockData(platform: Platform): MockVideoData {
   return DATA_BY_PLATFORM[platform]

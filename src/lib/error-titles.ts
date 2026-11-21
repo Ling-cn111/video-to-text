@@ -34,6 +34,13 @@ export const ERROR_TITLES: Record<ClientErrorCode, string> = {
   BYOK_KEY_INVALID: 'API Key 无效',
   // 用户自填的接口地址 / 模型名不合规：同样是用户自己去「API 设置」改
   BYOK_ENDPOINT_INVALID: '接口地址不可用',
+  // 本地文件上传（M3）：前端预校验与后端共用同两个码，标题口径一致
+  FILE_TOO_LARGE: '文件过大',
+  FILE_FORMAT_UNSUPPORTED: '暂不支持该格式',
+  // 站点没配 OSS：动作主体是部署者（与 CLOUD_NOT_CONFIGURED 同型）
+  FILE_STORAGE_NOT_CONFIGURED: '本地上传未开启',
+  // 预签名上传没完成就提交 / 对象已被清理：动作是「重新上传」
+  FILE_NOT_FOUND: '上传未完成',
   // 兜底
   INTERNAL_ERROR: '服务异常',
   NETWORK_ERROR: '网络异常',

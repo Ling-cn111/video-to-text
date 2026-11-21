@@ -5,6 +5,7 @@ import { Clock, FileDown, Link2, ListChecks, Sparkles } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { UrlForm } from '@/components/home/url-form'
+import { FileUpload } from '@/components/home/file-upload'
 import { AutoSummaryToggle } from '@/components/home/auto-summary-toggle'
 import { HotwordsInput } from '@/components/home/hotwords-input'
 import { ExampleLinks } from '@/components/home/example-links'
@@ -75,6 +76,8 @@ export function HomeView() {
         <div ref={inputRef}>
           <UrlForm url={url} onUrlChange={setUrl} />
         </div>
+        {/* 本地上传入口（M3）：capabilities.fileUploadConfigured 驱动，OSS 未配置时不渲染 */}
+        <FileUpload />
         <AutoSummaryToggle />
         <TranscribeMode value={engine} onChange={setEngine} />
         <HotwordsInput />

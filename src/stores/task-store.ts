@@ -7,6 +7,7 @@ import { ensureRecentTask, recordRecentTask, removeRecentTask, updateRecentTaskS
 import type { RecentTaskStatus } from '@/lib/recent-tasks'
 import type {
   Capabilities,
+  FileRef,
   Summary,
   SummaryDetail,
   TaskStage,
@@ -37,6 +38,12 @@ interface TaskState {
   video: VideoInfo | null
   /** 提交时的原始链接（真实转写后端需要下载音频） */
   sourceUrl: string | null
+  /**
+   * file 来源任务的文件引用（M3，会话级；不持久化）。retry 重派时带原 objectKey——
+   * 后端对失败任务保留 OSS 对象 ≤1 天，重试不用重新上传。成功任务的引用随
+   * reset 清掉（对象已删，重试无意义）。
+   */
+  fileRef: FileRef | null
   stage: TaskStage | null
   progress: number
   transcript: TranscriptItem[] | null
@@ -66,6 +73,16 @@ interface TaskState {
 
   /** 首页提交链接：解析 + 创建转写任务。成功返回 taskId（供路由跳转），失败返回 null。 */
   submitUrl: (url: string) => Promise<string | null>
+  /**
+   * 首页提交本地文件（M3）：init 签发 → 直传 OSS（onProgress 报 0-100）→ 创建 file 任务。
+   * 与 submitUrl 返回同款 Promise<string | null>；扩展名/大小/时长的本地预校验
+   * 在调用方（file-upload 组件）完成，这里只信任已校验的 File。
+   */
+  submitFile: (
+    file: File,
+    onUploadProgress?: (percent: number) => void,
+    signal?: AbortSignal,
+  ) => Promise<string | null>
   /** 进度页轮询：拉取一次任务状态并推进状态机 */
   pollTask: () => Promise<void>
   /** 刷新 / 直接访问时按 taskId 恢复状态 */
@@ -291,6 +308,7 @@ const IDLE = {
   taskId: null,
   video: null,
   sourceUrl: null,
+  fileRef: null,
   stage: null,
   progress: 0,
   transcript: null,
@@ -379,6 +397,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   summaryDetail: 'standard',
   hotwordsText: '',
   capabilities: null,
+  fileRef: null,
 
   loadCapabilities: async () => {
     // 幂等：会话内只探测一次。注意必须把「有没有拿到」与「拿到了什么」分开判断——
@@ -419,6 +438,41 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       set({ taskId: task.taskId, stage: task.stage, progress: task.progress, phase: 'transcribing' })
       // P1-7：任务一创建就落一条记录，用户此刻关掉页面也还能从首页找回
       rememberTask(task.taskId, video, 'processing')
+      return task.taskId
+    } catch (error) {
+      set({ phase: 'error', error: toAppError(error) })
+      return null
+    }
+  },
+
+  submitFile: async (file, onUploadProgress, signal) => {
+    set({ ...IDLE, phase: 'parsing' })
+    try {
+      // 第 1 步：签发上传凭证（扩展名/大小在这里会被后端再校验一次）
+      const init = await api.initFileUpload({
+        fileName: file.name,
+        size: file.size,
+        mimeType: file.type ?? '',
+      })
+      const fileRef: FileRef = { objectKey: init.objectKey, fileName: file.name, size: file.size }
+      set({ fileRef })
+      // 第 2 步：浏览器直传 OSS（字节不经后端；onProgress 驱动首页进度条）
+      await api.uploadFileToOss(file, init.uploadUrl, onUploadProgress, signal)
+      // 第 3 步：创建 file 任务。VideoInfo 由后端按引用合成（标题=文件名、
+      // platform=local、时长 0 由 Worker 回填），前端不重复造
+      await get().loadCapabilities()
+      const task = await api.startFileTranscription(
+        fileRef,
+        engineParam(get().capabilities, get().engine),
+        parseHotwords(get().hotwordsText),
+      )
+      set({ taskId: task.taskId, stage: task.stage, progress: task.progress, phase: 'transcribing' })
+      // 与 submitUrl 同口径：任务一创建就落「最近转写」记录
+      rememberTask(
+        task.taskId,
+        { title: fileRef.fileName, cover: '', duration: 0, platform: 'local', videoId: fileRef.objectKey },
+        'processing',
+      )
       return task.taskId
     } catch (error) {
       set({ phase: 'error', error: toAppError(error) })
@@ -588,10 +642,21 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   retry: async () => {
-    const { video, sourceUrl } = get()
+    const { video, sourceUrl, fileRef } = get()
     if (!video) return null
     set({ phase: 'parsing', error: null, stage: null, progress: 0 })
     try {
+      // M3：file 任务的失败对象保留 ≤1 天，带原 objectKey 重派即可（无需重新上传）。
+      // 成功任务的重试不会走到这里带 fileRef（成功后 UI 无重试入口，reset 已清引用）
+      if (fileRef) {
+        const task = await api.startFileTranscription(
+          fileRef,
+          engineParam(get().capabilities, get().engine),
+          parseHotwords(get().hotwordsText),
+        )
+        set({ taskId: task.taskId, stage: task.stage, progress: task.progress, phase: 'transcribing' })
+        return task.taskId
+      }
       // 重试沿用同一套 engine 判定：有本地 ASR 才带用户偏好，否则交给后端自动挑
       const task = await api.startTranscription(
         video.videoId,

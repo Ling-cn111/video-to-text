@@ -2,15 +2,28 @@
 
 分发由 `services/dispatcher` 决定（ENQUEUE_MODE）：默认 inline 仍走
 BackgroundTasks，与 S2-P1 之前逐字节一致；后续阶段可切到 FC 异步调用。
+
+M3 起按 kind 分流：url（默认，链接解析）| file（本地上传，对象已在 OSS）。
+file 来源不查平台白名单、不走短链展开（没有 URL 语义），改为复核对象存在性
+与大小——这是「声明（upload/init）/ HEAD（本处）/ 流式（Worker）」三重
+大小校验的第二重。
 """
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Header
 
-from app.config import CLOUD_ASR_API_KEY
-from app.errors import CloudNotConfiguredError, InvalidUrlError, TaskNotFoundError, UnsupportedPlatformError
+from app.config import CLOUD_ASR_API_KEY, FILE_MAX_SIZE_MB
+from app.errors import (
+    CloudNotConfiguredError,
+    FileTooLargeError,
+    InvalidUrlError,
+    TaskNotFoundError,
+    UploadedFileNotFoundError,
+    UnsupportedPlatformError,
+)
 from app.platforms import detect_platform
-from app.schemas import StartTaskResponse, StartTranscribeRequest, TaskDetailResponse
+from app.schemas import FileRef, StartTaskResponse, StartTranscribeRequest, TaskDetailResponse, VideoInfo
+from app.services import storage
 from app.services.asr import local_engine_available
 from app.services.byok import HEADER_ASR_KEY, normalize_key
 from app.services.dispatcher import TranscribeJob, enqueue
@@ -90,25 +103,81 @@ def _resolve_target_url(payload: StartTranscribeRequest) -> str:
     return candidate
 
 
+def _resolve_file_ref(payload: StartTranscribeRequest) -> tuple[FileRef, VideoInfo]:
+    """校验 file 来源任务的文件引用，返回 (引用, 合成的展示用 VideoInfo)。
+
+    - 未配置 OSS → FILE_STORAGE_NOT_CONFIGURED（正常流程前端已按 capabilities
+      隐藏入口，这条兜住直调 API 的情形）
+    - objectKey 按 uploads/{uuid}/{文件名} 白名单复核 → 不合法一律视为
+      「文件未就绪」（FILE_NOT_FOUND）：伪造/过期引用与「还没传完就提交」
+      对用户是同一个动作——重新上传
+    - HEAD 对象拿实际大小：不存在 → FILE_NOT_FOUND；超 FILE_MAX_SIZE_MB →
+      FILE_TOO_LARGE。这是三重大小校验的第二重（Worker 流式校验是第三重）
+    """
+    storage.require_file_storage()
+    file_ref = payload.file
+    if file_ref is None or not (file_ref.objectKey or "").strip():
+        raise UploadedFileNotFoundError()
+
+    try:
+        storage.checked_key(file_ref.objectKey)
+    except Exception:
+        raise UploadedFileNotFoundError()
+
+    size = storage.head_size(file_ref.objectKey)
+    if size is None:
+        raise UploadedFileNotFoundError()
+    if size > FILE_MAX_SIZE_MB * 1024 * 1024:
+        raise FileTooLargeError(f"文件超过 {FILE_MAX_SIZE_MB}MB 上限，请压缩或裁剪后再上传")
+
+    video = payload.video or VideoInfo(
+        title=file_ref.fileName or "本地视频",
+        cover="",
+        duration=0,  # 真实时长由 Worker 转码后按 WAV 字节数回填
+        platform="local",
+        videoId=file_ref.objectKey,
+    )
+    return file_ref, video
+
+
 @router.post("/api/transcribe", response_model=StartTaskResponse)
 def create_transcription(
     payload: StartTranscribeRequest,
     background_tasks: BackgroundTasks,
     x_vtt_asr_key: str | None = Header(default=None, alias=HEADER_ASR_KEY),
 ) -> StartTaskResponse:
-    url = _resolve_target_url(payload)
     byok_key = normalize_key(x_vtt_asr_key)
     engine = _resolve_engine(payload, byok_key)
-    task_id = create_task(payload.video, engine)
-    job = TranscribeJob(
-        task_id=task_id,
-        url=url,
-        video=payload.video,
-        prefer_subtitles=True,
-        hotwords=payload.hotwords,
-        engine=engine,
-        byok_key=byok_key,
-    )
+
+    if payload.kind == "file":
+        file_ref, video = _resolve_file_ref(payload)
+        task_id = create_task(video, engine, source="file", file=file_ref.model_dump())
+        job = TranscribeJob(
+            task_id=task_id,
+            url=None,
+            video=video,
+            prefer_subtitles=False,  # 本地文件没有视频页 URL，字幕快路径不适用
+            hotwords=payload.hotwords,
+            engine=engine,
+            byok_key=byok_key,
+            source="file",
+            file=file_ref,
+        )
+        response_stage = "extract_audio"
+    else:
+        url = _resolve_target_url(payload)
+        task_id = create_task(payload.video, engine)
+        job = TranscribeJob(
+            task_id=task_id,
+            url=url,
+            video=payload.video,
+            prefer_subtitles=True,
+            hotwords=payload.hotwords,
+            engine=engine,
+            byok_key=byok_key,
+        )
+        response_stage = "parse_link"
+
     try:
         enqueue(job, background_tasks=background_tasks)
     except Exception:
@@ -121,7 +190,7 @@ def create_transcription(
             error={"code": "TRANSCRIBE_FAILED", "message": "任务分发失败，请重试"},
         )
         raise
-    return StartTaskResponse(taskId=task_id, status="processing", stage="parse_link", progress=0)
+    return StartTaskResponse(taskId=task_id, status="processing", stage=response_stage, progress=0)
 
 
 @router.get("/api/transcribe/{task_id}", response_model=TaskDetailResponse)

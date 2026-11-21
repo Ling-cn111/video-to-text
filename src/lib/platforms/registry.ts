@@ -47,6 +47,19 @@ export const PLATFORM_REGISTRY: Record<Platform, PlatformMeta> = {
     shareHostPatterns: [/^v\.douyin\.com$/],
     videoIdPatterns: [/\/video\/(\d+)/],
   },
+  // 本地文件任务的展示条目（M3）：只提供徽章/配色元数据，**不参与 URL 解析**
+  // （hostPatterns 为空永远不会被 resolveVideoUrl 命中），也绝不进
+  // SUPPORTED_PLATFORMS —— §12 的「宣称范围」只指 URL 平台，本地上传不是平台。
+  local: {
+    id: 'local',
+    name: '本地文件',
+    shortName: '本地',
+    color: '#64748b',
+    gradient: ['#94a3b8', '#64748b'],
+    hostPatterns: [],
+    shareHostPatterns: [],
+    videoIdPatterns: [],
+  },
 }
 
 /**

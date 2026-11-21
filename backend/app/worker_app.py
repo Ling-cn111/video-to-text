@@ -62,6 +62,7 @@ from fastapi import Body, FastAPI, Header, HTTPException, Request
 from app.config import TASK_LOCK_SECONDS, WORKER_TOKEN
 from app.errors import InvalidUrlError
 from app.services import reaper
+from app.services import storage
 from app.services import tasks as task_store
 from app.services import transcribe
 from app.services.dispatcher import TranscribeJob
@@ -86,6 +87,9 @@ _SKIP_NOT_FOUND = "task_not_found"
 
 # URL 未通过公网校验时的 skipped 原因（P0 SSRF 兜底）
 _SKIP_INVALID_URL = "invalid_url"
+
+# file 作业的对象键未通过白名单校验时的 skipped 原因（M3 兜底）
+_SKIP_INVALID_FILE = "invalid_file_ref"
 
 app = FastAPI(title="video-to-text worker", version="0.1.0")
 
@@ -329,20 +333,43 @@ async def _run_job(job: TranscribeJob) -> dict:
     store = task_store.get_task_store()
 
     # P0 SSRF 兜底：不信任派发方（API 侧已校验过一次），Worker 侧独立复核。
+    # M3 file 作业没有 URL 语义，改为复核对象键白名单（同为第三道关：
+    # upload/init 生成 → transcribe-init 复核 → 此处兜底）。
     # 不能直接抛 InvalidUrlError —— 那会变成 5xx，触发 FC 异步重试无限循环；
     # 这里按「确定性失败」处理：标 failed + 200 skipped。
-    try:
-        validate_public_http_url(job.url)
-    except InvalidUrlError as exc:
-        logger.warning("Worker 拒绝非公网 URL（task_id=%s）：%s", job.task_id, exc.message)
-        current = await store.get(job.task_id)
-        if current is not None and current.status == "processing":
-            await store.update(
-                job.task_id,
-                status="failed",
-                error={"code": "INVALID_URL", "message": exc.message},
-            )
-        return {"status": "skipped", "reason": _SKIP_INVALID_URL, "task_id": job.task_id}
+    if job.source == "file":
+        if job.file is None or not (job.file.objectKey or "").strip():
+            reason_message = "文件任务缺少文件引用"
+            logger.warning("Worker 拒绝无文件引用的 file 作业（task_id=%s）", job.task_id)
+        else:
+            reason_message = None
+            try:
+                storage.checked_key(job.file.objectKey)
+            except Exception as exc:
+                reason_message = "文件引用不合法"
+                logger.warning("Worker 拒绝非法对象键（task_id=%s）：%s", job.task_id, exc)
+        if reason_message is not None:
+            current = await store.get(job.task_id)
+            if current is not None and current.status == "processing":
+                await store.update(
+                    job.task_id,
+                    status="failed",
+                    error={"code": "TRANSCRIBE_FAILED", "message": reason_message},
+                )
+            return {"status": "skipped", "reason": _SKIP_INVALID_FILE, "task_id": job.task_id}
+    else:
+        try:
+            validate_public_http_url(job.url)
+        except InvalidUrlError as exc:
+            logger.warning("Worker 拒绝非公网 URL（task_id=%s）：%s", job.task_id, exc.message)
+            current = await store.get(job.task_id)
+            if current is not None and current.status == "processing":
+                await store.update(
+                    job.task_id,
+                    status="failed",
+                    error={"code": "INVALID_URL", "message": exc.message},
+                )
+            return {"status": "skipped", "reason": _SKIP_INVALID_URL, "task_id": job.task_id}
 
     task = await store.get(job.task_id)
     if task is None:
@@ -383,6 +410,8 @@ async def _run_job(job: TranscribeJob) -> dict:
             job.engine,
             on_heartbeat=_lock_renewer(job.task_id, token, loop),
             byok_key=job.byok_key,
+            source=job.source,
+            file=job.file,
         )
     except Exception as exc:
         logger.exception("Worker 执行失败（task_id=%s）", job.task_id)
@@ -499,26 +528,53 @@ async def diagnose_upstream(
     hardened_headers = {**baseline_headers, **ytdlp_options.base_options()["http_headers"]}
 
     target_bvid = bvid
-    targets = {
-        "view_api": f"https://api.bilibili.com/x/web-interface/view?bvid={target_bvid}",
-        "video_page": f"https://www.bilibili.com/video/{target_bvid}",
-        "finger_spi": "https://api.bilibili.com/x/frontend/finger/spi",
-    }
 
     def probe(headers: dict[str, str]) -> dict[str, Any]:
+        """对三个**固定上游**各发一次 GET（host 恒为 bilibili 域，bvid 只进查询串）。
+
+        URL 全部内联字面量：不存在「host 由输入决定」的 SSRF 面，请求目标
+        与 targets 字典时代完全一致；bvid 来自运维请求参数，仅替换查询串值。
+        """
         results: dict[str, Any] = {}
-        for name, url in targets.items():
+
+        try:
+            response = httpx.get(
+                f"https://api.bilibili.com/x/web-interface/view?bvid={target_bvid}",
+                headers=headers, timeout=15, follow_redirects=True,
+            )
+            entry: dict[str, Any] = {"status": response.status_code}
             try:
-                response = httpx.get(url, headers=headers, timeout=15, follow_redirects=True)
-                entry: dict[str, Any] = {"status": response.status_code}
-                if name.endswith("_api") and response.status_code == 200:
-                    try:
-                        entry["code"] = response.json().get("code")
-                    except ValueError:
-                        entry["code"] = None
-                results[name] = entry
-            except Exception as exc:  # 网络异常也要如实报告
-                results[name] = {"error": f"{type(exc).__name__}: {exc}"}
+                entry["code"] = response.json().get("code") if response.status_code == 200 else None
+            except ValueError:
+                entry["code"] = None
+            results["view_api"] = entry
+        except Exception as exc:  # 网络异常也要如实报告
+            results["view_api"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+        try:
+            results["video_page"] = {
+                "status": httpx.get(
+                    f"https://www.bilibili.com/video/{target_bvid}",
+                    headers=headers, timeout=15, follow_redirects=True,
+                ).status_code
+            }
+        except Exception as exc:
+            results["video_page"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+        try:
+            response = httpx.get(
+                "https://api.bilibili.com/x/frontend/finger/spi",
+                headers=headers, timeout=15, follow_redirects=True,
+            )
+            entry = {"status": response.status_code}
+            try:
+                entry["code"] = response.json().get("code") if response.status_code == 200 else None
+            except ValueError:
+                entry["code"] = None
+            results["finger_spi"] = entry
+        except Exception as exc:
+            results["finger_spi"] = {"error": f"{type(exc).__name__}: {exc}"}
+
         return results
 
     cookie = ytdlp_options.cookie_header()

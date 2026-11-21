@@ -19,23 +19,65 @@
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/api/parse` | 解析视频链接 → `{ title, cover, duration, platform, videoId }` |
-| POST | `/api/transcribe` | 创建转写任务 → `{ taskId, status, progress, stage }` |
+| POST | `/api/upload/init` | 签发本地上传凭证（M3）→ `{ uploadUrl, objectKey, expiresIn }`。**只有元数据，没有文件字节**——字节由浏览器直传 OSS |
+| POST | `/api/transcribe` | 创建转写任务 → `{ taskId, status, progress, stage }`；`kind=file` 时走文件分支（见 §2.1） |
 | GET | `/api/transcribe/{taskId}` | 轮询任务 → `{ status, stage, progress, video?, transcript?, plainText?, error?, transcriptSource? }` |
 | POST | `/api/summarize` | 生成总结（无状态）→ `{ summary, keyPoints, chapters }` |
-| GET | `/api/capabilities` | 配置态与依赖探测 → `{ cloudAsrConfigured, summarizeConfigured, localAsrAvailable }`（只返回布尔，**不含 Key 信息**） |
+| GET | `/api/capabilities` | 配置态与依赖探测 → `{ cloudAsrConfigured, summarizeConfigured, localAsrAvailable, fileUploadConfigured }`（只返回布尔，**不含 Key 信息**） |
 | GET | `/api/health` | 可达性探测 → `{ status: "ok" }` |
+
+### 2.0 `POST /api/upload/init`（M3 本地上传三步走）
+
+上传通道是「客户端直传 OSS + 预签名 PUT」：FC HTTP 触发器同步请求体上限 32MB（平台硬限制），
+文件字节**不可能**经过后端；后端只签发凭证与复核引用。三步：
+
+```jsonc
+// ① POST /api/upload/init（请求体只有元数据）
+{ "fileName": "课堂录像.mp4", "size": 262144000, "mimeType": "video/mp4" }
+// → { "uploadUrl": "https://<bucket>.oss-...aliyuncs.com/uploads/<uuid>/...?Signature=...",
+//     "objectKey": "uploads/<uuid>/课堂录像.mp4", "expiresIn": 7200 }
+
+// ② 浏览器直传：PUT {uploadUrl}，body = File，Content-Type 必须与签名一致（= mimeType）
+//    XHR upload.onprogress 提供真实进度；可 abort 取消
+
+// ③ POST /api/transcribe（见 §2.1 的 kind=file）
+{ "kind": "file", "file": { "objectKey": "...", "fileName": "课堂录像.mp4", "size": 262144000 } }
+```
+
+约束：
+
+- 扩展名白名单（mp4/mov/webm，`FILE_ALLOWED_EXTENSIONS`）与大小上限（`FILE_MAX_SIZE_MB`=500）在 ① 就被校验；
+  ③ 时 HEAD 对象复核**实际大小**（声明可以撒谎）；Worker 下载时按磁盘与内存约束兜底。
+- `uploadUrl` 只对 ① 生成的这一个 objectKey 有效、只允许 PUT、限时（`OSS_PRESIGN_EXPIRES_SECONDS`=7200）。
+  上传超时重新走 ①，不要重试旧 PUT。
+- objectKey 由后端生成（`uploads/{uuid}/{净化文件名}`）并按白名单复核：客户端拿不到「写任意位置」的能力。
+- 未配置 OSS 时 ① 与 ③ 都返回 400 `FILE_STORAGE_NOT_CONFIGURED`；前端靠 `capabilities.fileUploadConfigured`
+  提前隐藏入口。OSS 部署步骤见 [serverless-deploy.md](serverless-deploy.md)。
 
 ### 2.1 `POST /api/transcribe` 请求体
 
 ```jsonc
 {
-  "videoId": "BV1xx411c7mD",   // 必填
+  "kind": "url",               // 可选："url"（默认，链接解析）| "file"（M3 本地上传）
+  "videoId": "BV1xx411c7mD",   // kind=url 必填（缺失 422，与 M3 之前一致）；kind=file 可省
   "video": { /* VideoInfo，可选，透传解析结果 */ },
-  "url": "https://www.bilibili.com/video/BV1xx411c7mD",  // 真实后端用
+  "url": "https://www.bilibili.com/video/BV1xx411c7mD",  // kind=url 用，真实后端下载音频
+  "file": { "objectKey": "uploads/...", "fileName": "课堂录像.mp4", "size": 262144000 },  // kind=file 必填
   "engine": "local",           // 可选："local" | "cloud"；不传由后端按能力自动挑
   "hotwords": ["Transformer", "字节跳动"]  // 可选：热词，引导 ASR 识别专有名词
 }
 ```
+
+`kind=file` 的行为（M3）：
+
+- `file` 缺失 → 422（pydantic model_validator 按条件必填）；`objectKey` 不在白名单格式或对象不存在
+  → 404 `FILE_NOT_FOUND`（预签名上传没完成就提交了）；实际大小超限 → 413 `FILE_TOO_LARGE`。
+- 后端按引用合成 `VideoInfo`：`title=文件名、cover=''、duration=0、platform='local'、videoId=objectKey`
+  （`video` 字段也可由调用方覆盖）。真实时长由 Worker 转码后按 WAV 字节数精确回填。
+- 文件任务**没有链接语义**：跳过字幕快路径（初始 stage 直接 `extract_audio`），Worker 从 OSS
+  内网 endpoint 拉对象 → ffmpeg 按路径转码 → 与 URL 任务在 ASR 汇合。
+- **对象生命周期**：转写成功后立即删除；失败保留 ≤1 天（bucket 生命周期规则兜底），
+  失败任务的「重试」带原 objectKey 重派，不需要重新上传。
 
 `hotwords` 的行为：
 
@@ -132,10 +174,14 @@ API 调用方，前端不再发送。
 | 500 | `TASK_TIMEOUT` | reaper 判定任务超时 |
 | 500 | `INTERNAL_ERROR` | 未预期异常兜底 |
 | 502 | `SUMMARIZE_FAILED` | LLM 调用失败（网络 / HTTP / 重试耗尽） |
+| 413 | `FILE_TOO_LARGE` | 本地上传源文件超 `FILE_MAX_SIZE_MB`（前端预校验与后端共用此码，M3） |
+| 422 | `FILE_FORMAT_UNSUPPORTED` | 扩展名白名单外（mp4/mov/webm 之外，M3） |
+| 400 | `FILE_STORAGE_NOT_CONFIGURED` | 站点未配 OSS（`OSS_BUCKET` 等），本地上传整体不可用（M3） |
+| 404 | `FILE_NOT_FOUND` | 引用的 OSS 对象不存在：预签名上传未完成就发起转写 / 对象已被清理（M3） |
 
 状态码映射的代码事实来源是 [`src/lib/api-server.ts`](../src/lib/api-server.ts)（Mock 侧）与 [`backend/app/errors.py`](../backend/app/errors.py)（真实侧），两边必须一致。完整枚举定义见 `src/lib/types.ts` 的 `ApiErrorCode`——新增错误码时要同步改四处：`types.ts`、`api-server.ts` 的 `STATUS_BY_CODE`、`src/lib/error-titles.ts` 的中文标题表（`Record<ClientErrorCode, string>` 会强制穷举）、本文档；漏改会类型报错。
 
-> `FILE_TOO_LARGE` / `FILE_FORMAT_UNSUPPORTED` 曾作为「本地视频上传」的预留码存在，但前后端都没有生产者，已于 P2 清理。M3 真正做上传时再一并引入（届时后端 `errors.py` 也要加对应异常类）。
+> M3 已引入 `FILE_TOO_LARGE` / `FILE_FORMAT_UNSUPPORTED`（此前作为预留码在 P2 清理过，本次随本地上传功能带上了真实生产者，另有 `FILE_STORAGE_NOT_CONFIGURED` / `FILE_NOT_FOUND` 两个配套码）。
 
 ## 4. Mock 实现说明
 

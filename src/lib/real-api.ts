@@ -1,14 +1,16 @@
 import { apiUrl } from '@/lib/api-base'
 import { byokBodyFor, byokHeaderFor } from '@/lib/byok'
-import { JSON_HEADERS, toJson, throwNetworkError, type ApiClient } from '@/lib/http'
+import { JSON_HEADERS, putFileToUrl, toJson, throwNetworkError, type ApiClient } from '@/lib/http'
 import type {
   Capabilities,
+  FileRef,
   GetTaskResponse,
   HealthResponse,
   StartTaskResponse,
   SummarizeRequest,
   Summary,
   TranscribeEngine,
+  UploadInitRequest,
   VideoInfo,
 } from '@/lib/types'
 
@@ -48,6 +50,37 @@ export const realApi: ApiClient = {
           videoId,
           video,
           url,
+          engine,
+          ...(hotwords && hotwords.length > 0 ? { hotwords } : {}),
+        }),
+      }).catch(throwNetworkError),
+    ),
+
+  /**
+   * M3 上传三步（真实后端）：init 走同源代理 / 桌面直连（只传元数据，32MB 请求体
+   * 限制碰不到）；PUT 直连 OSS（XHR 带真实进度）；发起 file 任务只带引用。
+   */
+  initFileUpload: (request: UploadInitRequest): Promise<{ uploadUrl: string; objectKey: string; expiresIn: number }> =>
+    toJson(
+      fetch(apiUrl('/upload/init'), { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(request) }).catch(
+        throwNetworkError,
+      ),
+    ),
+
+  uploadFileToOss: (file: File, uploadUrl: string, onProgress?: (percent: number) => void, signal?: AbortSignal) =>
+    // Content-Type 必须与后端签名一致：init 传的 mimeType 就是 file.type
+    putFileToUrl(uploadUrl, file, file.type ?? '', onProgress, signal),
+
+  startFileTranscription: (fileRef: FileRef, engine?: TranscribeEngine, hotwords?: string[]): Promise<StartTaskResponse> =>
+    toJson(
+      fetch(apiUrl('/transcribe'), {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        // file 引用是唯一身份信息：后端 HEAD 复核对象存在性与实际大小。
+        // hotwords 为空数组时不发该字段（与 startTranscription 的口径一致）
+        body: JSON.stringify({
+          kind: 'file',
+          file: fileRef,
           engine,
           ...(hotwords && hotwords.length > 0 ? { hotwords } : {}),
         }),

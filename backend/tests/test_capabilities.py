@@ -6,7 +6,7 @@ from app.main import app
 
 client = TestClient(app)
 
-_ALL_KEYS = {"cloudAsrConfigured", "summarizeConfigured", "localAsrAvailable"}
+_ALL_KEYS = {"cloudAsrConfigured", "summarizeConfigured", "localAsrAvailable", "fileUploadConfigured"}
 
 
 def test_capabilities_all_configured(monkeypatch):
@@ -14,6 +14,7 @@ def test_capabilities_all_configured(monkeypatch):
     monkeypatch.setattr(capabilities_module, "DEEPSEEK_API_KEY", "sk-llm")
     monkeypatch.setattr(capabilities_module, "LLM_PROVIDER", "deepseek")
     monkeypatch.setattr(capabilities_module, "_local_asr_available", lambda: False)
+    monkeypatch.setattr(capabilities_module.storage, "is_file_storage_configured", lambda: True)
 
     response = client.get("/api/capabilities")
     assert response.status_code == 200
@@ -21,6 +22,7 @@ def test_capabilities_all_configured(monkeypatch):
         "cloudAsrConfigured": True,
         "summarizeConfigured": True,
         "localAsrAvailable": False,
+        "fileUploadConfigured": True,
     }
 
 
@@ -29,6 +31,7 @@ def test_capabilities_none_configured(monkeypatch):
     monkeypatch.setattr(capabilities_module, "DEEPSEEK_API_KEY", "")
     monkeypatch.setattr(capabilities_module, "DASHSCOPE_API_KEY", "")
     monkeypatch.setattr(capabilities_module, "_local_asr_available", lambda: False)
+    monkeypatch.setattr(capabilities_module.storage, "is_file_storage_configured", lambda: False)
 
     response = client.get("/api/capabilities")
     assert response.status_code == 200
@@ -36,7 +39,20 @@ def test_capabilities_none_configured(monkeypatch):
         "cloudAsrConfigured": False,
         "summarizeConfigured": False,
         "localAsrAvailable": False,
+        "fileUploadConfigured": False,
     }
+
+
+def test_capabilities_file_upload_reflects_oss_configuration(monkeypatch):
+    """fileUploadConfigured 是 OSS 配置探测：四项齐备才 true（M3）。
+
+    本地开发未配 OSS → false，前端据此隐藏「上传本地视频」入口。
+    """
+    monkeypatch.setattr(capabilities_module.storage, "is_file_storage_configured", lambda: False)
+    assert client.get("/api/capabilities").json()["fileUploadConfigured"] is False
+
+    monkeypatch.setattr(capabilities_module.storage, "is_file_storage_configured", lambda: True)
+    assert client.get("/api/capabilities").json()["fileUploadConfigured"] is True
 
 
 def test_capabilities_local_asr_probe_reflects_dependency(monkeypatch):

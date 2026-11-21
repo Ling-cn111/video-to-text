@@ -89,6 +89,13 @@ class TranscribeTask:
     error: dict | None = None  # { code, message }
     engine: str | None = None  # 本次任务的 ASR 引擎（local | cloud | 引擎名），重试沿用
     transcript_source: str | None = None  # 文字稿来源：subtitle_cc | subtitle_ai | asr
+    # 任务来源（M3）：url（链接解析）| file（本地上传经 OSS 中转）。
+    # 随任务持久化：recover / 轮询后前端据此渲染「本地文件」徽章，retry 重派时
+    # 带上 file.objectKey（成功任务的对象已删，只有失败任务可重试）。
+    source: str = "url"
+    # file 来源任务的文件引用（FileRef 的 dict 形态：objectKey/fileName/size）。
+    # 注意只存引用三元组，不存 URL 凭证——预签名 URL 限时，不落库。
+    file: dict | None = None
     attempts: int = 0  # 已执行次数（S2：Worker 重试计数 / reaper 判定依据）
     started_at: float | None = None  # Worker 抢到锁、真正开跑的时刻；None = 还在排队
     created_at: float = field(default_factory=time.time)
@@ -107,6 +114,8 @@ def _payload_dict(task: TranscribeTask) -> dict:
         "error": task.error,
         "engine": task.engine,
         "transcript_source": task.transcript_source,
+        "source": task.source,
+        "file": task.file,
         "attempts": task.attempts,
         "started_at": task.started_at,
     }
@@ -133,6 +142,9 @@ def _task_from_payload(
         error=payload.get("error"),
         engine=payload.get("engine"),
         transcript_source=payload.get("transcript_source"),
+        # 旧数据无 source/file 字段 → url / None（M3 之前全部是 url 来源）
+        source=str(payload.get("source") or "url"),
+        file=payload.get("file"),
         attempts=int(payload.get("attempts") or 0),
         # started_at 决定 reaper 用哪档陈旧阈值（排队 vs 执行中），必须往返保真；
         # 旧数据无该字段 → None（按「排队中」处理，更保守：不会误杀刚派发的任务）
@@ -180,7 +192,13 @@ class TaskStore(Protocol):
     update 未知 task 静默跳过（与现有调用方语义一致）。
     """
 
-    async def create(self, video: VideoInfo | None, engine: str | None = None) -> str: ...
+    async def create(
+        self,
+        video: VideoInfo | None,
+        engine: str | None = None,
+        source: str = "url",
+        file: dict | None = None,
+    ) -> str: ...
 
     async def get(self, task_id: str) -> TranscribeTask | None: ...
 
@@ -310,10 +328,16 @@ class MemoryTaskStore:
                 self._tasks[task.task_id] = task
             self._initialized = True
 
-    async def create(self, video: VideoInfo | None, engine: str | None = None) -> str:
+    async def create(
+        self,
+        video: VideoInfo | None,
+        engine: str | None = None,
+        source: str = "url",
+        file: dict | None = None,
+    ) -> str:
         task_id = uuid.uuid4().hex
         with self._lock:
-            task = TranscribeTask(task_id=task_id, video=video, engine=engine)
+            task = TranscribeTask(task_id=task_id, video=video, engine=engine, source=source, file=file)
             self._tasks[task_id] = task
             self._upsert_row(task)
         return task_id
@@ -495,9 +519,15 @@ class RedisTaskStore:
             task.updated_at = now
             await self._set(key, task)
 
-    async def create(self, video: VideoInfo | None, engine: str | None = None) -> str:
+    async def create(
+        self,
+        video: VideoInfo | None,
+        engine: str | None = None,
+        source: str = "url",
+        file: dict | None = None,
+    ) -> str:
         task_id = uuid.uuid4().hex
-        task = TranscribeTask(task_id=task_id, video=video, engine=engine)
+        task = TranscribeTask(task_id=task_id, video=video, engine=engine, source=source, file=file)
         await self._set(self._key(task_id), task)
         return task_id
 
@@ -733,8 +763,13 @@ def _bridge_loop() -> asyncio.AbstractEventLoop:
         return loop
 
 
-def create_task(video: VideoInfo | None, engine: str | None = None) -> str:
-    return _run_async(_STORE.create(video, engine))
+def create_task(
+    video: VideoInfo | None,
+    engine: str | None = None,
+    source: str = "url",
+    file: dict | None = None,
+) -> str:
+    return _run_async(_STORE.create(video, engine, source, file))
 
 
 def get_task(task_id: str) -> TranscribeTask | None:

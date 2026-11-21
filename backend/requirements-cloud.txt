@@ -8,6 +8,9 @@
 #   zhconv                     —— 转写文本繁→简后处理（app/services/asr.py）
 #   redis                      —— S1-A 任务存储 + S1-C 限流的多实例共享后端
 #                                 （TASK_STORE=redis / REDIS_URL；FC 多实例必需）
+#   oss2                       —— M3 本地文件上传：预签名 PUT（API 侧，离线签名）+
+#                                 Worker 从 OSS 内网 endpoint 下载/删除对象
+#                                 （浏览器直传 OSS，字节不经过函数计算，见 storage.py）
 #
 # 本文件即「云端必需」的单一事实来源；requirements.txt 通过 `-r` 引用它再追加本地/评测/测试依赖。
 # 不在此列的本地依赖：faster-whisper、cn2an、psutil（评测脚本）、pytest（测试）。
@@ -18,3 +21,4 @@ yt-dlp>=2024.12.13
 httpx>=0.27
 zhconv>=1.4
 redis>=5.0
+oss2>=2.18

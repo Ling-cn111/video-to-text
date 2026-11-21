@@ -1,11 +1,12 @@
 import { getPlatformMeta } from '@/lib/platforms/registry'
-import { Music2, Tv, TriangleAlert } from 'lucide-react'
+import { FileVideo, Music2, Tv, TriangleAlert } from 'lucide-react'
 import type { Platform } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const PLATFORM_ICONS: Record<Platform, typeof Tv> = {
   bilibili: Tv,
   douyin: Music2,
+  local: FileVideo,
 }
 
 interface PlatformBadgeProps {

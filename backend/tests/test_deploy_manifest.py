@@ -364,6 +364,9 @@ def test_no_plaintext_secrets_in_manifest(manifest):
         "WORKER_URL",
         "CORS_ORIGINS",
         "DASHSCOPE_API_KEY",
+        # M3：OSS 访问凭证（RAM AK），泄露即可读写整个上传 bucket
+        "OSS_ACCESS_KEY_ID",
+        "OSS_ACCESS_KEY_SECRET",
     }
     for props in (r["props"] for r in manifest["resources"].values()):
         for key, value in _env(props).items():
@@ -391,6 +394,32 @@ def test_worker_is_sized_for_oom_not_cost(worker):
     assert worker["cpu"] >= 2
     assert worker["timeout"] >= 600
     assert worker["instanceConcurrency"] == 1
+
+
+# ---- 本地文件上传（M3）----
+
+def test_file_upload_oss_env_declared_on_both_functions(api, worker):
+    """OSS 四项必须在两个函数上都声明：API 签发/复核，Worker 下载/清理。
+
+    只在一边声明 = 功能单边可用（例如 API 能建任务、Worker 拉不到对象），
+    与 vpcConfig 的「同一套网络」同理，这里用测试钉住。
+    """
+    for name, env in (("api", _env(api)), ("worker", _env(worker))):
+        for key in ("OSS_BUCKET", "OSS_ENDPOINT", "OSS_ACCESS_KEY_ID", "OSS_ACCESS_KEY_SECRET"):
+            assert key in env, f"{name} 缺 {key}：本地上传在 {name} 侧会失效"
+
+
+def test_worker_disk_fits_file_pipeline(worker):
+    """FC 磁盘只有 512MB / 10GB 两档：装 500MB 源文件必须 10GB 档。
+
+    文件任务会把源文件流式落 /tmp（storage.download_to_temp）+ ≤100MB 的
+    16kHz WAV；512MB 档必然磁盘写满。
+    """
+    env = _env(worker)
+    assert int(env["FILE_MAX_SIZE_MB"]) >= 100
+    assert worker["diskSize"] == 10240, (
+        "worker 磁盘必须取 10GB 档（512MB 装不下 500MB 源文件 + WAV）"
+    )
 
 
 # ---- 地域 / 磁盘 / FC 保留字（部署期失败的三类硬约束）----

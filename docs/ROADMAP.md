@@ -1,9 +1,9 @@
 # 功能路线图（Roadmap）
 
-> **当前状态（2026-10-07）**：核心产品链路已全部交付——
-> **阶段一** 真实解析（B站 yt-dlp）✅ → **阶段二** 真实转写（字幕快路径四层降级 + 本地/云端 ASR + 绝对 CER 基准）✅ → **阶段三** 真实 AI 总结（DeepSeek，27 分钟视频 ≈¥0.07）✅。
+> **当前状态（2026-11-21 更新）**：核心产品链路已全部交付——
+> **阶段一** 真实解析（B站 yt-dlp）✅ → **阶段二** 真实转写（字幕快路径四层降级 + 本地/云端 ASR + 绝对 CER 基准）✅ → **阶段三** 真实 AI 总结（DeepSeek，27 分钟视频 ≈¥0.07）✅ → **M3 本地视频上传** ✅（2026-11-21，OSS 直传 + 500MB，见下文）。
 > 验收报告：[阶段二](acceptance-stage-2.md) / [阶段三](acceptance-stage-3.md)；基准与成本：[asr-benchmark](asr-benchmark.md) / [llm-cost](llm-cost.md)。
-> 下文 M2 多平台 / M3 本地视频 **均未启动**；M4 打包**已部分交付**（Windows 桌面端与 Android 均发到 v0.1.5，macOS 与 iOS 未启动）。
+> 下文 M2 多平台**未启动**；M4 打包**已部分交付**（Windows 桌面端与 Android 均发到 v0.1.9，macOS 与 iOS 未启动）。
 > 历史说明：本文成文于 M1 前端 Demo 交付时，M2-M4 编号与项目实际的「阶段一/二/三」编号相互独立；
 > 本文记录后续里程碑的设计意向与当前代码中已预留的扩展点。
 
@@ -30,17 +30,21 @@
 - **顺序不能反**（锁定项 §12）：先接后端、再把平台加进 `SUPPORTED_PLATFORMS`。反了就是对外虚假宣称——前端放行、后端 422
 - 验收：粘贴对应平台链接即可走通 Mock 全流程；真实构建下 `SUPPORTED_PLATFORMS` 与实际解析能力一致
 
-## M3 本地视频转写
+## M3 本地视频转写（已交付 ✅，2026-11-21）
 
-**目标**：支持上传本地视频文件转写，与链接转写共用进度 / 结果页。
+**目标**：支持上传本地视频文件转写，与链接转写共用进度 / 结果页。**已按「客户端直传 OSS + 预签名 PUT」通道交付**。
 
-- 交互：首页新增「上传本地视频」入口（拖拽 + 文件选择），复用 `/processing/:taskId` 与 `/result/:taskId`
-- 接口扩展（契约见 `src/lib/types.ts`）：
-  - `POST /api/transcribe` 支持 `{ kind: 'file', fileName, size, mimeType }`（真实后端可走 multipart / 分片直传）
-  - 任务来源标记 `source: 'url' | 'file'`
-  - 新增错误分支：`FILE_TOO_LARGE`、`FILE_FORMAT_UNSUPPORTED`（M3 落地时一并引入：前端 `types.ts` / `api-server.ts` / `error-titles.ts` + 后端 `errors.py`，四处同步，见 `docs/api-contract.md` §3）
-- 限制：格式 mp4 / mov / webm，大小上限建议 500MB（前端预校验 + 后端强校验）
-- 已预留：任务模型以 taskId 为中心、来源无关（错误码不再预留——P2 已清理无生产者的 `FILE_TOO_LARGE` / `FILE_FORMAT_UNSUPPORTED`，做 M3 时再加，避免契约里挂着没人产出的码）
+> 落地形态与本文最初设想（multipart 直传后端）不同：FC HTTP 触发器同步请求体上限 **32MB（平台硬限制）**、
+> 异步投递事件体上限 128KB，500MB 级源文件的字节不可能经过任何函数链路——改为「后端签发预签名 PUT →
+> 浏览器直传 OSS → 后端只收 objectKey 引用」，连 `python-multipart` 依赖都不需要。部署步骤与费用见
+> [serverless-deploy.md](serverless-deploy.md) §4.4。
+
+- 交互 ✅：首页「上传本地视频」入口（拖拽 + 点击），进度条可取消；入口由 `capabilities.fileUploadConfigured` 驱动，未配 OSS 不渲染
+- 接口 ✅：`POST /api/upload/init`（签发凭证，只有元数据）+ `POST /api/transcribe { kind: 'file', file: {objectKey, fileName, size} }`；任务来源 `source: 'url' | 'file'`（`TaskSource` 当年的预留兑现）
+- 错误码 ✅：`FILE_TOO_LARGE`(413) / `FILE_FORMAT_UNSUPPORTED`(422) / `FILE_STORAGE_NOT_CONFIGURED`(400) / `FILE_NOT_FOUND`(404)，四处同步（前端 `types.ts` / `api-server.ts` / `error-titles.ts` + 后端 `errors.py`）
+- 限制 ✅：mp4 / mov / webm，源文件 ≤500MB（前端预校验 + 后端三重校验）；内容超约 50 分钟会在转码阶段报「视频太长」（转码后 WAV 受 `MAX_AUDIO_SIZE_MB=100` 约束 ≈ 52 分钟）
+- 关键实现：Worker 从 OSS **内网 endpoint** 流式落 /tmp → ffmpeg 按路径转码（500MB 源文件不进内存）→ 与 URL 任务在 ASR 汇合；真实时长按 WAV 字节数回填；成功删对象 / 失败留 ≤1 天供重试
+- E2E：`e2e/pr16-file-upload.spec.ts`（回归 36-36d）；锁定项见 [frontend-features](frontend-features.md) §21
 
 ## M4 打包成 App
 
@@ -63,6 +67,6 @@
 | --- | --- | --- |
 | 平台注册表 | `src/lib/platforms/registry.ts` | 新平台 = 新条目，UI 自动跟随 |
 | 任务来源无关 | `src/stores/task-store.ts` | 进度 / 结果页只依赖 taskId |
-| 文件类错误码 | `src/lib/types.ts` | M3 需要时新增 `FILE_TOO_LARGE` / `FILE_FORMAT_UNSUPPORTED`（P2 已清理占位码，同步四处） |
+| 文件类错误码 | `src/lib/types.ts` | **M3 已引入**：`FILE_TOO_LARGE` / `FILE_FORMAT_UNSUPPORTED` / `FILE_STORAGE_NOT_CONFIGURED` / `FILE_NOT_FOUND`（四处同步完成） |
 | API 统一出口 | `src/lib/api.ts` | 换真实后端只改 `BACKEND_ORIGIN`（web 同源代理）或 `NEXT_PUBLIC_API_BASE`（桌面端跨域直连），见 `src/lib/api-base.ts` |
 | URL 安全守卫 | `src/lib/url-guard.ts` | 服务端处理用户 URL 时复用同一份校验 |
