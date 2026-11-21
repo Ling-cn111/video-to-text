@@ -1,4 +1,4 @@
-# ⚠️ 前端功能锁定协议（Frontend Feature Lock）
+| **导出入口** | 结果页头部「导出」下拉菜单，分三组：「导出全文」（TXT / MD…）、「导出字幕」（SRT / VTT…）、「思维导图」（大纲 MD…，PR18 新增第三组，独立 builder）。**三组不得合并为一组** |# ⚠️ 前端功能锁定协议（Frontend Feature Lock）
 
 > **【强制警告】后续任何 AI 或开发者修改前端代码之前，必须先通读本文档。
 > 下列功能均为用户明确确认过的交付物，严禁在重构、新功能开发或修复中覆盖、删除或弱化。
@@ -129,7 +129,7 @@
 
 | 功能 | 锁定要求 |
 | --- | --- |
-| 位置与内容 | 首页 `data-testid="recent-tasks"`，位于输入区与「工作流程」之间；每条 `data-testid="recent-task-item"` 显示标题、相对时间（刚刚 / N 分钟前 / N 小时前 / N 天前）、状态入口 |
+| 位置与内容 | **桌面端（lg+）**：全局任务侧栏 `task-sidebar`（PR18，布局见 §22），支持勾选批量删除；**移动端 / <lg**：首页 `data-testid="recent-tasks"` 内嵌区块，位于输入区与「工作流程」之间（现状不变）。每条 `data-testid="recent-task-item"`（首页）/ `task-sidebar-item-<taskId>`（侧栏）… |
 | 存储 | `localStorage` 键 `recentTasks`，最多 8 条，**只存 taskId / 标题 / 封面 / 时长 / 平台 / 时间 / 状态，严禁存任何 Key、文字稿或总结内容**；脏数据必须过滤掉而不是整块崩掉 |
 | 状态分流 | `status='processing'` → 「查看进度」跳 `processingHref`；`status='done'` → 「查看结果」跳 `resultHref`。失败 / 中断的任务必须从列表移除，不留死链 |
 | 时间戳不得被刷新的场景污染 | 结果页每次挂载都会走 `recover`，**必须用「仅在不存在时补记」的语义**（`ensureRecentTask`），无条件 `record` 会把 `savedAt` 刷成「刚刚」，相对时间就失去意义 |
@@ -386,6 +386,10 @@
 - [ ] 旧单配置自动迁移为列表条目且三键值不变（E2E 回归 37e）
 - [ ] 模型名 combobox（datalist）来自预设静态 models[]，自由输入不被覆盖（E2E 回归 37f）
 - [ ] 切换服务商：草稿 Key 自动清空 + 显示切换提示；沿用旧 Key 保存时给出强提示（E2E 回归 37g）
+- [ ] 桌面侧栏：lg+ 显示最近转写列表、勾选与跳转互不干扰、批量删除同步 localStorage；<lg 视口侧栏不渲染、首页区块正常（E2E 回归 38 / 38b）
+- [ ] 思维导图：总结就绪后导图卡渲染、章节标题与要点文本可定位、详细度切换随新 summary 更新（E2E 回归 39 / 39b）
+- [ ] 思维导图大纲导出：第三组菜单项，文件含标题与章节、不含时间戳（E2E 回归 39）
+- [ ] 回归 4/4c 桌面视口定位已改为侧栏条目（首页区块 lg+ 隐藏），4b/4d 补侧栏空态断言
 - [ ] `pnpm lint && pnpm build` 通过
 
 > 修改本文件（新增/放宽锁定项）需要用户明确确认。
@@ -427,3 +431,21 @@
 - [ ] 进度页信息卡：标题=文件名、「本地文件」徽章、空封面显示占位图标（E2E 回归 36b）
 - [ ] 结果页与最近转写：文字稿照常渲染、`platform: 'local'` 记录出现在「最近转写」（E2E 回归 36d）
 - [ ] 上传中可取消（XHR abort），取消后回到可重新选择的状态且无错误红卡（人工冒烟项）
+
+## 22. 任务侧栏（PR18 新增，桌面 lg+ 全局）
+
+- **渲染条件**：仅 `lg+`（`hidden lg:flex`）且最近转写列表非空；`<lg`（含移动壳）不渲染，首页保留内嵌「最近转写」区块（现状不变，该区块加 `lg:hidden` 桌面隐藏）
+- **布局**：`layout.tsx` 的 main 改为 `flex` 行结构（侧栏 + 内容列 `min-w-0 flex-1`），侧栏 `sticky top-14` 内部滚动；各页自有 `max-w-* mx-auto` 容器在剩余宽度内居中
+- **数据源**：与首页区块同一份 localStorage（`recentTasks`，最多 8 条，只存元数据）；写函数（record/updateStatus/remove/removeTasks）统一派发 `recent-tasks:changed` 事件，侧栏监听刷新
+- **多选删除**：复选框（原生 input，`stopPropagation` 防误触跳转）勾选 → 「删除所选 (N)」 → `removeRecentTasks(ids)` 一次读-过滤-写回；删除后清空勾选
+- **跳转语义不变**：条目点击 = processing → 进度页 / done → 结果页；勾选与点击互不干扰
+- **testid**：侧栏 `task-sidebar` / 条目 `task-sidebar-item-<taskId>` / 勾选 `task-sidebar-check-<taskId>` / 批删 `task-sidebar-delete`；首页区块沿用 `recent-tasks` / `recent-task-item`
+
+## 23. 思维导图（PR18 新增，基础版）
+
+- **数据源**：`src/lib/mindmap.ts` 的 `buildMindmapTree(title, chapters, keyPoints)` 纯前端推导——根=视频标题、一级=章节（按 timeStart 排序）、二级=要点按时间区间归入 + 章节 note 按句拆分补枝（每章 ≤5 子节点、去重）；**零 LLM 改动、零后端改动**，旧缓存 / detail 切换 / 刷新恢复全部平滑跟随（数据直接来自 store）
+- **渲染**：`mindmap-view.tsx` 手写缩进树（零第三方依赖），`ScrollArea` 限高、节点可折叠展开；纯客户端组件
+- **挂载**：结果页主网格**之后**的全宽独立 Card（`mindmap-card`），仅 `summary` 存在时渲染；严禁借用其改动左侧 Tab / 总结卡（§1）
+- **llmModel 允许空串**（关联 §14）：「只填 Key、模型跟随站点默认」是合法配置
+- **导出**：`exportMindmapMarkdown` = **第三类产物**（独立 builder `buildMindmapMarkdown`，大纲层级 markdown、**不含时间戳**），ExportMenu 第三组；严禁复用 buildPlainText / buildMarkdown
+- **testid**：`mindmap-card` / `mindmap-view` / `mindmap-node` / 导出菜单项 `export-mindmap`

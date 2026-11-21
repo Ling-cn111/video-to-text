@@ -9,7 +9,7 @@ import type { VideoInfo } from '@/lib/types'
 export function VideoCard({ video }: { video: VideoInfo }) {
   const meta = getPlatformMeta(video.platform)
   return (
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center" data-testid="video-info-card">
       <div
         className="relative aspect-video w-full shrink-0 overflow-hidden rounded-xl sm:aspect-auto sm:h-24 sm:w-44"
         style={{ background: `linear-gradient(135deg, ${meta.gradient[0]}, ${meta.gradient[1]})` }}

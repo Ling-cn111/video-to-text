@@ -5,6 +5,7 @@ import { BackendHealthBanner } from "@/components/layout/backend-health-banner";
 import { MobileShellBridge } from "@/components/layout/mobile-shell-bridge";
 import { PreferenceHydrator } from "@/components/layout/preference-hydrator";
 import { SiteHeader } from "@/components/layout/site-header";
+import { TaskSidebar } from "@/components/layout/task-sidebar";
 import { ThemeProvider } from "@/components/layout/theme-provider";
 import { RegisterSw } from "@/components/pwa/register-sw";
 import { supportedPlatformsShortText } from "@/lib/platforms/registry";
@@ -87,7 +88,13 @@ export default function RootLayout({
           <PreferenceHydrator />
           <MobileShellBridge />
           <SiteHeader />
-          <main className="flex-1">{children}</main>
+          <main className="flex-1">
+            {/* 桌面任务侧栏（lg+ 全局，PR18）：<lg 不渲染，移动端保持各页现状布局 */}
+            <div className="mx-auto flex w-full max-w-[100rem] items-start">
+              <TaskSidebar />
+              <div className="min-w-0 flex-1">{children}</div>
+            </div>
+          </main>
           <RegisterSw />
           {/* toast 是 fixed 定位，同样会压到状态栏上；把安全区顶部加进偏移量。
               sonner 的默认偏移是 24px（窄屏 16px），这里在默认值之上再让出 `--safe-top`。 */}

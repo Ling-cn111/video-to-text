@@ -16,6 +16,8 @@ import { ErrorAlert } from '@/components/shared/error-alert'
 import { PlatformBadge } from '@/components/shared/platform-badge'
 import { formatDuration } from '@/lib/format'
 import { formatTranscriptToSections } from '@/lib/article'
+import { MindmapView } from '@/components/result/mindmap-view'
+import { buildMindmapTree } from '@/lib/mindmap'
 import { processingHref } from '@/lib/routes'
 import { useTaskStore } from '@/stores/task-store'
 import { useResultPolling } from '@/hooks/use-result-polling'
@@ -72,6 +74,11 @@ export function ResultView({ taskId }: ResultViewProps) {
   )
   // 扁平段落：复制 / 导出 / 统计的唯一来源（锁定项 §2 三者同源）
   const paragraphs = useMemo(() => sections.flatMap((section) => section.paragraphs), [sections])
+  // 思维导图树（PR18）：从总结的章节与要点推导；summary 为空（未总结/失败）时为 null
+  const mindmapTree = useMemo(
+    () => (summary ? buildMindmapTree(video?.title ?? '思维导图', summary.chapters, summary.keyPoints) : null),
+    [summary, video?.title],
+  )
 
   useEffect(() => {
     void loadCapabilities() // 幂等；直访结果页时用于判断总结不可重试场景
@@ -171,7 +178,14 @@ export function ResultView({ taskId }: ResultViewProps) {
         </div>
         <div className="flex shrink-0 gap-2 self-start sm:self-auto">
           <CopyFullTextButton paragraphs={paragraphs} />
-          {video ? <ExportMenu video={video} paragraphs={paragraphs} transcript={transcript} /> : null}
+          {video ? (
+            <ExportMenu
+              video={video}
+              paragraphs={paragraphs}
+              transcript={transcript}
+              mindmapTree={mindmapTree ?? undefined}
+            />
+          ) : null}
           <Button variant="outline" size="sm" onClick={handleBack} className="gap-1.5">
             <Home className="size-3.5" aria-hidden />
             返回首页
@@ -260,6 +274,19 @@ export function ResultView({ taskId }: ResultViewProps) {
           </CardContent>
         </Card>
       </div>
+
+      {/* 思维导图（PR18）：独立全宽卡片，仅总结就绪时渲染；不触碰上方两个锁定卡片的 DOM */}
+      {mindmapTree ? (
+        <Card data-testid="mindmap-card">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0">
+            <span className="text-sm font-medium">思维导图</span>
+            <span className="text-xs text-muted-foreground">由 AI 总结的章节与要点推导</span>
+          </CardHeader>
+          <CardContent>
+            <MindmapView tree={mindmapTree} />
+          </CardContent>
+        </Card>
+      ) : null}
     </div>
   )
 }

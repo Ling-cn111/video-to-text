@@ -1,6 +1,6 @@
 'use client'
 
-import { Captions, FileCode2, FileDown } from 'lucide-react'
+import { Captions, FileCode2, FileDown, ListTree } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import {
@@ -11,10 +11,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { exportResult, exportSubtitles } from '@/lib/export'
+import { exportMindmapMarkdown, exportResult, exportSubtitles } from '@/lib/export'
 import { IS_MOBILE_SHELL } from '@/lib/runtime'
 import type { ShareOutcome } from '@/lib/share-file'
 import type { TranscriptItem, VideoInfo } from '@/lib/types'
+import type { MindmapNode } from '@/lib/mindmap'
 
 interface ExportMenuProps {
   video: VideoInfo
@@ -22,6 +23,8 @@ interface ExportMenuProps {
   paragraphs: string[]
   /** 句级文字稿：字幕导出需要原始时间戳 */
   transcript: TranscriptItem[]
+  /** 思维导图树（mindmap.ts 推导）：仅 summary 就绪时传入（PR18 第三组） */
+  mindmapTree?: MindmapNode
 }
 
 /**
@@ -35,7 +38,7 @@ interface ExportMenuProps {
  * 桌面端壳内会弹系统「另存为」对话框（可选目标文件夹），网页端仍是下载。
  * 三条路径的提示文案不同，不能共用「已开始下载」。
  */
-export function ExportMenu({ video, paragraphs, transcript }: ExportMenuProps) {
+export function ExportMenu({ video, paragraphs, transcript, mindmapTree }: ExportMenuProps) {
   /** 按结果给提示：用户取消不报错，真失败才提示换方式 */
   const notify = (outcome: ShareOutcome) => {
     if (outcome === 'cancelled') return
@@ -58,6 +61,11 @@ export function ExportMenu({ video, paragraphs, transcript }: ExportMenuProps) {
 
   const handleSubtitle = async (format: 'srt' | 'vtt') => {
     notify(await exportSubtitles(format, { video, transcript }))
+  }
+
+  const handleMindmap = async () => {
+    if (!mindmapTree) return
+    notify(await exportMindmapMarkdown(mindmapTree, video))
   }
 
   return (
@@ -95,6 +103,20 @@ export function ExportMenu({ video, paragraphs, transcript }: ExportMenuProps) {
           <Captions className="size-4 text-muted-foreground" aria-hidden />
           字幕（.vtt）
         </DropdownMenuItem>
+
+        {/* 第三组（PR18）：思维导图大纲——独立产物语义，与全文/字幕互不复用 */}
+        {mindmapTree ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>思维导图</DropdownMenuLabel>
+            <p className="px-2 pb-1.5 text-xs text-muted-foreground">层级大纲 · 可贴入 markmap / XMind</p>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => void handleMindmap()} className="gap-2" data-testid="export-mindmap">
+              <ListTree className="size-4 text-muted-foreground" aria-hidden />
+              大纲（.md）
+            </DropdownMenuItem>
+          </>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   )

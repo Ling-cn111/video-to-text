@@ -47,15 +47,15 @@ test.describe("P1-7 最近转写", () => {
 
     await page.goto("/");
 
-    const section = page.getByTestId("recent-tasks");
+    const section = page.getByTestId("task-sidebar");
     await expect(section).toBeVisible();
     await expect(section).toContainText("最近转写");
     // 相对时间：1 小时前的那条不该显示成「刚刚」
     await expect(section).toContainText("1 小时前");
 
-    const item = page.getByTestId("recent-task-item").first();
+    const item = page.getByTestId(`task-sidebar-item-${taskId}`);
     await expect(item).toContainText("语音转文字工具横评");
-    await expect(item).toContainText("查看结果");
+    await expect(item).toContainText("已完成");
 
     // 点进去必须能真正恢复到结果页（taskId 有效）
     await item.click();
@@ -92,8 +92,8 @@ test.describe("P1-7 最近转写", () => {
     }, taskId);
 
     await page.goto("/");
-    const item = page.getByTestId("recent-task-item").first();
-    await expect(item).toContainText("查看进度");
+    const item = page.getByTestId(`task-sidebar-item-${taskId}`);
+    await expect(item).toContainText("进行中");
     await item.click();
     await expect(page).toHaveURL(new RegExp(`/processing\\?id=${taskId}`));
   });
@@ -106,6 +106,7 @@ test.describe("P1-7 最近转写", () => {
     // 形状不合法的条目被过滤掉 → 区块整体不渲染，而不是白屏
     await expect(page.getByRole("heading", { name: /视频链接/ })).toBeVisible();
     await expect(page.getByTestId("recent-tasks")).toHaveCount(0);
+    await expect(page.getByTestId("task-sidebar")).toHaveCount(0);
   });
 });
 
