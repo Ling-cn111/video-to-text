@@ -13,6 +13,7 @@
 """
 import json
 import logging
+import time
 
 import httpx
 
@@ -194,6 +195,75 @@ def _snap_summary_times(
             {"title": "全文", "timeStart": sorted_times[0], "timeEnd": last_time, "note": payload.get("summary", "")}
         ]
     return payload
+
+
+def _test_fail(code: str, message: str, latency_ms: int) -> dict:
+    """测活失败的统一返回（HTTP 200 + ok:false）：code 复用现有 ApiErrorCode。"""
+    return {"ok": False, "code": code, "message": message, "latencyMs": latency_ms}
+
+
+def test_provider(base_url: str, model: str, api_key: str) -> dict:
+    """对「地址 + 模型 + Key」发一次极短真实请求，验证可用性；只读探测、即抛即弃。
+
+    与 _chat 的区别：不生成总结、不记成本、不抛业务异常——所有失败收敛为
+    {ok: False, code, message}（HTTP 200），code 复用现有 ApiErrorCode，前端直接展示。
+    Key 只经本次调用转发给用户指定的服务商，不落任何存储（与 summarize 同一信任模型）。
+    """
+    started = time.monotonic()
+    try:
+        response = httpx.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        latency = int((time.monotonic() - started) * 1000)
+        detail = ""
+        try:
+            body = exc.response.json()
+            detail = str((body.get("error") or {}).get("message") or "")[:120]
+        except ValueError:
+            detail = ""
+        if is_auth_failure(status):
+            return _test_fail(
+                "BYOK_KEY_INVALID",
+                f"API Key 被服务商拒绝（HTTP {status}），请检查 Key 是否属于该服务商",
+                latency,
+            )
+        if status == 404:
+            return _test_fail(
+                "BYOK_ENDPOINT_INVALID",
+                f"模型不存在或无权访问（HTTP 404）：请检查模型名「{model}」是否为该服务商的有效模型",
+                latency,
+            )
+        if status == 402:
+            return _test_fail("SUMMARIZE_FAILED", "服务商账户余额不足（HTTP 402）：请充值后重试", latency)
+        if status == 429:
+            return _test_fail("RATE_LIMITED", "触发限流或超出配额（HTTP 429）：请稍后再试", latency)
+        suffix = f"：{detail}" if detail else ""
+        return _test_fail("SUMMARIZE_FAILED", f"AI 服务返回错误（HTTP {status}）{suffix}", latency)
+    except httpx.HTTPError as exc:
+        latency = int((time.monotonic() - started) * 1000)
+        return _test_fail("SUMMARIZE_FAILED", "无法连接服务商：请检查接口地址与网络", latency)
+
+    latency = int((time.monotonic() - started) * 1000)
+    try:
+        payload = response.json()
+        choices = payload.get("choices") or []
+    except ValueError:
+        return _test_fail("SUMMARIZE_FAILED", "服务商返回了无法解析的响应", latency)
+    if not choices:
+        return _test_fail(
+            "SUMMARIZE_FAILED", "服务商响应缺少内容：请确认该模型支持 chat/completions", latency
+        )
+    return {"ok": True, "latencyMs": latency, "model": str(payload.get("model") or model)}
 
 
 def _auth_error(status: int, from_user: bool):

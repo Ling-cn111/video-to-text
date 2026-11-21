@@ -96,6 +96,13 @@ class ErrorResponse(BaseModel):
 
 # ---- AI 总结（阶段三，任务 E）----
 
+class ByokTestRequest(BaseModel):
+    """POST /api/byok/test 请求体：测活只验「地址 + 模型 + Key」三元组（Key 走请求头）。"""
+
+    llmBaseUrl: str = ""
+    llmModel: str = ""
+
+
 class SummarizeRequest(BaseModel):
     """POST /api/summarize 请求体（无状态，不关联任务）。
 
