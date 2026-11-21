@@ -109,8 +109,10 @@ export const LLM_PROVIDER_PRESETS: LlmProviderPreset[] = [
     id: 'zhipu',
     name: '智谱 GLM',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    models: ['glm-4-plus', 'glm-4-flash'],
-    keyUrl: 'https://bigmodel.cn/usercenter/apikeys',
+    // 2026-11 核对：glm-4-plus 已过时，当前主力为 GLM-4.6 / 免费 GLM-4.7-Flash（4.5-Flash 已公告下线）
+    models: ['glm-4.6', 'glm-4.7-flash', 'glm-4.5-air'],
+    // 旧地址 bigmodel.cn/usercenter/apikeys 已 404：新版控制台的密钥管理页
+    keyUrl: 'https://bigmodel.cn/usercenter/proj-mgmt/apikeys',
     keyHint: '在「API Keys」页面创建',
   },
   {

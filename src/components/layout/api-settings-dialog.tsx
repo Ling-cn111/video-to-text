@@ -20,7 +20,7 @@ import { notifyByokChanged } from '@/hooks/use-byok-status'
 import { openExternal } from '@/lib/external-link'
 import { IS_MOBILE_SHELL } from '@/lib/runtime'
 import { MobileUpdateSection } from '@/components/layout/mobile-update-section'
-import { api } from '@/lib/api'
+import { api, ApiError } from '@/lib/api'
 import { clearSummaryCache } from '@/stores/task-store'
 import {
   configLabel,
@@ -315,6 +315,14 @@ export function ApiSettingsDialog({ open, onOpenChange }: ApiSettingsDialogProps
       }
     } catch (err) {
       // 校验类失败（SSRF / 缺字段）走标准错误形状：解析出可读文案展示
+      if (err instanceof ApiError && err.status === 404 && err.code === 'UNKNOWN_ERROR') {
+        // 线上后端还是旧镜像（无 /api/byok/test 路由）：FastAPI 默认 404，Message 无 error.code
+        setTestResult({
+          ok: false,
+          message: '测活端点不可用（HTTP 404）：后端镜像可能尚未更新，请先重新部署后端',
+        })
+        return
+      }
       const message = err instanceof Error ? err.message : '测试失败'
       setTestResult({ ok: false, message })
     } finally {
