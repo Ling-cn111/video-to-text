@@ -54,9 +54,15 @@ export function validateVideoFile(file: File): ApiError | null {
  * （不拦截，放行上传，让后端在转码阶段裁决）。
  *
  * 只读元数据（loadedmetadata），不真正解码视频内容，500MB 文件也是瞬时的。
+ * 小于 1MB 的文件直接跳过探测：内容上限约 50 分钟，1MB 以下不可能超限，
+ * 而且跳过能省掉一次 video 元素加载（对 Mock/E2E 的小文件尤其重要）。
  */
 export function probeVideoDuration(file: File, timeoutMs = 8000): Promise<number | null> {
   return new Promise((resolve) => {
+    if (file.size < 1024 * 1024) {
+      resolve(null)
+      return
+    }
     if (typeof window === 'undefined' || typeof URL?.createObjectURL !== 'function') {
       resolve(null)
       return

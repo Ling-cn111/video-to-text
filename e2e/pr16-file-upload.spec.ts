@@ -117,7 +117,7 @@ test.describe("PR16 本地文件上传", () => {
     // Mock 任务 10 秒后进度页会自动跳去结果页——页面细节必须趁窗口期断言。
     // 进度页视频信息卡：标题=文件名、「本地文件」徽章、无封面占位图标
     await expect(page.getByRole("heading", { name: "课堂录像.mp4" })).toBeVisible();
-    await expect(page.getByText("本地文件", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("video-info-card").getByText("本地文件", { exact: true })).toBeVisible();
     await expect(page.getByTestId("video-cover-fallback")).toBeVisible();
   });
 

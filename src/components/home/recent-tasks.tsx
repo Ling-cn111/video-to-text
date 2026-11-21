@@ -29,8 +29,9 @@ export function RecentTasks() {
     router.push(task.status === 'processing' ? processingHref(task.taskId) : resultHref(task.taskId))
   }
 
+  // 桌面端（lg+）最近转写在全局任务侧栏（task-sidebar，PR18）；此处仅 <lg 展示
   return (
-    <section className="flex flex-col gap-2" data-testid="recent-tasks">
+    <section className="flex flex-col gap-2 lg:hidden" data-testid="recent-tasks">
       <div className="flex items-baseline justify-between">
         <h2 className="text-sm font-medium text-muted-foreground">最近转写</h2>
         <span className="text-xs text-muted-foreground">本机记录，换设备看不到</span>

@@ -31,6 +31,21 @@ export interface RecentTask {
 const RECENT_KEY = 'recentTasks'
 
 /**
+ * 数据变更事件：侧栏（task-sidebar）与首页区块（recent-tasks）都可能因为
+ * 其他标签页 / 其他组件的写操作而过期。写函数统一派发，消费方监听刷新。
+ */
+export const RECENT_TASKS_CHANGED = 'recent-tasks:changed'
+
+function notifyChanged(): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.dispatchEvent(new Event(RECENT_TASKS_CHANGED))
+  } catch {
+    // 事件派发失败不影响数据本身
+  }
+}
+
+/**
  * 保留条数。8 条 ≈ 一次会话能记住的量；再多首页会变成任务列表，
  * 与「粘贴链接就能用」的单一入口定位冲突。
  */
@@ -79,6 +94,7 @@ export function recordRecentTask(task: Omit<RecentTask, 'savedAt'>): void {
     const rest = readRecentTasks().filter((item) => item.taskId !== task.taskId)
     const next = [{ ...task, savedAt: Date.now() }, ...rest].slice(0, RECENT_LIMIT)
     window.localStorage.setItem(RECENT_KEY, JSON.stringify(next))
+    notifyChanged()
   } catch {
     // 配额受限 / 隐私模式：记录失败不影响主流程，只是首页少了入口
   }
@@ -93,6 +109,7 @@ export function updateRecentTaskStatus(taskId: string, status: RecentTaskStatus)
     if (!target || target.status === status) return
     const next = items.map((item) => (item.taskId === taskId ? { ...item, status } : item))
     window.localStorage.setItem(RECENT_KEY, JSON.stringify(next))
+    notifyChanged()
   } catch {
     // 同 recordRecentTask
   }
@@ -112,13 +129,30 @@ export function ensureRecentTask(task: Omit<RecentTask, 'savedAt'>): void {
 
 /**
  * 删除一条记录（任务已过期 / 点进去 404 时顺手清理）。
- * 不提供批量清空入口：这里只有 8 条，且过期项会自己消失。
+ * 批量删除入口在任务侧栏（task-sidebar，桌面 lg+），见 removeRecentTasks。
  */
 export function removeRecentTask(taskId: string): void {
   if (typeof window === 'undefined') return
   try {
     const next = readRecentTasks().filter((item) => item.taskId !== taskId)
     window.localStorage.setItem(RECENT_KEY, JSON.stringify(next))
+    notifyChanged()
+  } catch {
+    // 同上
+  }
+}
+
+/**
+ * 批量删除（任务侧栏的多选删除，PR18）：一次读-过滤-写回，替代循环调用单删。
+ * 空数组或不存在的 taskId 不报错（幂等）。
+ */
+export function removeRecentTasks(taskIds: string[]): void {
+  if (typeof window === 'undefined' || taskIds.length === 0) return
+  try {
+    const doomed = new Set(taskIds)
+    const next = readRecentTasks().filter((item) => !doomed.has(item.taskId))
+    window.localStorage.setItem(RECENT_KEY, JSON.stringify(next))
+    notifyChanged()
   } catch {
     // 同上
   }
