@@ -388,6 +388,7 @@
 - [ ] 切换服务商：草稿 Key 自动清空 + 显示切换提示；沿用旧 Key 保存时给出强提示（E2E 回归 37g）
 - [ ] 桌面侧栏：lg+ 显示最近转写列表、勾选与跳转互不干扰、批量删除同步 localStorage；<lg 视口侧栏不渲染、首页区块正常（E2E 回归 38 / 38b）
 - [ ] 思维导图：总结就绪后导图卡渲染、章节标题与要点文本可定位、详细度切换随新 summary 更新（E2E 回归 39 / 39b）
+- [ ] 任务侧栏可收起：收起后左缘悬浮展开按钮 + 任务数角标，刷新保持；展开恢复（E2E 回归 38c）
 - [ ] 思维导图大纲导出：第三组菜单项，文件含标题与章节、不含时间戳（E2E 回归 39）
 - [ ] 回归 4/4c 桌面视口定位已改为侧栏条目（首页区块 lg+ 隐藏），4b/4d 补侧栏空态断言
 - [ ] `pnpm lint && pnpm build` 通过
@@ -440,6 +441,7 @@
 - **多选删除**：复选框（原生 input，`stopPropagation` 防误触跳转）勾选 → 「删除所选 (N)」 → `removeRecentTasks(ids)` 一次读-过滤-写回；删除后清空勾选
 - **跳转语义不变**：条目点击 = processing → 进度页 / done → 结果页；勾选与点击互不干扰
 - **testid**：侧栏 `task-sidebar` / 条目 `task-sidebar-item-<taskId>` / 勾选 `task-sidebar-check-<taskId>` / 批删 `task-sidebar-delete`；首页区块沿用 `recent-tasks` / `recent-task-item`
+- **可收起（PR18 增补）**：头部「收起」按钮 → 侧栏隐藏、左缘悬浮「展开」按钮（含任务数角标）出现；状态存 localStorage（`taskSidebarCollapsed`）刷新保持；空列表时连悬浮按钮也不渲染
 
 ## 23. 思维导图（PR18 新增，基础版）
 

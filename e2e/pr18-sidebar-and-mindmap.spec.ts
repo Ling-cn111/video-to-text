@@ -69,6 +69,28 @@ test.describe("PR18 任务侧栏与思维导图", () => {
     expect(await page.evaluate(() => window.localStorage.getItem("recentTasks"))).toBe("[]");
   });
 
+  test("回归 38c：侧栏可收起（左缘悬浮展开按钮 + 任务数角标），刷新后保持", async ({ page }) => {
+    await page.addInitScript(seedScript, [SEED_A, SEED_B]);
+    await page.goto("/");
+
+    await expect(page.getByTestId("task-sidebar")).toBeVisible();
+    await page.getByTestId("task-sidebar-collapse").click();
+    // 收起：侧栏本体隐藏，左缘悬浮按钮出现并带任务数
+    await expect(page.getByTestId("task-sidebar")).toBeHidden();
+    await expect(page.getByTestId("task-sidebar-reopen")).toBeVisible();
+    await expect(page.getByTestId("task-sidebar-reopen-count")).toHaveText("2");
+
+    // 刷新后仍是收起态（localStorage 记忆）
+    await page.reload();
+    await expect(page.getByTestId("task-sidebar")).toBeHidden();
+    await expect(page.getByTestId("task-sidebar-reopen")).toBeVisible();
+
+    // 展开：侧栏恢复，悬浮按钮消失
+    await page.getByTestId("task-sidebar-reopen").click();
+    await expect(page.getByTestId("task-sidebar")).toBeVisible();
+    await expect(page.getByTestId("task-sidebar-reopen")).toHaveCount(0);
+  });
+
   test("回归 38b：勾选不影响条目跳转；`<lg` 视口侧栏不渲染、首页区块正常", async ({ page }) => {
     await page.addInitScript(seedScript, [SEED_JUMP]);
     await page.goto("/");

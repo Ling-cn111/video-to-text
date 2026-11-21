@@ -38,7 +38,7 @@ pnpm start       # 以生产模式启动，默认 3000 端口
 | `e2e/pr14-hotwords-and-apk-release.spec.ts` | 回归 34-34f：热词解析容忍中英文分隔符并忽略大小写去重、长度与条数上限在前端收敛、热词真的进 `POST /api/transcribe` 请求体、没填词时 `body.hotwords ?? []` 为空、原始文本存 `localStorage.hotwords` 且刷新后回填展开、发版工作流必须含 Android job（签名密钥缺失即失败、版本号与 tag 一致、上传带 `--clobber`） |
 | `e2e/pr15-in-app-update.spec.ts` | 回归 35-35f：JS 的 `APK_CACHE_PATH` 与 Java 的 `DEFAULT_PATH` 逐字一致、Manifest 有 `REQUEST_INSTALL_PACKAGES` 与 `FileProvider`、`MainActivity` 注册 `ApkInstallerPlugin`、插件用 `FileProvider` + 两个 Flag、`file_paths.xml` 覆盖 `cache-path`、非移动壳里全部安全降级、主按钮是「下载并安装」且失败留浏览器出口、网页构建不出现应用内安装痕迹 |
 | `e2e/pr16-file-upload.spec.ts` | 回归 36-36d（M3）：预校验错误码与后端契约一致（扩展名→`FILE_FORMAT_UNSUPPORTED`、超限→`FILE_TOO_LARGE`，纯函数断言）、非法输入不发任何请求、请求链路 init（只有元数据）→ Mock 零真实 PUT → transcribe 带 `kind:'file'` + 完整 `file` 引用 + `engine`/`hotwords` 照传、进度页信息卡标题=文件名且空封面有占位图标、结果页与「最近转写」正常收录 `platform:'local'` 记录 |
-| `e2e/pr17-byok-multi-config.spec.ts` | 回归 37-37g：两套「地址+模型+Key」配置保存与一键切换（三键镜像随切换同步）、切换/删除/保存/清除都清总结缓存、测试按钮成功与失败两态（Mock 失败注入=模型名含「invalid」）、删除生效配置回到未配置态、旧单配置自动迁移、模型名 datalist 来自预设静态列表且自由输入可保存、切换服务商自动清空草稿 Key 并提示、沿用旧 Key 保存给出强提示 |
+| `e2e/pr17-byok-multi-config.spec.ts` | 回归 37-37g：两套「地址+模型+Key」配置保存与一键切换（三键镜像随切换同步）、切换/删除/保存/清除都清总结缓存、测试按钮成功与失败两态（Mock 失败注入=模型名含「invalid」）、删除生效配置回到未配置态、旧单配置自动迁移、模型名 datalist 来自预设静态列表且自由输入可保存、切换服务商自动清空草稿 Key 并提示、沿用旧 Key 保存给出强提示、侧栏可收起且刷新保持（回归 38c） |
 | `e2e/pr18-sidebar-and-mindmap.spec.ts` | 回归 38-39b：桌面侧栏展示/勾选/批量删除（localStorage 同步）、勾选不影响跳转、<lg 视口侧栏不渲染且首页区块正常、思维导图卡渲染（章节标题与要点可定位）、详细度切换随新 summary 更新、大纲导出为独立第三类产物（无时间戳） |
 
 **`test_byok.py`（后端）** 与上面的 BYOK 前端用例是配套的：前端只证明「头发出去了」，后端证明「收到后按请求级覆盖、被拒时报对错误码、不落库、不降级」。改任一侧都要跑另一侧。
