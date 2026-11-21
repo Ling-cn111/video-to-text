@@ -204,6 +204,16 @@ export interface UploadInitResponse {
   expiresIn: number
 }
 
+/** POST /api/byok/test 响应：服务商侧结果一律 HTTP 200 + {ok,...}；code 复用 ApiErrorCode */
+export interface ByokTestResult {
+  ok: boolean
+  latencyMs?: number
+  /** 服务商实际返回的模型名（可能与我们请求的不同） */
+  model?: string
+  code?: ApiErrorCode
+  message?: string
+}
+
 export interface StartTaskResponse {
   taskId: string
   status: TaskStatus

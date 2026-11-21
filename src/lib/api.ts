@@ -1,7 +1,8 @@
 import { ApiError, JSON_HEADERS, toJson, throwNetworkError, type ApiClient, type ClientErrorCode } from '@/lib/http'
-import { byokBodyFor, byokHeaderFor } from '@/lib/byok'
+import { HEADER_LLM_KEY, byokBodyFor, byokHeaderFor } from '@/lib/byok'
 import { realApi } from '@/lib/real-api'
 import type {
+  ByokTestResult,
   Capabilities,
   FileRef,
   GetTaskResponse,
@@ -90,11 +91,11 @@ const mockApi: ApiClient = {
     onProgress?: (percent: number) => void,
     signal?: AbortSignal,
   ): Promise<void> => {
-    // Mock 上传约 1.2 秒走完（8 步）：给 E2E 留出断言「进度条出现」的窗口，
+    // Mock 上传约 2.4 秒走完（8 步）：给 E2E 留出断言「进度条出现」的窗口，
     // 也让人工演示能看清进度在动。abort 时立刻结束（模拟取消）。
     for (const percent of [12, 25, 40, 55, 70, 85, 95, 100]) {
       if (signal?.aborted) throw new ApiError('NETWORK_ERROR', '上传已取消', 0)
-      await new Promise((resolve) => setTimeout(resolve, 150))
+      await new Promise((resolve) => setTimeout(resolve, 300))
       onProgress?.(percent)
     }
   },
@@ -107,6 +108,20 @@ const mockApi: ApiClient = {
         // Mock 服务端按 kind=file 合成 VideoInfo（标题=文件名）；engine/hotwords
         // 照发：E2E 靠拦截请求体证明字段真的带上了（与 startTranscription 同理）
         body: JSON.stringify({ kind: 'file', file: fileRef, engine, hotwords }),
+      }).catch(throwNetworkError),
+    ),
+
+  /**
+   * M3-BYOK 测活（Mock）：走同源 Mock 路由。失败注入约定：模型名含「invalid」
+   * 时返回 BYOK_KEY_INVALID，其余恒成功（延迟固定 123ms 便于断言）。
+   * Key 随请求头照发：E2E 可断言「测试用的是草稿里的 Key」。
+   */
+  testLlmConfig: (request: { llmBaseUrl: string; llmModel: string }, key: string): Promise<ByokTestResult> =>
+    toJson(
+      fetch('/api/byok/test', {
+        method: 'POST',
+        headers: { ...JSON_HEADERS, ...(key ? { [HEADER_LLM_KEY]: key } : {}) },
+        body: JSON.stringify(request),
       }).catch(throwNetworkError),
     ),
 

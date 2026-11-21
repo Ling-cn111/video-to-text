@@ -309,3 +309,184 @@ export function llmConfigIssue(config: LlmConfig): string | null {
   }
   return null
 }
+
+// ---- 多套配置（BYOK Multi-Config，回归 37 起）----
+//
+// 设计约束（docs/frontend-features.md §14）：byokLlmKey / byokLlmBaseUrl /
+// byokLlmModel 三键名不得改。因此多套配置采用「列表 + 生效镜像」双结构：
+// - 新键 byokConfigs 存配置数组、byokActiveId 存激活指针
+// - 三键语义收窄为「当前生效配置的镜像」，由下面的写操作同步维护
+// 这样 hasLlmKey / byokHeaderFor / byokBodyFor 与全部既有消费方、E2E（回归
+// 15/23）零改动；旧单配置通过惰性迁移进入列表。
+
+export const BYOK_CONFIGS = 'byokConfigs'
+export const BYOK_ACTIVE_ID = 'byokActiveId'
+/** 列表上限：localStorage 配额安全 + 面板列表可扫读 */
+export const MAX_BYOK_CONFIGS = 5
+
+export interface ByokConfigEntry {
+  id: string
+  /** null = 跟随站点预设（罕见但合法，保存时校验层会要求 model） */
+  llmBaseUrl: string | null
+  llmModel: string
+  key: string
+}
+
+function readJsonArray(storageKey: string): unknown[] {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = window.localStorage.getItem(storageKey)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function writeJsonArray(storageKey: string, value: unknown[]): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify(value))
+  } catch {
+    // 配额满 / 隐私模式：静默失败（旧镜像仍在，功能不劣化）
+  }
+}
+
+/** 解析并清洗配置列表：形状不对 / 超长的条目直接丢弃。
+ *  注意 llmModel 允许空串——「只填 Key、模型跟随站点默认」是合法配置（回归 14 的场景）。 */
+function sanitizeEntries(raw: unknown[]): ByokConfigEntry[] {
+  const entries: ByokConfigEntry[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const e = item as Record<string, unknown>
+    if (typeof e.id !== 'string' || !e.id) continue
+    if (typeof e.llmModel !== 'string' || e.llmModel.length > MAX_MODEL_LENGTH) continue
+    if (typeof e.key !== 'string' || !e.key || e.key.length > MAX_KEY_LENGTH) continue
+    const baseUrl = typeof e.llmBaseUrl === 'string' && e.llmBaseUrl ? e.llmBaseUrl : null
+    if (baseUrl && baseUrl.length > MAX_BASE_URL_LENGTH) continue
+    entries.push({ id: e.id, llmBaseUrl: baseUrl, llmModel: e.llmModel, key: e.key })
+  }
+  return entries.slice(0, MAX_BYOK_CONFIGS)
+}
+
+/**
+ * 惰性迁移（每次读取前调用，幂等）：旧单配置（三键有值）且尚无列表时，
+ * 生成一条配置并设为激活——三键值原样保留，消费者无感。
+ */
+function ensureMigrated(): ByokConfigEntry[] {
+  if (typeof window === 'undefined') return []
+  const rawConfigs = window.localStorage.getItem(BYOK_CONFIGS)
+  if (rawConfigs) return sanitizeEntries(readJsonArray(BYOK_CONFIGS))
+  const legacy = readLlmConfig()
+  if (!legacy.key && !legacy.baseUrl && !legacy.model) return []
+  const entry: ByokConfigEntry = {
+    id: newConfigId(),
+    llmBaseUrl: legacy.baseUrl,
+    // 空模型名是合法旧配置（模型跟随站点默认），原样保留语义
+    llmModel: legacy.model || '',
+    key: legacy.key || '',
+  }
+  if (!entry.key) return [] // 只有地址没有 Key 的旧数据无法成条目：不迁移（罕见）
+  window.localStorage.setItem(BYOK_CONFIGS, JSON.stringify([entry]))
+  window.localStorage.setItem(BYOK_ACTIVE_ID, entry.id)
+  return [entry]
+}
+
+export function newConfigId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+export function listConfigs(): ByokConfigEntry[] {
+  return ensureMigrated()
+}
+
+export function readActiveConfigEntry(): ByokConfigEntry | null {
+  const entries = ensureMigrated()
+  const activeId = readStored(BYOK_ACTIVE_ID, 64)
+  if (!activeId) return null
+  return entries.find((entry) => entry.id === activeId) ?? null
+}
+
+/** 面板列表显示名：模型名优先；同模型多地址时加主机名后缀区分 */
+export function configLabel(entry: ByokConfigEntry, all: ByokConfigEntry[]): string {
+  const duplicates = all.filter((e) => e.llmModel === entry.llmModel)
+  if (duplicates.length <= 1 || !entry.llmBaseUrl) return entry.llmModel
+  try {
+    return `${entry.llmModel}（${new URL(entry.llmBaseUrl).hostname}）`
+  } catch {
+    return entry.llmModel
+  }
+}
+
+function syncMirror(entry: ByokConfigEntry): void {
+  saveLlmConfig({ key: entry.key, baseUrl: entry.llmBaseUrl, model: entry.llmModel })
+}
+
+function writeActiveId(id: string | null): void {
+  if (typeof window === 'undefined') return
+  try {
+    if (id) window.localStorage.setItem(BYOK_ACTIVE_ID, id)
+    else window.localStorage.removeItem(BYOK_ACTIVE_ID)
+  } catch {
+    // 同 writeJsonArray：静默失败
+  }
+}
+
+/**
+ * 新增或更新配置。activate=true 时同步三键镜像并设为激活。
+ * 超出上限抛错（调用方 toast），调用方负责 clearSummaryCache 与 byok:changed。
+ */
+export function saveConfigEntry(entry: ByokConfigEntry, activate: boolean): void {
+  if (typeof window === 'undefined') return
+  const entries = ensureMigrated()
+  const index = entries.findIndex((e) => e.id === entry.id)
+  if (index >= 0) {
+    entries[index] = entry
+  } else {
+    if (entries.length >= MAX_BYOK_CONFIGS) {
+      throw new Error(`最多保存 ${MAX_BYOK_CONFIGS} 套配置，请先删除不需要的`)
+    }
+    entries.push(entry)
+  }
+  writeJsonArray(BYOK_CONFIGS, entries)
+  if (activate || !readStored(BYOK_ACTIVE_ID, 64)) {
+    writeActiveId(entry.id)
+    syncMirror(entry)
+  }
+}
+
+/** 切换生效配置：同步三键镜像 + 激活指针。调用方负责 clearSummaryCache。 */
+export function activateConfigEntry(id: string): ByokConfigEntry | null {
+  const entries = ensureMigrated()
+  const target = entries.find((e) => e.id === id)
+  if (!target) return null
+  writeActiveId(id)
+  syncMirror(target)
+  return target
+}
+
+/** 删除配置；删的是激活条目时，三键镜像一并清空（回到未配置态）。 */
+export function deleteConfigEntry(id: string): void {
+  const entries = ensureMigrated()
+  const next = entries.filter((e) => e.id !== id)
+  writeJsonArray(BYOK_CONFIGS, next)
+  const activeId = readStored(BYOK_ACTIVE_ID, 64)
+  if (activeId === id) {
+    writeActiveId(null)
+    clearLlmConfig()
+  }
+}
+
+/** 清除全部：配置列表 + 激活指针 + 三键镜像。调用方负责 clearSummaryCache。 */
+export function clearAllByokConfigs(): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.removeItem(BYOK_CONFIGS)
+    window.localStorage.removeItem(BYOK_ACTIVE_ID)
+  } catch {
+    // 静默
+  }
+  clearLlmConfig()
+}

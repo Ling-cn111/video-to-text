@@ -24,7 +24,7 @@ test.describe("PR16 本地文件上传", () => {
   }
 
   function fakeFile(name: string, sizeOverride?: number): File {
-    const file = new File([fakeVideoBuffer()], name, { type: "video/mp4" });
+    const file = new File([fakeVideoBuffer() as unknown as BlobPart], name, { type: "video/mp4" });
     if (sizeOverride !== undefined) {
       Object.defineProperty(file, "size", { value: sizeOverride });
     }

@@ -1,7 +1,8 @@
 import { apiUrl } from '@/lib/api-base'
-import { byokBodyFor, byokHeaderFor } from '@/lib/byok'
+import { HEADER_LLM_KEY, byokBodyFor, byokHeaderFor } from '@/lib/byok'
 import { JSON_HEADERS, putFileToUrl, toJson, throwNetworkError, type ApiClient } from '@/lib/http'
 import type {
+  ByokTestResult,
   Capabilities,
   FileRef,
   GetTaskResponse,
@@ -84,6 +85,24 @@ export const realApi: ApiClient = {
           engine,
           ...(hotwords && hotwords.length > 0 ? { hotwords } : {}),
         }),
+      }).catch(throwNetworkError),
+    ),
+
+  /**
+   * M3-BYOK 测活：对「地址 + 模型 + Key」发一次极短真实请求。Key 由调用方显式
+   * 传入（测的是面板草稿，不一定是已保存的激活配置），只走请求头转发给服务商，
+   * 后端不落任何存储。
+   */
+  testLlmConfig: (request: { llmBaseUrl: string; llmModel: string }, key: string): Promise<ByokTestResult> =>
+    toJson(
+      fetch(apiUrl('/byok/test'), {
+        method: 'POST',
+        headers: {
+          ...JSON_HEADERS,
+          // Key 缺失时后端会给出「请先填写 API Key」的标准错误；这里不发空头
+          ...(key ? { [HEADER_LLM_KEY]: key } : {}),
+        },
+        body: JSON.stringify(request),
       }).catch(throwNetworkError),
     ),
 

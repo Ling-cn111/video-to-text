@@ -192,6 +192,12 @@
 | 只对总结放行 | 云端 ASR 的地址仍固定为 `CLOUD_ASR_BASE_URL`，**不开放用户自填**。语音识别用站点的免费模型，界面既不收集 Key 也不收集地址 |
 | 不降级 | ASR 用用户 Key 被拒时**不降级到本地引擎**。降级会跑出结果，用户以为云端成功了，从此不会去改那把已失效的 Key（`asr.py` 的 `except ByokKeyInvalidError: raise` 必须排在通用 `except` 之前） |
 | 不落库 | Key 不写进任务库。`TranscribeJob.byok_key` 只随作业跨进程投递，`tasks._payload_dict` 里不得出现任何含 "key" 的字段 |
+| **多套配置存储（PR17）** | 新增 localStorage 键 `byokConfigs`（配置数组，上限 5 条）与 `byokActiveId`（激活指针）；原三键（`byokLlmKey` / `byokLlmBaseUrl` / `byokLlmModel`）**键名不变**，语义收窄为「**当前生效配置的镜像**」，由存储层在保存 / 切换 / 删除时同步维护。`byokHeaderFor` / `byokBodyFor` / `readLlmKey` 对外行为不变。旧单配置（三键有值、无列表）首次读取自动迁移为一条配置（幂等）。允许空模型名（模型跟随站点默认，回归 14 的场景） |
+| **切换 / 删除也必须清总结缓存（PR17）** | 回归 25 的语义从「保存/清除」延伸到「切换配置 / 删除配置」——缓存键不含服务商，不清会把旧配置的总结当成新配置的结果 |
+| **测活端点 `POST /api/byok/test`（PR17）** | 用极短真实请求（max_tokens=1）验证「地址+模型+Key」。信任模型与 summarize 相同：Key 只走请求头、随本次调用转发给用户指定的服务商、**不落任何存储不写日志**；与本节「不做 /models 拉取」不冲突（那是禁止后端代持 Key 拉取模型列表）。服务商侧结果一律 HTTP 200 + `{ok, code?, message?}`，code 复用现有 ApiErrorCode（401→BYOK_KEY_INVALID / 404→模型不存在 / 402→余额 / 429→限流）；校验类失败（缺字段 / SSRF）走标准错误形状。SSRF + DNS 复检与 summarize 同源，绝不放宽 |
+| **切换服务商必须换 Key（PR17）** | 点预设切到不同服务商时自动清空草稿 Key 并显示切换提示，此时显示**空的密码输入框**而非旧 Key 的掩码；保存时未输入新 Key 会沿用旧 Key 并给出「可点测试验证」的强提示——防止「新模型配旧 Key」的静默失败 |
+| **模型名 combobox（PR17）** | 数据源 = 当前预设的静态 `models[]`（HTML datalist，不发网络请求，与「不做 /models 拉取」不冲突）；自由输入始终可用 |
+| **llmModel 允许空串（PR17）** | 多配置条目的 `llmModel` 允许空——「只填 Key、模型跟随站点默认」是合法配置（回归 14 的场景），清洗层不得丢弃 |
 
 ## 15. 桌面端自动更新（PR10 新增）
 
@@ -374,6 +380,12 @@
 - [ ] 应用内更新在非移动壳里全部安全降级（返回 null / false / 「当前环境不支持应用内安装」），网页构建里 `mobile-update` 数量为 0（E2E 回归 35d / 35f）
 - [ ] 主按钮文案是「下载并安装」，下载中显示 `N%`、`contentLength` 缺失时显示「准备中…」；失败一定留浏览器出口（E2E 回归 35e）
 - [ ] 发版前三处版本号一致：`package.json` / `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml`（`release-desktop.yml` 会拦）
+- [ ] BYOK 多套配置：保存两套后列表两条、切换后三键镜像同步、切换/删除/保存/清除都清总结缓存（E2E 回归 37 / 37b）
+- [ ] 测试按钮：草稿齐全才可点，成功显示「可用+延迟」，失败显示服务商侧中文文案；Mock 失败注入走模型名含「invalid」约定（E2E 回归 37c）
+- [ ] 删除生效配置回到未配置态（三键清空）；删除非生效配置不影响「使用中」（E2E 回归 37d）
+- [ ] 旧单配置自动迁移为列表条目且三键值不变（E2E 回归 37e）
+- [ ] 模型名 combobox（datalist）来自预设静态 models[]，自由输入不被覆盖（E2E 回归 37f）
+- [ ] 切换服务商：草稿 Key 自动清空 + 显示切换提示；沿用旧 Key 保存时给出强提示（E2E 回归 37g）
 - [ ] `pnpm lint && pnpm build` 通过
 
 > 修改本文件（新增/放宽锁定项）需要用户明确确认。

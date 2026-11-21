@@ -23,6 +23,7 @@
 | POST | `/api/transcribe` | 创建转写任务 → `{ taskId, status, progress, stage }`；`kind=file` 时走文件分支（见 §2.1） |
 | GET | `/api/transcribe/{taskId}` | 轮询任务 → `{ status, stage, progress, video?, transcript?, plainText?, error?, transcriptSource? }` |
 | POST | `/api/summarize` | 生成总结（无状态）→ `{ summary, keyPoints, chapters }` |
+| POST | `/api/byok/test` | 测活（PR17）：极短真实请求验证「地址+模型+Key」→ `{ ok, latencyMs?, model? }` 或 `{ ok: false, code, message }`（HTTP 200，code 复用 ApiErrorCode）。Key 只走请求头 `X-Vtt-Llm-Key`，不落任何存储；校验类失败走标准错误形状 |
 | GET | `/api/capabilities` | 配置态与依赖探测 → `{ cloudAsrConfigured, summarizeConfigured, localAsrAvailable, fileUploadConfigured }`（只返回布尔，**不含 Key 信息**） |
 | GET | `/api/health` | 可达性探测 → `{ status: "ok" }` |
 

@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import CORS_ORIGINS, CORS_ORIGIN_REGEX
 from app.errors import AppException
+from app.routers.byok import router as byok_router
 from app.routers.capabilities import router as capabilities_router
 from app.routers.parse import router as parse_router
 from app.routers.summarize import router as summarize_router
@@ -44,6 +45,7 @@ app.add_middleware(
 app.include_router(parse_router)
 app.include_router(transcribe_router)
 app.include_router(summarize_router)
+app.include_router(byok_router)
 app.include_router(capabilities_router)
 app.include_router(upload_router)
 

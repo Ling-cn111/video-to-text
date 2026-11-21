@@ -1,6 +1,7 @@
 import type {
   ApiErrorCode,
   ApiErrorBody,
+  ByokTestResult,
   Capabilities,
   FileRef,
   GetTaskResponse,
@@ -50,6 +51,14 @@ export interface ApiClient {
   ) => Promise<StartTaskResponse>
   getTask: (taskId: string) => Promise<GetTaskResponse>
   summarize: (request: SummarizeRequest) => Promise<Summary>
+  /**
+   * M3-BYOK：测活——用当前草稿（地址 + 模型）与指定 Key 发一次极短真实请求。
+   * key 由调用方显式传入（测的是草稿，不一定是已保存的激活配置）。
+   */
+  testLlmConfig: (
+    request: { llmBaseUrl: string; llmModel: string },
+    key: string,
+  ) => Promise<ByokTestResult>
   /** 能力探测（只读布尔，不含 Key） */
   getCapabilities: () => Promise<Capabilities>
   /** 健康检查（只读轻量探测）：失败 / 超时 / 非 2xx 均视为后端不可达 */
