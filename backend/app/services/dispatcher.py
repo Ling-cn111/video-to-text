@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Protocol
 import httpx
 
 from app.config import ASYNC_TIMEOUT_SECONDS, ENQUEUE_MODE, WORKER_PATH, WORKER_TOKEN, WORKER_URL
-from app.schemas import VideoInfo
+from app.schemas import FileRef, VideoInfo
 from app.services import transcribe
 
 if TYPE_CHECKING:
@@ -62,10 +62,14 @@ class TranscribeJob:
 
     字段与 `run_transcription_pipeline` 的签名一一对应，顺序也保持一致，
     inline 分发时直接按位置展开即可，不必维护第二套映射。
+
+    M3 起任务有两种来源：url（B站链接，原样）与 file（本地文件经 OSS 中转）。
+    url 作业必带 url；file 作业的 url 为 None，字节流经 file.objectKey 引用。
     """
 
     task_id: str
-    url: str
+    # url 作业的视频页地址；file 作业为 None（from_dict 对 url 来源保持强校验）
+    url: str | None = None
     video: VideoInfo | None = None
     prefer_subtitles: bool = True
     hotwords: list[str] | None = None
@@ -74,6 +78,10 @@ class TranscribeJob:
     # 否则 Worker 拿不到；但**不进任务库**（tasks._payload_dict 不含该字段），
     # 只在「API 函数 → Worker 函数」这一跳的 HTTPS 载荷里存在。
     byok_key: str | None = None
+    # 任务来源（M3）：url | file。缺省 url 兼容旧事件体
+    source: str = "url"
+    # file 作业的文件引用；键值与前端 FileRef 一致（camelCase）
+    file: "FileRef | None" = None
 
     def to_dict(self) -> dict:
         """可 JSON 序列化的作业体（P3 的 FC 事件 payload 即此结构）。"""
@@ -85,20 +93,33 @@ class TranscribeJob:
             "hotwords": list(self.hotwords) if self.hotwords else None,
             "engine": self.engine,
             "byok_key": self.byok_key,
+            "source": self.source,
+            "file": self.file.model_dump() if self.file else None,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "TranscribeJob":
-        """从事件体反解（P2 Worker 入口用）。缺省字段走默认值，兼容旧事件。"""
+        """从事件体反解（P2 Worker 入口用）。缺省字段走默认值，兼容旧事件。
+
+        旧事件体没有 source 字段 → 视为 url 作业并保持 url 必填的旧强校验；
+        新的 file 作业必须带 file.objectKey，url 反而不该有（有也忽略）。
+        """
         video = data.get("video")
+        source = str(data.get("source") or "url")
+        file_data = data.get("file")
+        url_value = data.get("url")
+        if source == "url" and not url_value:
+            raise KeyError("url")
         return cls(
             task_id=str(data["task_id"]),
-            url=str(data["url"]),
+            url=str(url_value) if url_value else None,
             video=VideoInfo(**video) if video else None,
             prefer_subtitles=bool(data.get("prefer_subtitles", True)),
             hotwords=data.get("hotwords") or None,
             engine=data.get("engine"),
             byok_key=data.get("byok_key") or None,
+            source=source,
+            file=FileRef(**file_data) if file_data else None,
         )
 
 
@@ -120,10 +141,10 @@ class InlineDispatcher:
     mode = "inline"
 
     def enqueue(self, job: TranscribeJob, background_tasks: "BackgroundTasks | None" = None) -> None:
-        # byok_key 用关键字传：它是 4 个位置参数之后的第 7 个形参，插在 on_heartbeat
-        # 之后，位置传递一旦漏填 None 就会把 Key 当成心跳回调传进去。
+        # byok_key / source / file 用关键字传：它们在 on_heartbeat 之后，位置传递
+        # 一旦漏填 None 就会把 Key 当成心跳回调传进去。
         args = (job.task_id, job.url, job.video, job.prefer_subtitles, job.hotwords, job.engine)
-        kwargs = {"byok_key": job.byok_key}
+        kwargs = {"byok_key": job.byok_key, "source": job.source, "file": job.file}
         if background_tasks is None:
             transcribe.run_transcription_pipeline(*args, **kwargs)
             return

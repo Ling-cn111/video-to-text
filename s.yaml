@@ -154,6 +154,17 @@ resources:
         TRUSTED_PROXY_CIDRS: ${env('TRUSTED_PROXY_CIDRS', '')}
         MAX_AUDIO_SIZE_MB: "100"
         EXTRACT_TIMEOUT_SECONDS: "30"
+        # ---- 本地文件上传（M3）----
+        # 四项全配 = 开启本地上传（capabilities.fileUploadConfigured）。
+        # API 侧只做预签名（离线）与 HEAD 复核，不经手文件字节。
+        OSS_BUCKET: ${env('OSS_BUCKET', '')}
+        OSS_ENDPOINT: ${env('OSS_ENDPOINT', '')}
+        OSS_ACCESS_KEY_ID: ${env('OSS_ACCESS_KEY_ID', '')}
+        OSS_ACCESS_KEY_SECRET: ${env('OSS_ACCESS_KEY_SECRET', '')}
+        OSS_INTERNAL_ENDPOINT: ${env('OSS_INTERNAL_ENDPOINT', '')}
+        OSS_UPLOAD_PREFIX: "uploads/"
+        # 源文件上限（MB）；与 worker 磁盘（10GB 档）匹配，装得下 500MB 源文件 + WAV
+        FILE_MAX_SIZE_MB: "500"
         # ---- 平台风控（B站 412）----
         # 机房出口 IP 是 B站风控重点，缺 Referer/UA 时易报 412。
         # 留空则沿用 yt-dlp 默认值；Cookie 是账号凭证，只经部署机注入。
@@ -220,9 +231,10 @@ resources:
       cpu: 2
       memorySize: 4096
       # 长视频转写；请对照当前地域配额确认上限，超限需在配额中心申请
-      # fc3 必填项，512MB 为最小值；16kHz WAV 会落 /tmp，接近 100MB 上限的
-      # 超长音频如遇「磁盘写满」，先调大这里再排查
-      diskSize: 512
+      # M3：临时磁盘只有 512MB / 10GB 两档，取 10GB——本地文件任务要装下
+      # 500MB 源文件（storage.download_to_temp 落 /tmp）+ ≤100MB 的 16kHz WAV；
+      # 512MB 档会让文件任务直接磁盘写满。10GB 按量计费，单实例并发 1 场景可忽略
+      diskSize: 10240
       timeout: 1800
       # 一实例一作业：内存模型最简单，避免多作业并发把内存打满
       instanceConcurrency: 1
@@ -261,6 +273,16 @@ resources:
         ASR_ENGINE_FALLBACK: ""
         MAX_AUDIO_SIZE_MB: "100"
         EXTRACT_TIMEOUT_SECONDS: "30"
+        # ---- 本地文件上传（M3）----
+        # Worker 从 OSS **内网 endpoint** 下载对象落 /tmp（免流量费）并转码；
+        # 与 API 侧同四项配置，缺失时 file 任务在 Worker 侧按普通失败处理
+        OSS_BUCKET: ${env('OSS_BUCKET', '')}
+        OSS_ENDPOINT: ${env('OSS_ENDPOINT', '')}
+        OSS_ACCESS_KEY_ID: ${env('OSS_ACCESS_KEY_ID', '')}
+        OSS_ACCESS_KEY_SECRET: ${env('OSS_ACCESS_KEY_SECRET', '')}
+        OSS_INTERNAL_ENDPOINT: ${env('OSS_INTERNAL_ENDPOINT', '')}
+        OSS_UPLOAD_PREFIX: "uploads/"
+        FILE_MAX_SIZE_MB: "500"
         # worker 才是真正下载音频、调 yt-dlp 的一方，风控参数必须两边一致
         BILI_USER_AGENT: ${env('BILI_USER_AGENT', '')}
         BILI_COOKIE: ${env('BILI_COOKIE', '')}

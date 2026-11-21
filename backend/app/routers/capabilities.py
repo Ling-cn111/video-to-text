@@ -10,6 +10,7 @@ from fastapi import APIRouter
 
 from app.config import CLOUD_ASR_API_KEY, DASHSCOPE_API_KEY, DEEPSEEK_API_KEY, LLM_PROVIDER
 from app.schemas import CapabilitiesResponse
+from app.services import storage
 
 router = APIRouter()
 
@@ -39,4 +40,6 @@ def get_capabilities() -> CapabilitiesResponse:
         cloudAsrConfigured=bool(CLOUD_ASR_API_KEY.strip()),
         summarizeConfigured=bool(llm_key.strip()),
         localAsrAvailable=_local_asr_available(),
+        # M3：OSS 配置齐备才显示「上传本地视频」入口（探测不抛异常）
+        fileUploadConfigured=storage.is_file_storage_configured(),
     )

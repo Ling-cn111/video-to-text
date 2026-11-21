@@ -243,3 +243,36 @@ CLOUD_ASR_API_KEY: str = os.getenv("CLOUD_ASR_API_KEY", os.getenv("ASR_API_KEY",
 CLOUD_ASR_MODEL: str = os.getenv(
     "CLOUD_ASR_MODEL", os.getenv("ASR_CLOUD_MODEL", "XingChenAGI/XingChenASR-V3.2-Ultra")
 )
+
+# ---- 本地文件上传（M3，客户端直传 OSS + 预签名 PUT）----
+# 为什么字节不经过后端：FC HTTP 触发器同步请求体上限 32MB（平台层限制，不可配置），
+# 异步投递 payload 上限 128KB——500MB 级源文件无论走哪条函数链路都会被平台直接拒收。
+# 唯一可行通道是「浏览器 → OSS 预签名 PUT 直传」，后端只收对象引用（见 docs/serverless-deploy.md）。
+
+# 源文件大小上限（MB）：与 MAX_AUDIO_SIZE_MB 是两个维度（源视频 vs 转码后 16kHz WAV）。
+# 三重校验：upload/init 按声明拒 → transcribe-init HEAD 实际大小 → Worker 下载流式累计。
+# 注意源文件 ≤500MB 不代表能转写成功：转码后 WAV 仍受 MAX_AUDIO_SIZE_MB 约束
+# （100MB ≈ 约 52 分钟内容），超长视频会在 extract_audio 阶段报 AUDIO_TOO_LARGE。
+FILE_MAX_SIZE_MB: int = int(os.getenv("FILE_MAX_SIZE_MB", "500"))
+
+# 允许的源文件扩展名（逗号分隔，全小写）。mp4/mov/webm 与镜像内静态 ffmpeg 的
+# 解封装能力对齐（ffmpeg 走 stdin/路径输入均可解）。
+FILE_ALLOWED_EXTENSIONS: str = os.getenv("FILE_ALLOWED_EXTENSIONS", "mp4,mov,webm")
+
+# OSS bucket 与凭证（M3 上传功能的唯一新外部依赖）。四项全配才算开启本地上传，
+# 任一缺失 → /api/capabilities 的 fileUploadConfigured=false，前端隐藏上传入口；
+# 用户强行调用 /api/upload/init 会得到 FILE_STORAGE_NOT_CONFIGURED 明确报错。
+OSS_BUCKET: str = os.getenv("OSS_BUCKET", "").strip()
+OSS_ENDPOINT: str = os.getenv("OSS_ENDPOINT", "").strip()  # 公网，如 https://oss-cn-hangzhou.aliyuncs.com
+OSS_ACCESS_KEY_ID: str = os.getenv("OSS_ACCESS_KEY_ID", "").strip()
+OSS_ACCESS_KEY_SECRET: str = os.getenv("OSS_ACCESS_KEY_SECRET", "").strip()
+
+# Worker 从 OSS 下载对象用的内网 endpoint（同地域 VPC 内免流量费）；
+# 留空则回退公网 endpoint（本地开发 / 未配 VPC 场景）。
+OSS_INTERNAL_ENDPOINT: str = os.getenv("OSS_INTERNAL_ENDPOINT", "").strip()
+
+# 预签名 PUT URL 有效期（秒）：慢网络传 500MB 也要留足余量
+OSS_PRESIGN_EXPIRES_SECONDS: int = int(os.getenv("OSS_PRESIGN_EXPIRES_SECONDS", "7200"))
+
+# 上传对象的 key 前缀（必须以 / 结尾）：生命周期规则按这个前缀兜底删除
+OSS_UPLOAD_PREFIX: str = os.getenv("OSS_UPLOAD_PREFIX", "uploads/")

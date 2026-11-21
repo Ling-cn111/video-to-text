@@ -97,7 +97,7 @@ def test_inline_registers_pipeline_on_background_tasks(monkeypatch):
     assert func is transcribe_module.run_transcription_pipeline
     assert args == ("task-1", "https://www.bilibili.com/video/BV1GJ411x7h7", VIDEO, True, ["转写", "ASR"], "cloud")
     # byok_key 走关键字：它是 on_heartbeat 之后新增的第 7 个形参，位置传递会串位
-    assert kwargs == {"byok_key": None}
+    assert kwargs == {"byok_key": None, "source": "url", "file": None}
     assert calls == []  # 未在请求内执行（由 Starlette 在响应后调用）
 
 

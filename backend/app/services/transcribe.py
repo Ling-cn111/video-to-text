@@ -4,6 +4,10 @@
 音频全程内存化（S1-B）：下载/转换/分离均以 BytesIO 流转，不落持久磁盘；
 仅 demucs / qwen3 / funasr 等「只认文件路径」的组件内部用系统临时目录并即用即删。
 
+M3 本地文件任务（source=file）：没有链接语义，跳过字幕快路径与 download_audio，
+改为「OSS 对象 → /tmp（流式落盘）→ ffmpeg 按路径转码」；转码后与 URL 路径在
+separation/ASR 汇合。成功后删除 OSS 对象，失败保留 ≤1 天供重试。
+
 S2-P0 进度上报（ProgressReporter）：
 - 节流：进度变化 < PROGRESS_STEP 且阶段未变时不写存储（云端 ASR 无回调，
   本地 ASR 每分段都回调，节流后写入次数从「分段数」降到「进度档数」）
@@ -16,11 +20,12 @@ import threading
 import time
 from typing import Callable
 
-from app.config import TASK_HEARTBEAT_SECONDS
+from app.config import FILE_MAX_SIZE_MB, TASK_HEARTBEAT_SECONDS
 from app.errors import AppException
-from app.schemas import TranscriptItem, VideoInfo
+from app.schemas import FileRef, TranscriptItem, VideoInfo
 from app.services import asr
-from app.services.audio import convert_to_wav_16k_mono, download_audio
+from app.services import storage
+from app.services.audio import convert_file_to_wav_16k_mono, convert_to_wav_16k_mono, download_audio
 from app.services.subtitles import punctuate_subtitle_items, try_extract_subtitle_transcript
 from app.services.tasks import update_task
 
@@ -157,13 +162,15 @@ def _fail(task_id: str, exc: Exception) -> None:
 
 def run_transcription_pipeline(
     task_id: str,
-    url: str,
+    url: str | None,
     video: VideoInfo | None = None,
     prefer_subtitles: bool = True,
     hotwords: list[str] | None = None,
     engine: str | None = None,
     on_heartbeat: Callable[[], None] | None = None,
     byok_key: str | None = None,
+    source: str = "url",
+    file: FileRef | None = None,
 ) -> None:
     """后台转写主流程。任何异常都收敛为任务 failed + 友好信息。
 
@@ -173,32 +180,37 @@ def run_transcription_pipeline(
 
     on_heartbeat：心跳回调（S2-P2），Worker 用它续期执行锁；同步上下文调用。
     byok_key：用户自带的云端 ASR Key（见 services/byok.py），只对 cloud 引擎有意义。
+    source/file（M3）：source="file" 时为本地文件任务，url 不参与流程，
+    从 file.objectKey 指向的 OSS 对象取音频（见 _obtain_wav）。
     """
     reporter = ProgressReporter(task_id, on_heartbeat=on_heartbeat)
     try:
-        # 阶段一：字幕快路径（分层降级：yt-dlp CC → dm/view AI；秒级返回）
-        reporter.set("parse_link", PROGRESS_PARSE)
-        if prefer_subtitles:
-            try:
-                subtitle_result = try_extract_subtitle_transcript(url)
-            except Exception:
-                subtitle_result = None  # 字幕路径失败不阻断，回退 ASR
-            if subtitle_result:
-                subtitle_items, subtitle_source = subtitle_result
-                # 字幕分句：B站 AI 字幕按口播节奏切成 11 字一条、零标点，
-                # 不合并的话前端分段逻辑失效（见 punctuate_subtitle_items 注释）。
-                # 放后端做，网页 / 桌面端 / SRT·VTT 导出 / plain_text 一次全受益。
-                subtitle_items = punctuate_subtitle_items(subtitle_items)
-                reporter.set("asr", PROGRESS_ASR_START)
-                reporter.close()
-                _finish(task_id, subtitle_items, subtitle_source)
-                return
+        if source == "file":
+            wav = _obtain_wav_from_file(task_id, reporter, video, file)
+        else:
+            # 阶段一：字幕快路径（分层降级：yt-dlp CC → dm/view AI；秒级返回）
+            reporter.set("parse_link", PROGRESS_PARSE)
+            if prefer_subtitles:
+                try:
+                    subtitle_result = try_extract_subtitle_transcript(url)
+                except Exception:
+                    subtitle_result = None  # 字幕路径失败不阻断，回退 ASR
+                if subtitle_result:
+                    subtitle_items, subtitle_source = subtitle_result
+                    # 字幕分句：B站 AI 字幕按口播节奏切成 11 字一条、零标点，
+                    # 不合并的话前端分段逻辑失效（见 punctuate_subtitle_items 注释）。
+                    # 放后端做，网页 / 桌面端 / SRT·VTT 导出 / plain_text 一次全受益。
+                    subtitle_items = punctuate_subtitle_items(subtitle_items)
+                    reporter.set("asr", PROGRESS_ASR_START)
+                    reporter.close()
+                    _finish(task_id, subtitle_items, subtitle_source)
+                    return
 
-        # 阶段二：下载音轨 + FFmpeg 管道转 16kHz 单声道 WAV（全程内存，S1-B）
-        reporter.set("extract_audio", PROGRESS_EXTRACT_START)
-        audio = download_audio(url)
-        reporter.set("extract_audio", PROGRESS_EXTRACT_DONE)
-        wav = convert_to_wav_16k_mono(audio)
+            # 阶段二：下载音轨 + FFmpeg 管道转 16kHz 单声道 WAV（全程内存，S1-B）
+            reporter.set("extract_audio", PROGRESS_EXTRACT_START)
+            audio = download_audio(url)
+            reporter.set("extract_audio", PROGRESS_EXTRACT_DONE)
+            wav = convert_to_wav_16k_mono(audio)
 
         # 可选：人声分离（Demucs）。智能触发：非语音占比超阈值或显式开启；
         # 分离失败/未安装组件时降级回原音频，不使任务失败。分离后仍走 ASR 的 VAD 兜底链。
@@ -233,8 +245,41 @@ def run_transcription_pipeline(
             raise AppException("TRANSCRIBE_FAILED", "未能识别出语音内容", 500)
         reporter.close()
         _finish(task_id, transcript, "asr")
+        if source == "file" and file is not None:
+            # 成功才删对象；失败保留 ≤1 天（bucket 生命周期兜底），store.retry()
+            # 重派作业时复用同一个 objectKey，用户不必重新上传几百 MB。
+            storage.delete_object(file.objectKey)
     except Exception as exc:
         reporter.close()
         _fail(task_id, exc)
     finally:
         reporter.close()
+
+
+def _obtain_wav_from_file(
+    task_id: str,
+    reporter: ProgressReporter,
+    video: VideoInfo | None,
+    file: FileRef | None,
+):
+    """本地文件任务的取音阶段：OSS 对象 → /tmp → ffmpeg 按路径转码 → WAV BytesIO。
+
+    与 URL 路径的两点差异：
+    - 源文件 500MB 级，**不进内存**：storage.download_to_temp 流式落盘（内网
+      endpoint），ffmpeg 以文件路径为输入（stdout 管道读回的 WAV 才是内存对象）
+    - 转码完成后按 WAV 字节数精确回填真实时长（16kHz × 2 字节 × 秒 = 32000/s），
+      上传时拿不到可靠时长（浏览器探测只是预估）
+    """
+    if file is None or not (file.objectKey or "").strip():
+        raise AppException("TRANSCRIBE_FAILED", "文件任务缺少文件引用", 500)
+    reporter.set("extract_audio", PROGRESS_EXTRACT_START)
+    with storage.download_to_temp(file.objectKey, FILE_MAX_SIZE_MB * 1024 * 1024) as source_path:
+        reporter.bump(PROGRESS_EXTRACT_DONE)
+        wav = convert_file_to_wav_16k_mono(source_path)
+    duration_seconds = wav.getbuffer().nbytes // 32000
+    if video is not None and duration_seconds > 0:
+        try:
+            update_task(task_id, video=video.model_copy(update={"duration": duration_seconds}))
+        except Exception:  # pragma: no cover - 时长回填失败不影响转写
+            logger.warning("真实时长回填失败（task_id=%s）", task_id, exc_info=True)
+    return wav

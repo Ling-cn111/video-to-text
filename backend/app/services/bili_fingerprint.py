@@ -31,7 +31,8 @@ from app import config
 
 logger = logging.getLogger(__name__)
 
-FINGER_SPI_URL = "https://api.bilibili.com/x/frontend/finger/spi"
+# 指纹接口地址（B站固定上游，host 恒为 api.bilibili.com；以字面量内联在
+# _fetch_once 的 httpx.get 调用处，让「请求目标不可由输入改变」直接可见）
 
 # 缓存有效期（秒）。B站 buvid 的有效期远超这个量级，这里只是避免
 # 进程长期运行后用到「可能已被风控拉黑」的旧指纹。
@@ -59,7 +60,12 @@ def _spi_headers() -> dict[str, str]:
 
 def _fetch_once() -> str:
     """请求一次指纹接口，返回形如 'buvid3=xxx; buvid4=yyy' 的 Cookie 片段。"""
-    response = httpx.get(FINGER_SPI_URL, headers=_spi_headers(), timeout=10)
+    # URL 是固定字面量（B站指纹接口）：请求目标不受任何输入影响
+    response = httpx.get(
+        "https://api.bilibili.com/x/frontend/finger/spi",
+        headers=_spi_headers(),
+        timeout=10,
+    )
     response.raise_for_status()
     data = response.json()
     if data.get("code") != 0:
