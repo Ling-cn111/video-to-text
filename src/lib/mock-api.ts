@@ -1,8 +1,10 @@
 import { resolveVideoUrl } from '@/lib/platform'
 import { getPlatformMeta, unsupportedHostMessage } from '@/lib/platforms/registry'
+import { FILE_ALLOWED_EXTENSIONS, FILE_MAX_SIZE_MB } from '@/lib/file-upload'
 import { FAIL_VIDEO_ID, getMockData } from '@/lib/mock-data'
 import type {
   ApiErrorCode,
+  FileRef,
   GetTaskResponse,
   Platform,
   StartTaskResponse,
@@ -10,6 +12,8 @@ import type {
   SummaryDetail,
   TaskStage,
   TaskStatus,
+  UploadInitRequest,
+  UploadInitResponse,
   VideoInfo,
 } from '@/lib/types'
 
@@ -151,7 +155,12 @@ export async function parseVideoUrl(rawUrl: string): Promise<VideoInfo> {
 export async function startTranscription(
   videoId: string,
   video?: VideoInfo,
+  /** M3：kind=file 时走文件任务分支（videoId 由 objectKey 顶替） */
+  options?: { kind?: 'url' | 'file'; file?: FileRef },
 ): Promise<StartTaskResponse> {
+  if (options?.kind === 'file') {
+    return startFileTask(options.file, video)
+  }
   if (!videoId?.trim()) {
     throw new MockApiError('INVALID_URL', '缺少 videoId，请先解析视频链接')
   }
@@ -167,6 +176,57 @@ export async function startTranscription(
   }
 
   return { taskId: encodeTaskId(payload), ...computeTaskState(payload) }
+}
+
+/**
+ * file 任务分支（M3）：与真实后端同规则——objectKey 必填、合成 VideoInfo
+ * （platform=local、无封面、时长 0 由「Worker」回填，Mock 不模拟回填）。
+ */
+async function startFileTask(fileRef: FileRef | undefined, video?: VideoInfo): Promise<StartTaskResponse> {
+  if (!fileRef?.objectKey?.trim()) {
+    throw new MockApiError('FILE_NOT_FOUND', '上传的文件还未就绪，请等上传完成后再发起转写')
+  }
+  const resolved: VideoInfo =
+    video ?? {
+      title: fileRef.fileName || '本地视频',
+      cover: '',
+      duration: 0,
+      platform: 'local',
+      videoId: fileRef.objectKey,
+    }
+  const payload: TaskPayload = {
+    v: fileRef.objectKey,
+    p: 'local',
+    s: Date.now(),
+    m: { t: resolved.title, c: resolved.cover, d: resolved.duration },
+  }
+  return { taskId: encodeTaskId(payload), ...computeTaskState(payload) }
+}
+
+/**
+ * M3 上传凭证签发（Mock）：与真实 /api/upload/init 同一套校验与响应形状，
+ * uploadUrl 是**假地址**——Mock 客户端的 uploadFileToOss 不会真发网络，
+ * 该值仅用于 E2E 断言「init 请求体 / 响应形状」。
+ */
+export async function initFileUpload(request: UploadInitRequest): Promise<UploadInitResponse> {
+  const fileName = (request?.fileName ?? '').trim()
+  const extension = fileName.includes('.') ? fileName.split('.').pop()!.toLowerCase() : ''
+  if (!FILE_ALLOWED_EXTENSIONS.includes(extension as (typeof FILE_ALLOWED_EXTENSIONS)[number])) {
+    throw new MockApiError(
+      'FILE_FORMAT_UNSUPPORTED',
+      `暂不支持「${extension || '无扩展名'}」格式，请上传 mp4 / mov / webm 视频`,
+    )
+  }
+  const size = request?.size ?? 0
+  if (size <= 0 || size > FILE_MAX_SIZE_MB * 1024 * 1024) {
+    throw new MockApiError('FILE_TOO_LARGE', `文件超过 ${FILE_MAX_SIZE_MB}MB 上限，请压缩或裁剪后再上传`)
+  }
+  const objectKey = `uploads/${Buffer.from(fileName).toString('hex').slice(0, 32)}/${fileName}`
+  return {
+    uploadUrl: `/mock-oss/${encodeURIComponent(objectKey)}`,
+    objectKey,
+    expiresIn: 7200,
+  }
 }
 
 export async function getTask(taskId: string): Promise<GetTaskResponse> {

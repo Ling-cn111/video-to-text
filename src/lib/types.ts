@@ -11,7 +11,7 @@
  * **不等于对外宣称的支持范围** —— 后者见 `src/lib/platforms/registry.ts` 的
  * `SUPPORTED_PLATFORMS`（真实后端只接了 B站，抖音目前仅 Mock 演示可用）。
  */
-export type Platform = 'bilibili' | 'douyin'
+export type Platform = 'bilibili' | 'douyin' | 'local'
 
 /** 任务来源：链接解析或本地文件（本地文件在 M3 落地，见 docs/ROADMAP.md） */
 export type TaskSource = 'url' | 'file'
@@ -124,6 +124,13 @@ export interface Capabilities {
    * 可选：旧后端不返回该字段，缺省按 false（不显示选择器）处理。
    */
   localAsrAvailable?: boolean
+  /**
+   * OSS 是否已配置（M3）：决定首页要不要显示「上传本地视频」入口。
+   *
+   * 配置探测（OSS_BUCKET 等 env 四项是否齐备），与 localAsrAvailable 的依赖探测
+   * 相对。可选：旧后端不返回该字段，缺省按 false（不显示上传入口）处理。
+   */
+  fileUploadConfigured?: boolean
 }
 
 export type TaskStatus = 'processing' | 'completed' | 'failed' | 'interrupted'
@@ -154,9 +161,14 @@ export const TASK_STAGES: StageMeta[] = [
 // ---- 接口请求 / 响应 ----
 
 export interface StartTaskRequest {
-  videoId: string
+  /** kind=url 时必填：视频页 ID（文件任务由后端合成，缺省为 objectKey） */
+  videoId?: string
+  /** 任务来源：url（默认，链接解析）| file（本地上传经 OSS 中转，M3） */
+  kind?: 'url' | 'file'
   /** 视频页原始链接（真实后端下载音频用；缺省时由 videoId 按平台规则重建） */
   url?: string
+  /** kind=file 时必填：upload/init 签发的文件引用 */
+  file?: FileRef
   /**
    * 可选的真实视频元数据透传：接真实后端（M1.5）时解析由 FastAPI 完成，
    * 转写/总结仍为 Mock；带上该字段可让进度页/结果页展示真实标题、封面、时长。
@@ -169,6 +181,27 @@ export interface StartTaskRequest {
    * 空数组与不传等价，前端解析见 src/lib/hotwords.ts。
    */
   hotwords?: string[]
+}
+
+/** 本地文件引用（M3）：objectKey 为后端 upload/init 签发的 OSS 对象键 */
+export interface FileRef {
+  objectKey: string
+  fileName: string
+  size: number
+}
+
+/** POST /api/upload/init：签发预签名 PUT（后端只碰元数据，字节浏览器直传 OSS） */
+export interface UploadInitRequest {
+  fileName: string
+  size: number
+  mimeType: string
+}
+
+export interface UploadInitResponse {
+  uploadUrl: string
+  objectKey: string
+  /** 预签名有效期（秒）；前端上传超时应重新 init 而不是重试 PUT */
+  expiresIn: number
 }
 
 export interface StartTaskResponse {
@@ -221,6 +254,13 @@ export type ApiErrorCode =
   | 'BYOK_KEY_INVALID'
   // 用户自填的接口地址 / 模型名不合规（含 SSRF 拦截、填了地址没填模型）：400
   | 'BYOK_ENDPOINT_INVALID'
+  // 本地文件上传（M3，见 backend/app/errors.py 的四个新异常类）：
+  // 上传源文件超上限（413）；扩展名白名单外（422）；站点未配 OSS（400）；
+  // 引用的对象不在 OSS（404，预签名上传未完成就提交 / 对象已被清理）
+  | 'FILE_TOO_LARGE'
+  | 'FILE_FORMAT_UNSUPPORTED'
+  | 'FILE_STORAGE_NOT_CONFIGURED'
+  | 'FILE_NOT_FOUND'
   | 'INTERNAL_ERROR'
 
 export interface AppError {

@@ -64,7 +64,7 @@ function isRecentTask(value: unknown): value is RecentTask {
     typeof task.cover === 'string' &&
     typeof task.duration === 'number' &&
     typeof task.savedAt === 'number' &&
-    (task.platform === 'bilibili' || task.platform === 'douyin')
+    (task.platform === 'bilibili' || task.platform === 'douyin' || task.platform === 'local')
   )
 }
 

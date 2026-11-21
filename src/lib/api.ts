@@ -3,12 +3,14 @@ import { byokBodyFor, byokHeaderFor } from '@/lib/byok'
 import { realApi } from '@/lib/real-api'
 import type {
   Capabilities,
+  FileRef,
   GetTaskResponse,
   HealthResponse,
   StartTaskResponse,
   SummarizeRequest,
   Summary,
   TranscribeEngine,
+  UploadInitRequest,
   VideoInfo,
 } from '@/lib/types'
 
@@ -70,6 +72,44 @@ const mockApi: ApiClient = {
         body: JSON.stringify({ ...request, ...byokBodyFor() }),
       }).catch(throwNetworkError),
     ),
+  /**
+   * M3 上传三步（Mock）：init 走同源 Mock 路由（校验规则与真实后端一致）；
+   * 直传**不真发网络**——uploadUrl 是假地址，这里按固定节奏走完模拟进度，
+   * E2E 据此断言进度条可见；发起转写与真实后端同一请求形状（kind=file）。
+   */
+  initFileUpload: (request: UploadInitRequest): Promise<{ uploadUrl: string; objectKey: string; expiresIn: number }> =>
+    toJson(
+      fetch('/api/upload/init', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(request) }).catch(
+        throwNetworkError,
+      ),
+    ),
+
+  uploadFileToOss: async (
+    file: File,
+    _uploadUrl: string,
+    onProgress?: (percent: number) => void,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    // Mock 上传约 1.2 秒走完（8 步）：给 E2E 留出断言「进度条出现」的窗口，
+    // 也让人工演示能看清进度在动。abort 时立刻结束（模拟取消）。
+    for (const percent of [12, 25, 40, 55, 70, 85, 95, 100]) {
+      if (signal?.aborted) throw new ApiError('NETWORK_ERROR', '上传已取消', 0)
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      onProgress?.(percent)
+    }
+  },
+
+  startFileTranscription: (fileRef: FileRef, engine?: TranscribeEngine, hotwords?: string[]): Promise<StartTaskResponse> =>
+    toJson(
+      fetch('/api/transcribe', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        // Mock 服务端按 kind=file 合成 VideoInfo（标题=文件名）；engine/hotwords
+        // 照发：E2E 靠拦截请求体证明字段真的带上了（与 startTranscription 同理）
+        body: JSON.stringify({ kind: 'file', file: fileRef, engine, hotwords }),
+      }).catch(throwNetworkError),
+    ),
+
   /** GET /api/capabilities：Mock 模式恒为已配置（不阻塞演示） */
   getCapabilities: (): Promise<Capabilities> =>
     toJson(fetch('/api/capabilities').catch(throwNetworkError)),

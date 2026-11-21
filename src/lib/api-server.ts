@@ -27,6 +27,13 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   // 用户自填的接口地址 / 模型名不合规（后端 backend/app/errors.py 的
   // ByokEndpointInvalidError）；同样只在真实后端出现，此处补齐映射让穷举成立
   BYOK_ENDPOINT_INVALID: 400,
+  // 本地文件上传（M3）：FILE_* 由真实后端产生（FILE_TOO_LARGE / FILE_FORMAT_UNSUPPORTED
+  // 也会由前端本地预校验直接抛出，不走 HTTP）；FILE_NOT_FOUND / FILE_STORAGE_NOT_CONFIGURED
+  // 为真实后端专用，Mock 路径不产生，此处补齐映射让穷举成立
+  FILE_TOO_LARGE: 413,
+  FILE_FORMAT_UNSUPPORTED: 422,
+  FILE_STORAGE_NOT_CONFIGURED: 400,
+  FILE_NOT_FOUND: 404,
   INTERNAL_ERROR: 500,
 }
 

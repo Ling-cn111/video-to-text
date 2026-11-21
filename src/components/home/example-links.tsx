@@ -12,8 +12,11 @@ export interface ExampleLink {
   hint?: string
 }
 
-/** 各平台的示例链接：只列当前构建真能转写的平台，由 SUPPORTED_PLATFORMS 决定 */
-const PLATFORM_EXAMPLES: Record<Platform, Omit<ExampleLink, 'platform'>> = {
+/**
+ * 各平台的示例链接：只列当前构建真能转写的平台，由 SUPPORTED_PLATFORMS 决定。
+ * 域名排除 'local'（M3）：本地文件没有「示例链接」的概念，不进这个表。
+ */
+const PLATFORM_EXAMPLES: Record<Exclude<Platform, 'local'>, Omit<ExampleLink, 'platform'>> = {
   bilibili: {
     label: 'B站视频示例',
     url: 'https://www.bilibili.com/video/BV1GJ411x7h7',
@@ -49,7 +52,8 @@ const DEMO_EXAMPLES: ExampleLink[] = [
  */
 export const EXAMPLE_LINKS: ExampleLink[] = [
   ...SUPPORTED_PLATFORMS.map((platform) => ({
-    ...PLATFORM_EXAMPLES[platform],
+    // SUPPORTED_PLATFORMS 永远不含 'local'（见注册表注释），收窄成立
+    ...PLATFORM_EXAMPLES[platform as Exclude<Platform, 'local'>],
     platform,
   })),
   ...DEMO_EXAMPLES,

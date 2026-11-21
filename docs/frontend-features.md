@@ -377,3 +377,41 @@
 - [ ] `pnpm lint && pnpm build` 通过
 
 > 修改本文件（新增/放宽锁定项）需要用户明确确认。
+
+## 21. 本地文件上传（M3，PR16 新增）
+
+**入口与开关**
+
+- 「上传本地视频」入口由 `capabilities.fileUploadConfigured` 驱动（OSS 四项 env 齐备才为 true），
+  未配置时整块不渲染——与 §6 的选择器依赖 `localAsrAvailable` 同型，**禁止写死**
+- 入口在 UrlForm 下方（拖拽区 + 点击选择），三种安装形态（Web / 桌面 / 移动）行为一致：
+  上传是浏览器 fetch 直传 OSS，不依赖任何壳能力
+
+**三步链路与不变量**
+
+- 请求链路固定为 `POST /api/upload/init（只有元数据）→ PUT 直传 OSS（XHR，真实进度）→
+  POST /api/transcribe { kind: 'file', file: {...} }`；**字节永不经过后端**（FC 请求体 32MB 硬限制），
+  Mock 模式下 PUT 不真发网络（模拟进度），E2E 有「零 PUT」断言（回归 36b）
+- 预校验在前端完成且错误码与后端共用：扩展名白名单 / 500MB（`src/lib/file-upload.ts`，
+  数值必须与后端 `FILE_MAX_SIZE_MB` / `FILE_ALLOWED_EXTENSIONS` 默认值对齐）；时长探测
+  （HTMLVideoElement 元数据，约 50 分钟上限 = 后端 WAV 上限的余量值）失败**不拦截**，交给后端裁决
+- 大小三重校验：init 声明 → transcribe-init HEAD 实际大小 → Worker 下载复核，缺一不可
+- 上传进度条必须可取消（XHR abort；Mock 同步模拟 abort 语义）
+- file 任务与 URL 任务共用进度页 / 结果页 / 导出（taskId 来源无关）；`platform='local'` 的
+  VideoInfo 由**后端**合成（title=文件名、cover 空、时长 0 由 Worker 回填），前端不重复造
+- 失败重试带原 objectKey 重派（后端对失败任务保留 OSS 对象 ≤1 天），**不需要重新上传**；
+  `store.fileRef` 是会话级字段，随 reset 清空
+- `aria-label` 刻意避开「本地」二字（「选择视频文件上传」）：锁定 4 用
+  `getByRole('button', { name: '本地' })`（子串匹配）定位转写模式按钮，上传入口的可访问名
+  若含「本地」会 strict mode 冲突
+- 最近转写对 `platform: 'local'` 的记录照常收录（`isRecentTask` 已放行），不存 objectKey 以外的
+  任何文件信息
+
+**§20 清单对应的新增条目（PR16）**
+
+- [ ] 上传入口按 `capabilities.fileUploadConfigured` 显示；Mock 构建恒显示，OSS 未配置的真实构建不出现（E2E 回归 36 隐含 + `verify` 口径）
+- [ ] 预校验错误码与后端契约一致：扩展名 → `FILE_FORMAT_UNSUPPORTED`、超限 → `FILE_TOO_LARGE`，非法输入不发任何请求（E2E 回归 36 / 36c）
+- [ ] 请求链路：init 只有元数据 → Mock 下零真实 PUT → transcribe 请求体带 `kind:'file'` + 完整 `file` 引用 + `engine`/`hotwords` 照传（E2E 回归 36b）
+- [ ] 进度页信息卡：标题=文件名、「本地文件」徽章、空封面显示占位图标（E2E 回归 36b）
+- [ ] 结果页与最近转写：文字稿照常渲染、`platform: 'local'` 记录出现在「最近转写」（E2E 回归 36d）
+- [ ] 上传中可取消（XHR abort），取消后回到可重新选择的状态且无错误红卡（人工冒烟项）
