@@ -46,6 +46,8 @@ payload 里**（`{"action": "reap", "token": "<WORKER_TOKEN>"}`，见 s.yaml 的
 5. 定时触发器事件 → 跑 reaper，返回收割计数（与作业路径完全隔离）
 6. `job.url` 未通过 `validate_public_http_url`（内网/非法地址）→ 标 failed + 200 skipped
    （P0 SSRF 兜底：不信任派发方，Worker 侧独立复核一次）
+7. frames 作业（kind=frames，PR #89）→ 不抢执行锁、不改任务 status，只写
+   task.frames；并发幂等靠 frames 状态机（processing/ready 直接 skip）
 """
 import asyncio
 import base64
@@ -59,19 +61,24 @@ from typing import Any, Callable
 import httpx
 from fastapi import Body, FastAPI, Header, HTTPException, Request
 
-from app.config import TASK_LOCK_SECONDS, WORKER_TOKEN
+from app.config import FRAMES_WORKER_PATH, TASK_LOCK_SECONDS, WORKER_TOKEN
 from app.errors import InvalidUrlError
+from app.services import frames as frames_service
 from app.services import reaper
 from app.services import storage
 from app.services import tasks as task_store
 from app.services import transcribe
-from app.services.dispatcher import TranscribeJob
+from app.services.dispatcher import FramesJob, TranscribeJob
 from app.url_guard import validate_public_http_url
 
 logger = logging.getLogger(__name__)
 
 # Worker 路由（HTTP 触发器异步调用，主路径）
 WORKER_PATH = "/internal/worker/transcribe"
+
+# 重点帧抽帧作业路由（PR #89）：同一 worker 函数、不同路径，由 config 提供
+# （dispatcher 投递与这里的路由必须一致；改配置即可换路径，无需动代码）
+FRAMES_ROUTE = FRAMES_WORKER_PATH
 
 # InvokeFunction API / 事件源触发器（含定时触发器）的固定落点
 INVOKE_PATH = "/invoke"
@@ -212,6 +219,16 @@ def _parse_job(payload: Any) -> TranscribeJob:
         return TranscribeJob.from_dict(body)
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=422, detail=f"作业体无法解析：{exc}") from exc
+
+
+def _parse_frames_job(payload: Any) -> FramesJob:
+    try:
+        body = _unwrap_event(payload)
+        if body.get("kind") != "frames":
+            raise ValueError("作业体缺少 kind=frames 标记")
+        return FramesJob.from_dict(body)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=f"抽帧作业体无法解析：{exc}") from exc
 
 
 def _looks_like_timer_event(payload: Any) -> bool:
@@ -428,6 +445,78 @@ async def _run_job(job: TranscribeJob) -> dict:
     }
 
 
+async def _run_frames_job(job: FramesJob) -> dict:
+    """执行抽帧作业（PR #89）。
+
+    与转写作业的执行语义差异：
+    - **不抢任务执行锁**：抽帧是任务 completed 后的二次作业，与可能并发运行的
+      转写重试互不干扰；并发幂等靠 frames 状态机（processing/ready 直接 skip）
+    - **不改任务 status/stage/progress**：只写 task.frames（终态可变字段）
+    - 失败收敛进 frames.error 而不是任务 error：抽帧失败不影响转写成果
+    """
+    store = task_store.get_task_store()
+
+    task = await store.get(job.task_id)
+    if task is None:
+        logger.error("Worker 收到未知任务的抽帧作业（task_id=%s）：可能已过 TTL", job.task_id)
+        return {"status": "skipped", "reason": _SKIP_NOT_FOUND, "task_id": job.task_id}
+
+    current = task.frames or {}
+    if current.get("status") in ("processing", "ready"):
+        # processing：另一实例在抽（API 侧派发前已标 processing）；ready：已完成。
+        # FC 异步重试可能重放同一作业，重跑只会重复计费/重复上传。
+        return {
+            "status": "skipped",
+            "reason": f"frames_{current.get('status')}",
+            "task_id": job.task_id,
+        }
+
+    # P0 SSRF 兜底（与转写作业同款）：不信任派发方，Worker 侧独立复核。
+    # 失败按「确定性失败」处理：frames 标 failed + 200 skipped（不触发平台重试）。
+    try:
+        validate_public_http_url(job.url)
+    except InvalidUrlError as exc:
+        logger.warning("Worker 拒绝非公网 URL 的抽帧作业（task_id=%s）：%s", job.task_id, exc.message)
+        await store.update(
+            job.task_id,
+            frames={
+                "status": "failed",
+                "error": {"code": "FRAMES_FAILED", "message": "视频链接不合法，无法抽帧"},
+                "items": [],
+            },
+        )
+        return {"status": "skipped", "reason": _SKIP_INVALID_URL, "task_id": job.task_id}
+
+    if current.get("status") != "processing":
+        # API 侧正常会先标 processing；走到这里说明派发链路丢过标记（如重放），
+        # 补写一次让前端能看到「处理中」状态
+        await store.update(
+            job.task_id,
+            frames={"status": "processing", "error": None, "items": []},
+        )
+
+    try:
+        # pipeline 是同步实现（httpx 下载 / ffmpeg 抽帧全阻塞），必须让出事件循环
+        await asyncio.to_thread(
+            frames_service.run_frames_pipeline,
+            job.task_id,
+            job.url,
+            list(job.timestamps),
+        )
+    except Exception:
+        # pipeline 内部已把失败收敛进 task.frames；逃到这里说明存储层也出了问题
+        logger.exception("Worker 抽帧执行失败（task_id=%s）", job.task_id)
+        raise HTTPException(status_code=500, detail="worker frames execution failed") from None
+
+    final = await store.get(job.task_id)
+    frames_final = (final.frames or {}) if final is not None else {}
+    return {
+        "status": "ok",
+        "task_id": job.task_id,
+        "frames_status": frames_final.get("status"),
+    }
+
+
 @app.post(WORKER_PATH)
 async def run_transcribe_job(
     payload: Any = Body(...),
@@ -438,6 +527,21 @@ async def run_transcribe_job(
     await _ensure_initialized()
     _verify_token(x_worker_token, authorization)
     return await _run_job(_parse_job(payload))
+
+
+@app.post(FRAMES_ROUTE)
+async def run_frames_job(
+    payload: Any = Body(...),
+    x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> dict:
+    """执行一次重点帧抽帧作业（HTTP 触发器异步调用，PR #89）。
+
+    与转写作业同鉴权、同解包纪律；执行语义见 `_run_frames_job`。
+    """
+    await _ensure_initialized()
+    _verify_token(x_worker_token, authorization)
+    return await _run_frames_job(_parse_frames_job(payload))
 
 
 @app.post(INVOKE_PATH)
@@ -472,6 +576,15 @@ async def run_invoke_entry(
         # 走到这里说明 token 已通过校验；reap_once 自身还有互斥锁 + CAS 幂等
         logger.info("收到定时触发器事件，执行僵尸任务清理")
         return (await reaper.reap_once()).to_dict()
+
+    # 作业分流：frames 作业带 kind=frames 标记（转写作业无 kind，缺省即转写）。
+    # 按「解包后含 task_id 的作业体」判断而不是顶层字段——平台包装体也能正确分流。
+    try:
+        unwrapped = _unwrap_event(payload)
+    except ValueError:
+        unwrapped = None
+    if isinstance(unwrapped, dict) and unwrapped.get("kind") == "frames":
+        return await _run_frames_job(_parse_frames_job(payload))
 
     return await _run_job(_parse_job(payload))
 

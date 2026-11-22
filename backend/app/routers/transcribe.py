@@ -24,6 +24,7 @@ from app.errors import (
 from app.platforms import detect_platform
 from app.schemas import FileRef, StartTaskResponse, StartTranscribeRequest, TaskDetailResponse, VideoInfo
 from app.services import storage
+from app.services import frames as frames_service
 from app.services.asr import local_engine_available
 from app.services.byok import HEADER_ASR_KEY, normalize_key
 from app.services.dispatcher import TranscribeJob, enqueue
@@ -208,4 +209,6 @@ def get_transcription(task_id: str) -> TaskDetailResponse:
         plainText=task.plain_text,
         error=task.error,
         transcriptSource=task.transcript_source,
+        # 重点帧：ready 时逐帧现场签发预签名 GET（限时凭证不落库，重拉详情即续期）
+        frames=frames_service.frames_to_out(task.frames, presign=True),
     )

@@ -276,3 +276,26 @@ OSS_PRESIGN_EXPIRES_SECONDS: int = int(os.getenv("OSS_PRESIGN_EXPIRES_SECONDS", 
 
 # 上传对象的 key 前缀（必须以 / 结尾）：生命周期规则按这个前缀兜底删除
 OSS_UPLOAD_PREFIX: str = os.getenv("OSS_UPLOAD_PREFIX", "uploads/")
+
+# ---- 重点帧抽帧（URL 任务 completed 后的二次作业，PR #89）----
+
+# Worker 上抽帧作业的路由：与转写作业同一个 worker 函数、不同路径，
+# 不新增 FC 触发器/函数配置（dispatcher 直接 POST 到这个路径即可）。
+FRAMES_WORKER_PATH: str = os.getenv("FRAMES_WORKER_PATH", "/internal/worker/frames").strip()
+
+# 单次抽帧数量上限：前端从总结章节/要点派生候选点，服务端再钳制到该值。
+# 12 帧 × ~40KB（1280 宽 JPEG）≈ 0.5MB OSS 存储，7 天生命周期成本可忽略。
+FRAMES_MAX_COUNT: int = int(os.getenv("FRAMES_MAX_COUNT", "12"))
+
+# 预签名 GET URL 有效期（秒）：前端 <img> 直连 OSS 拉帧图；URL 不落任务库，
+# 每次读取任务详情现场签发，过期后前端重拉详情即换新链接。
+FRAMES_PRESIGN_EXPIRES_SECONDS: int = int(os.getenv("FRAMES_PRESIGN_EXPIRES_SECONDS", "3600"))
+
+# 抽帧用的视频流清晰度上限（高度，像素）：playurl try_look=1 免登录最高实测到
+# 1080P；4K/HDR 需要登录态，不追求。1280 宽缩放 + q:v 3 的 JPEG 实测单张 30-50KB。
+FRAMES_VIDEO_MAX_HEIGHT: int = int(os.getenv("FRAMES_VIDEO_MAX_HEIGHT", "1080"))
+
+# 视频流下载大小上限（MB）：抽帧只需要画面，超限判失败（1080P HEVC 约
+# 每分钟 5MB、AVC 约 20MB；27 分钟视频 HEVC 实测约 150MB）。留 1GB 余量覆盖
+# 高码率视频，同时防异常巨型响应拖垮 Worker。
+FRAMES_VIDEO_MAX_MB: int = int(os.getenv("FRAMES_VIDEO_MAX_MB", "1024"))

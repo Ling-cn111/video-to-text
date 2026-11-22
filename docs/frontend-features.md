@@ -451,3 +451,21 @@
 - **llmModel 允许空串**（关联 §14）：「只填 Key、模型跟随站点默认」是合法配置
 - **导出**：`exportMindmapMarkdown` = **第三类产物**（独立 builder `buildMindmapMarkdown`，大纲层级 markdown、**不含时间戳**），ExportMenu 第三组；严禁复用 buildPlainText / buildMarkdown
 - **testid**：`mindmap-card` / `mindmap-view` / `mindmap-node` / 导出菜单项 `export-mindmap`
+
+## 24. 重点帧（PR19 新增，URL 任务 v1）
+
+- **定位**：转写完成且 AI 总结就绪后，按总结章节/要点的时间点生成视频画面截图。**手动触发**（「生成重点帧」按钮）——抽帧要下载视频流，成本必须由用户的显式动作承担；**手动按钮是锁定语义，不要改成总结就绪自动触发**
+- **渲染条件（三者缺一整卡隐藏）**：`capabilities.framesConfigured`（OSS 配置探测，与 `fileUploadConfigured` 同源）+ `video.platform !== 'local'`（文件任务源对象成功即删，无源可抽）+ `summary` 就绪（时间戳从总结派生）；平台判定用 `video.platform`，不用 fileRef 会话态（刷新恢复仍在）
+- **时间戳派生**：`src/lib/frames.ts` 的 `deriveFrameTimestamps(summary, duration)`——chapters.timeStart ∪ keyPoints.time，钳到 duration-1、升序 2s 近邻合并、cap 12；与后端 `sanitize_timestamps` 同口径（服务端仍会再净化，前端不追求精确）
+- **状态机**（store.frames，轮询/恢复从任务详情 `frames` 字段同步；抽帧轮询经 `setFrames` 写入）：null（按钮）→ processing（骨架屏 + 本地 2.5s 轮询 getTask）→ ready（网格）/ failed（错误 + 重试）。后端幂等语义：processing/ready 重复请求返回现状不重复派发；failed 允许重派
+- **图片渲染**：`<img>` 直连任务详情里的预签名 GET（限时 1h，不落库；过期重拉详情即续期），`loading="lazy"` + `referrerPolicy="no-referrer"`（对齐 §8 封面先例）；url 为空时占位图标不破格。**不改 CORS**——`<img>` 不受 CORS 约束，CSP `img-src https:` 已放行
+- **错误码四同步**：`FRAMES_UNSUPPORTED`（422）/ `FRAMES_NOT_READY`（409）已进四处；`FRAMES_FAILED` 只出现在 `frames.error.code`（非 HTTP 码，STATUS_BY_CODE 映射 500 仅为穷举成立）
+- **testid**：`frames-card` / `frames-generate` / `frames-grid` / `frames-item` / `frames-time` / `frames-processing` / `frames-failed` / `frames-retry`；可访问名**避开「本地」二字**（锁定 4 子串选择器 strict-mode 冲突，同 §21 规则）
+- **v1 明确不做**：文件任务重点帧（v2：趁 /tmp 源顺手均匀抽帧）、非 B站平台、重点帧导出（导出链路是纯文本 `content: string`，图片打包需新二进制分支）
+
+**§20 清单对应的新增条目（PR19）**
+
+- [ ] 重点帧入口按三条件渲染：framesConfigured + 非 local + 总结就绪；任一不满足整卡不出现（E2E 回归 40b / 40d）
+- [ ] 生成 → 网格数量 = 章节/要点合并去重后条数，mm:ss 时间标签与图片实际加载（E2E 回归 40）
+- [ ] processing 骨架屏可见且轮询翻转（真实后端 1-3 分钟；E2E 回归 40e 用路由拦截覆盖）
+- [ ] 失败态有错误信息与重试入口，重试可再发起（E2E 回归 40c）

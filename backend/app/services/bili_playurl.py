@@ -62,6 +62,20 @@ class AudioStream:
     bandwidth: int
 
 
+@dataclass(frozen=True)
+class VideoStream:
+    """一条可下载的视频流（重点帧抽帧用，PR #89）。"""
+
+    url: str
+    backup_urls: tuple[str, ...]
+    mime_type: str
+    bandwidth: int
+    quality: int  # 清晰度代号（qn），80 = 1080P
+    width: int
+    height: int
+    codecs: str
+
+
 def _headers() -> dict[str, str]:
     """API 与 CDN 共用的一套请求头（CDN 缺任何一个都 403）。"""
     headers = {
@@ -165,4 +179,60 @@ def get_audio_stream(bvid: str, cid: int | None = None) -> AudioStream:
         backup_urls=backups,
         mime_type=str(best.get("mimeType") or best.get("mime_type") or ""),
         bandwidth=int(best.get("bandwidth") or 0),
+    )
+
+
+def get_video_stream(bvid: str, cid: int | None = None, max_height: int = 1080) -> VideoStream:
+    """取高度不超过 max_height 的最高清晰度 DASH 视频流（重点帧抽帧用）。
+
+    **`try_look=1` 是本函数的关键**：这是 B站网页播放器未登录态自带的「试看」
+    参数。2026-11 实测，未登录请求不带它时 `dash.video[]` 只有 480P/360P 两档
+    （`accept_description` 宣传到 1080P+ 是幌子）；带上后直接下发视频本身的
+    最高档（实测 1080P 全长流，CDN 直链可下）。qn 参数、HDR/4K/AV1 等 fnval
+    位组合、platform 变体均绕不开这个上限，唯一有效手段就是 try_look=1。
+
+    选流策略：按「高度 ≤ max_height」过滤后取 qn 最高档；同档位优先 hev1
+    （HEVC 码率约为 AVC 的 1/3-1/5，抽 12 帧的下载代价最小），ffmpeg 自带
+    HEVC 解码器。失败一律抛 ValueError（与 get_audio_stream 同口径）。
+    """
+    if cid is None:
+        cid = resolve_cid(bvid)
+
+    with httpx.Client(follow_redirects=True) as client:
+        data = _get_json(
+            client,
+            f"{PLAYURL_API}?bvid={bvid}&cid={cid}&fnval=16&fnver=0&fourk=1&try_look=1",
+        )
+
+    dash = data.get("dash") or {}
+    videos = dash.get("video") or []
+    if not videos:
+        raise ValueError(f"playurl 未返回 DASH 视频轨（bvid={bvid} cid={cid}）")
+
+    eligible = [v for v in videos if (v.get("height") or 0) <= max_height]
+    if not eligible:
+        # 视频最低档都超过上限（罕见）：退回最低的一档保可用
+        lowest = min(videos, key=lambda item: item.get("height") or 0)
+        eligible = [lowest]
+    best_qn = max(v.get("id") or 0 for v in eligible)
+    same_tier = [v for v in eligible if (v.get("id") or 0) == best_qn]
+    best = next(
+        (v for v in same_tier if str(v.get("codecs") or "").startswith("hev1")),
+        same_tier[0],
+    )
+
+    url = best.get("baseUrl") or best.get("base_url")
+    if not url:
+        raise ValueError("playurl 视频轨缺少 baseUrl")
+
+    backups = tuple(best.get("backupUrl") or best.get("backup_url") or ())
+    return VideoStream(
+        url=str(url),
+        backup_urls=backups,
+        mime_type=str(best.get("mimeType") or best.get("mime_type") or ""),
+        bandwidth=int(best.get("bandwidth") or 0),
+        quality=int(best.get("id") or 0),
+        width=int(best.get("width") or 0),
+        height=int(best.get("height") or 0),
+        codecs=str(best.get("codecs") or ""),
     )

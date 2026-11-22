@@ -5,6 +5,8 @@ import type {
   ByokTestResult,
   Capabilities,
   FileRef,
+  FramesRequest,
+  FramesStartResponse,
   GetTaskResponse,
   HealthResponse,
   StartTaskResponse,
@@ -108,6 +110,19 @@ export const realApi: ApiClient = {
 
   getTask: (taskId: string): Promise<GetTaskResponse> =>
     toJson(fetch(apiUrl(`/transcribe/${encodeURIComponent(taskId)}`)).catch(throwNetworkError)),
+
+  /**
+   * PR #89 重点帧：POST /frames 请求抽帧（幂等，已在处理/已就绪返回现状）。
+   * timestamps 由调用方从 AI 总结派生，服务端统一钳制（时长内、2s 去重、cap 12）。
+   */
+  requestFrames: (request: FramesRequest): Promise<FramesStartResponse> =>
+    toJson(
+      fetch(apiUrl('/frames'), {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify(request),
+      }).catch(throwNetworkError),
+    ),
 
   /** POST /summarize：真实 LLM 总结（无状态：直接传文字稿与元数据，taskId 仅 Mock 用） */
   summarize: (request: SummarizeRequest): Promise<Summary> =>

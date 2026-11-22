@@ -33,8 +33,16 @@ from typing import TYPE_CHECKING, Protocol
 
 import httpx
 
-from app.config import ASYNC_TIMEOUT_SECONDS, ENQUEUE_MODE, WORKER_PATH, WORKER_TOKEN, WORKER_URL
+from app.config import (
+    ASYNC_TIMEOUT_SECONDS,
+    ENQUEUE_MODE,
+    FRAMES_WORKER_PATH,
+    WORKER_PATH,
+    WORKER_TOKEN,
+    WORKER_URL,
+)
 from app.schemas import FileRef, VideoInfo
+from app.services import frames as frames_service
 from app.services import transcribe
 
 if TYPE_CHECKING:
@@ -131,6 +139,44 @@ class Dispatcher(Protocol):
     def enqueue(self, job: TranscribeJob, background_tasks: "BackgroundTasks | None" = None) -> None: ...
 
 
+@dataclass(frozen=True)
+class FramesJob:
+    """一次重点帧抽帧作业（URL 任务 completed 后的二次作业，PR #89）。
+
+    与 TranscribeJob 一样自包含、可 JSON 序列化；`kind: "frames"` 标记用于
+    Worker `/invoke` 的作业分流（转写作业无 kind 字段，缺省即转写）。
+
+    抽帧作业**不占用任务执行锁、不改任务 status**——只写 task.frames（终态
+    可变字段），与可能并发运行的转写重试互不干扰。
+    """
+
+    task_id: str
+    # 视频页 URL：由 API 侧按任务的 videoId 重建（canonical B站链接，非短链）
+    url: str
+    # 抽帧时间点（秒）：API 侧已按任务时长钳制/去重/截断，Worker 侧再净化一遍
+    timestamps: list[float]
+
+    def to_dict(self) -> dict:
+        return {
+            "kind": "frames",
+            "task_id": self.task_id,
+            "url": self.url,
+            "timestamps": [float(point) for point in self.timestamps],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "FramesJob":
+        raw_points = data.get("timestamps")
+        if not isinstance(raw_points, list):
+            raise ValueError("timestamps 必须是数组")
+        url = str(data.get("url") or "").strip()
+        if not url:
+            raise ValueError("url 为必填字段")
+        return cls(
+            task_id=str(data["task_id"]),
+            url=url,
+            timestamps=[float(point) for point in raw_points],
+        )
 class InlineDispatcher:
     """默认实现：注册到 FastAPI BackgroundTasks（响应返回后在同一进程执行）。
 
@@ -207,7 +253,11 @@ class FcDispatcher:
             headers["Authorization"] = f"Bearer {token}"
         return headers
 
-    def enqueue(self, job: TranscribeJob, background_tasks: "BackgroundTasks | None" = None) -> None:
+    def enqueue(
+        self,
+        job: "TranscribeJob | FramesJob",
+        background_tasks: "BackgroundTasks | None" = None,
+    ) -> None:
         if not self._url:
             raise DispatchError("ENQUEUE_MODE=fc 但未配置 WORKER_URL（worker 函数的 HTTP 触发器地址）")
 
@@ -281,3 +331,32 @@ def enqueue(job: TranscribeJob, background_tasks: "BackgroundTasks | None" = Non
     避免留下永远停在 processing 的孤儿任务。
     """
     _DISPATCHER.enqueue(job, background_tasks)
+
+
+def enqueue_frames(job: FramesJob, background_tasks: "BackgroundTasks | None" = None) -> None:
+    """分发一次抽帧作业（模式语义与 enqueue 相同）。
+
+    - fc：投递到 worker 函数的 FRAMES_WORKER_PATH 路由（同一函数、不同路径，
+      不新增 FC 触发器配置）；FramesJob.to_dict() 与 TranscribeJob 同形，
+      FcDispatcher 直接复用
+    - inline：BackgroundTasks 里直跑 run_frames_pipeline（本地开发/单机部署）
+    - mns / redis：与转写作业一样显式报错，不静默丢任务
+
+    异常兜底同 enqueue：路由层把 frames 标 failed 再向上抛。
+    """
+    normalized = (ENQUEUE_MODE or "inline").strip().lower()
+    if normalized == "fc":
+        FcDispatcher(WORKER_URL, path=FRAMES_WORKER_PATH).enqueue(job, background_tasks)
+        return
+    if normalized in ("mns", "redis"):
+        raise DispatcherNotImplementedError(
+            f"ENQUEUE_MODE={normalized} 尚未实现抽帧作业分发；请暂时使用 ENQUEUE_MODE=inline"
+        )
+    if normalized != "inline":
+        logger.warning("未知 ENQUEUE_MODE=%r，抽帧作业降级为 inline", ENQUEUE_MODE)
+    runner = frames_service.run_frames_pipeline
+    args = (job.task_id, job.url, list(job.timestamps))
+    if background_tasks is None:
+        runner(*args)
+        return
+    background_tasks.add_task(runner, *args)

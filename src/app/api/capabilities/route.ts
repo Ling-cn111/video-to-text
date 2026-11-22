@@ -17,5 +17,8 @@ export async function GET() {
     summarizeConfigured: true,
     localAsrAvailable: true,
     fileUploadConfigured: true,
+    // PR #89 重点帧：Mock 恒已配置（演示站要能展示「生成重点帧」入口）；
+    // 真实模式下由后端按 OSS_* 是否齐备返回，未配置时入口隐藏
+    framesConfigured: true,
   })
 }

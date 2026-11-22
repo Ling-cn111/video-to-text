@@ -17,6 +17,7 @@ import { PlatformBadge } from '@/components/shared/platform-badge'
 import { formatDuration } from '@/lib/format'
 import { formatTranscriptToSections } from '@/lib/article'
 import { MindmapView } from '@/components/result/mindmap-view'
+import { FramesCard } from '@/components/result/frames-card'
 import { buildMindmapTree } from '@/lib/mindmap'
 import { processingHref } from '@/lib/routes'
 import { useTaskStore } from '@/stores/task-store'
@@ -287,6 +288,10 @@ export function ResultView({ taskId }: ResultViewProps) {
           </CardContent>
         </Card>
       ) : null}
+
+      {/* 重点帧（PR #89）：与思维导图平级的独立卡片；渲染条件在组件内部判定
+          （capabilities.framesConfigured + 非 local 平台 + 总结就绪） */}
+      <FramesCard />
     </div>
   )
 }

@@ -4,6 +4,8 @@ import type {
   ByokTestResult,
   Capabilities,
   FileRef,
+  FramesRequest,
+  FramesStartResponse,
   GetTaskResponse,
   HealthResponse,
   StartTaskResponse,
@@ -51,6 +53,12 @@ export interface ApiClient {
   ) => Promise<StartTaskResponse>
   getTask: (taskId: string) => Promise<GetTaskResponse>
   summarize: (request: SummarizeRequest) => Promise<Summary>
+  /**
+   * PR #89 重点帧：请求生成抽帧（幂等——已在处理/已就绪直接返回现状）。
+   * timestamps 由调用方从 AI 总结派生（章节起点 + 要点，秒），服务端统一钳制。
+   * 受理后 frames.status=processing，随后轮询 getTask 读 frames 字段。
+   */
+  requestFrames: (request: FramesRequest) => Promise<FramesStartResponse>
   /**
    * M3-BYOK：测活——用当前草稿（地址 + 模型）与指定 Key 发一次极短真实请求。
    * key 由调用方显式传入（测的是草稿，不一定是已保存的激活配置）。

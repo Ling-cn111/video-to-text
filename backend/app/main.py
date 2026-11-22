@@ -7,6 +7,7 @@ from app.config import CORS_ORIGINS, CORS_ORIGIN_REGEX
 from app.errors import AppException
 from app.routers.byok import router as byok_router
 from app.routers.capabilities import router as capabilities_router
+from app.routers.frames import router as frames_router
 from app.routers.parse import router as parse_router
 from app.routers.summarize import router as summarize_router
 from app.routers.transcribe import router as transcribe_router
@@ -48,6 +49,7 @@ app.include_router(summarize_router)
 app.include_router(byok_router)
 app.include_router(capabilities_router)
 app.include_router(upload_router)
+app.include_router(frames_router)
 
 
 @app.exception_handler(AppException)
