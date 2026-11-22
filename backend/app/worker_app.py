@@ -47,7 +47,8 @@ payload 里**（`{"action": "reap", "token": "<WORKER_TOKEN>"}`，见 s.yaml 的
 6. `job.url` 未通过 `validate_public_http_url`（内网/非法地址）→ 标 failed + 200 skipped
    （P0 SSRF 兜底：不信任派发方，Worker 侧独立复核一次）
 7. frames 作业（kind=frames，PR #89）→ 不抢执行锁、不改任务 status，只写
-   task.frames；并发幂等靠 frames 状态机（processing/ready 直接 skip）
+   task.frames；幂等 skip 仅 ready（processing 是「先标再派发」链路的必然
+   状态，不能当 skip 条件——2026-11-22 冒烟踩过）
 """
 import asyncio
 import base64
@@ -462,9 +463,12 @@ async def _run_frames_job(job: FramesJob) -> dict:
         return {"status": "skipped", "reason": _SKIP_NOT_FOUND, "task_id": job.task_id}
 
     current = task.frames or {}
-    if current.get("status") in ("processing", "ready"):
-        # processing：另一实例在抽（API 侧派发前已标 processing）；ready：已完成。
-        # FC 异步重试可能重放同一作业，重跑只会重复计费/重复上传。
+    if current.get("status") == "ready":
+        # 已就绪：确定性结果，重跑只会重复上传（FC 重试重放 / 重复请求）。
+        # **不能把 processing 也当 skip**：API 侧是「先标 processing 再派发」，
+        # 正常链路到达 Worker 时 frames 必然是 processing——把它当「另一实例在跑」
+        # 会让首次执行直接被吞（2026-11-22 线上冒烟踩过：作业卡死 processing）。
+        # 重复执行的浪费面 = 重新下载+抽帧一次，产物同 key 覆盖，可接受。
         return {
             "status": "skipped",
             "reason": f"frames_{current.get('status')}",

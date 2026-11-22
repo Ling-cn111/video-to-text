@@ -4,8 +4,9 @@
 
 - 只接受已 completed 的 URL 任务（file 任务 v1 不支持 → FRAMES_UNSUPPORTED；
   非 B站链接的任务在 Worker 侧同样会被拒，路由层先拦一层给明确报错）
-- **幂等**：frames 已在 processing / ready 时直接返回现状，不重复派发——
-  重复点击与前端重试都安全；failed 允许重新派发（覆盖旧状态重试）
+- **幂等**：ready 直接返回现状（现场签预签名 URL）；processing 在防抖窗口内
+  （15 分钟，frames.requestedAt）幂等返回，超窗视为上一次派发丢失允许重派；
+  failed 允许重新派发（覆盖旧状态重试）
 - 时间戳不信任客户端原始值：sanitize_timestamps 统一钳制（时长内、2s 去重、
   截断 FRAMES_MAX_COUNT）
 - URL 不落任务库：按任务的 videoId 重建 canonical B站链接（与 /api/transcribe
@@ -14,6 +15,7 @@
   前端轮询可见；与转写路由的孤儿任务兜底同一手法）
 """
 import logging
+import time
 
 from fastapi import APIRouter, BackgroundTasks
 
@@ -40,6 +42,19 @@ router = APIRouter()
 # （videoId 是解析阶段归一的 BV 号，重建出来的是 canonical 链接，非短链）
 _BILI_URL_TEMPLATE = "https://www.bilibili.com/video/{videoId}"
 
+# processing 防抖窗口（秒）：窗口内的重复请求幂等返回现状，不重复派发；
+# 超窗视为上一次派发丢失（Worker 侧异常 / FC 投递黑洞），允许重新派发。
+# 抽帧正常 1-3 分钟（下载 1080P 流 + 逐点抽帧），15 分钟已足够保守。
+_FRAMES_REDISPATCH_WINDOW_SECONDS = 900
+
+
+def _processing_stale(frames_state: dict) -> bool:
+    """processing 是否已超窗（requestedAt 缺失视为超窗：不是正常链路写下的标记）。"""
+    requested_at = frames_state.get("requestedAt")
+    if not isinstance(requested_at, (int, float)):
+        return True
+    return time.time() - float(requested_at) > _FRAMES_REDISPATCH_WINDOW_SECONDS
+
 
 @router.post("/api/frames", response_model=FramesStartResponse)
 def create_frames_job(
@@ -50,12 +65,18 @@ def create_frames_job(
         raise TaskNotFoundError()
 
     current = task.frames or {}
-    if current.get("status") in ("processing", "ready"):
-        # 幂等：抽帧已在进行 / 已就绪，重复点击不重复派发（不重复计费）。
-        # ready 时现场签发预签名 URL，前端拿到即可直接渲染。
+    if current.get("status") == "ready":
+        # 幂等：已就绪，重复点击不重复派发（不重复计费）。
+        # 现场签发预签名 URL，前端拿到即可直接渲染。
         return FramesStartResponse(
             taskId=task.task_id, frames=frames_service.frames_to_out(current, presign=True)
         )
+    if current.get("status") == "processing" and not _processing_stale(current):
+        # 幂等：抽帧已在进行（窗口内），重复点击不重复派发。
+        return FramesStartResponse(
+            taskId=task.task_id, frames=frames_service.frames_to_out(current, presign=False)
+        )
+    # 走到这里：无 frames（首次）/ failed（重试）/ processing 超窗（派发丢失，重派）
 
     if task.status != "completed":
         raise FramesTaskNotReadyError()
@@ -82,9 +103,17 @@ def create_frames_job(
     if not points:
         raise AppException("FRAMES_FAILED", "没有有效的抽帧时间点", 422)
 
-    frames_state = {"status": "processing", "error": None, "items": []}
-    # 终态可变字段写入（TERMINAL_MUTABLE_FIELDS 例外）：先标 processing 再派发，
-    # Worker 的幂等检查才能识别「已在处理」
+    frames_state = {
+        "status": "processing",
+        # 派发时间戳：processing 防抖窗口的判定依据（超窗允许重派）；
+        # 契约序列化（frames_to_out）只取已定义字段，前端感知不到该键
+        "requestedAt": time.time(),
+        "error": None,
+        "items": [],
+    }
+    # 终态可变字段写入（TERMINAL_MUTABLE_FIELDS 例外）：先标 processing 再派发。
+    # Worker 侧幂等只 skip ready——processing 是正常链路的必然状态，不能当
+    # 「另一实例在跑」（那是 2026-11-22 冒烟卡死的根因，见 worker_app 注释）。
     update_task(task.task_id, frames=frames_state)
 
     job = FramesJob(task_id=task.task_id, url=url, timestamps=points)

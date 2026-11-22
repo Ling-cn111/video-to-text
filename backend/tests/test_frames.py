@@ -10,6 +10,7 @@ import asyncio
 import json
 import shutil
 import subprocess
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -158,12 +159,34 @@ def test_router_dispatches_sanitized_job(oss_ready, dispatched):
     assert task.frames["status"] == "processing"
 
 
-def test_router_idempotent_while_processing(oss_ready, dispatched):
-    task_id = _make_task(frames={"status": "processing", "error": None, "items": []})
+def test_router_idempotent_while_processing_in_window(oss_ready, dispatched):
+    """processing 防抖窗口内：幂等返回现状，不重复派发（防重复点击）。"""
+    task_id = _make_task(
+        frames={"status": "processing", "requestedAt": time.time(), "error": None, "items": []}
+    )
     response = client.post("/api/frames", json={"taskId": task_id, "timestamps": [1]})
     assert response.status_code == 200
     assert response.json()["frames"]["status"] == "processing"
     assert dispatched == []  # 不重复派发
+
+
+def test_router_redispatches_stale_processing(oss_ready, dispatched):
+    """processing 超窗（requestedAt 过旧 / 缺失）：视为派发丢失，允许重新派发。
+
+    这是 2026-11-22 线上冒烟卡死 processing 后的恢复路径——没有它，卡死的
+    任务将永远无法重试。
+    """
+    task_id = _make_task(frames={"status": "processing", "requestedAt": time.time() - 1800, "items": []})
+    response = client.post("/api/frames", json={"taskId": task_id, "timestamps": [1]})
+    assert response.status_code == 200
+    assert response.json()["frames"]["status"] == "processing"
+    assert len(dispatched) == 1  # 超窗 → 重新派发
+
+    # requestedAt 缺失（非正常链路写下的标记）同样视为超窗
+    task_id_missing = _make_task(frames={"status": "processing", "items": []})
+    response = client.post("/api/frames", json={"taskId": task_id_missing, "timestamps": [1]})
+    assert response.status_code == 200
+    assert len(dispatched) == 2
 
 
 def test_router_idempotent_ready_returns_presigned_urls(oss_ready, dispatched, monkeypatch):
@@ -233,6 +256,32 @@ def _frames_job(task_id: str, **overrides) -> dict:
     body = {"kind": "frames", "task_id": task_id, "url": URL, "timestamps": [1.0, 92.0]}
     body.update(overrides)
     return body
+
+
+def test_worker_frames_job_runs_even_when_processing_marked(monkeypatch):
+    """真实链路组合（2026-11-22 冒烟踩坑）：API 先标 processing 再派发 → Worker 必须执行。
+
+    Worker 的幂等 skip 只能认 ready——把 processing 当「另一实例在跑」会让
+    首次执行直接被吞（作业卡死 processing，前端永远转圈）。
+    """
+    task_id = _make_task(
+        frames={"status": "processing", "requestedAt": time.time(), "error": None, "items": []}
+    )
+
+    def _fake_pipeline(task_id_, url, timestamps):
+        tasks_module.update_task(
+            task_id_,
+            frames={
+                "status": "ready",
+                "error": None,
+                "items": [{"time": 1.0, "objectKey": f"frames/{task_id_}/00.jpg"}],
+            },
+        )
+
+    monkeypatch.setattr(frames_module, "run_frames_pipeline", _fake_pipeline)
+    response = worker_client.post(INVOKE_PATH, json=_frames_job(task_id))
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "task_id": task_id, "frames_status": "ready"}
 
 
 def test_worker_frames_job_completes(monkeypatch):
