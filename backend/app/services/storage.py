@@ -37,9 +37,11 @@ from app.errors import (
 
 logger = logging.getLogger(__name__)
 
-# 合法 objectKey 形态：uploads/{32位hex}/{净化文件名}。upload/init 生成、
-# transcribe-init 与 Worker 双重复核——伪造的派发载荷（需要 WORKER_TOKEN）也带不进来。
-_OBJECT_KEY_RE = re.compile(r"^uploads/[0-9a-f]{32}/[A-Za-z0-9._-]+$")
+# 合法 objectKey 形态：uploads/{32位hex}/{净化文件名} 或 frames/{32位hex}/{NNN}.jpg
+# （重点帧产物，PR #89；两个前缀共用 task_id = uuid4().hex 的 32 位 hex）。
+# upload/init 生成、transcribe-init 与 Worker 双重复核——伪造的派发载荷
+# （需要 WORKER_TOKEN）也带不进来。
+_OBJECT_KEY_RE = re.compile(r"^(?:uploads|frames)/[0-9a-f]{32}/[A-Za-z0-9._-]+$")
 
 
 def is_file_storage_configured() -> bool:
@@ -140,6 +142,32 @@ def download_to_temp(object_key: str, max_bytes: int) -> Iterator[str]:
         if size > max_bytes:
             raise FileTooLargeError()
         yield target
+
+
+def presign_get(object_key: str, expires_seconds: int) -> str:
+    """签发预签名 GET URL（离线签名，无网络请求）：前端 <img> 直连 OSS 拉帧图。
+
+    与 presign_put 同一签名机制：只对这一个 key 有效、只允许 GET、限时。
+    URL 是「短期访问凭证」：过期后前端重拉任务详情即可拿到新链接，因此
+    **不落任务库**——任务里只存 objectKey，序列化时再现场签（见
+    routers/transcribe.py 的 frames 序列化）。
+    """
+    key = _require_valid_key(object_key)
+    return _bucket().sign_url("GET", key, max(1, int(expires_seconds)))
+
+
+def put_object_bytes(object_key: str, data: bytes, content_type: str) -> None:
+    """Worker 侧上传小对象（重点帧 JPEG，单张几十 KB）：内网 endpoint。
+
+    与 download_to_temp 的取件方向相反：抽帧产物从 Worker 写回 OSS。
+    走 oss2 官方 put_object（bytes 直接进，不落盘不过 stdin）。
+    """
+    import oss2
+
+    key = _require_valid_key(object_key)
+    _bucket(OSS_INTERNAL_ENDPOINT or OSS_ENDPOINT).put_object(
+        key, data, headers={"Content-Type": content_type}
+    )
 
 
 def delete_object(object_key: str) -> None:

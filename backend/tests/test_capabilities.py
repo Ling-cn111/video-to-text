@@ -6,7 +6,13 @@ from app.main import app
 
 client = TestClient(app)
 
-_ALL_KEYS = {"cloudAsrConfigured", "summarizeConfigured", "localAsrAvailable", "fileUploadConfigured"}
+_ALL_KEYS = {
+    "cloudAsrConfigured",
+    "summarizeConfigured",
+    "localAsrAvailable",
+    "fileUploadConfigured",
+    "framesConfigured",
+}
 
 
 def test_capabilities_all_configured(monkeypatch):
@@ -23,6 +29,7 @@ def test_capabilities_all_configured(monkeypatch):
         "summarizeConfigured": True,
         "localAsrAvailable": False,
         "fileUploadConfigured": True,
+        "framesConfigured": True,
     }
 
 
@@ -40,7 +47,20 @@ def test_capabilities_none_configured(monkeypatch):
         "summarizeConfigured": False,
         "localAsrAvailable": False,
         "fileUploadConfigured": False,
+        "framesConfigured": False,
     }
+
+
+def test_capabilities_frames_reflects_oss_configuration(monkeypatch):
+    """framesConfigured 是 OSS 配置探测（PR #89）：与 fileUploadConfigured 同源。
+
+    抽帧产物也要写 OSS；未配 OSS → false，前端据此隐藏「生成重点帧」入口。
+    """
+    monkeypatch.setattr(capabilities_module.storage, "is_file_storage_configured", lambda: False)
+    assert client.get("/api/capabilities").json()["framesConfigured"] is False
+
+    monkeypatch.setattr(capabilities_module.storage, "is_file_storage_configured", lambda: True)
+    assert client.get("/api/capabilities").json()["framesConfigured"] is True
 
 
 def test_capabilities_file_upload_reflects_oss_configuration(monkeypatch):

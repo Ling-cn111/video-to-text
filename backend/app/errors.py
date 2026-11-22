@@ -145,3 +145,27 @@ class UploadedFileNotFoundError(AppException):
 
     def __init__(self, message: str = "上传的文件还未就绪，请等上传完成后再发起转写"):
         super().__init__(code="FILE_NOT_FOUND", message=message, status_code=404)
+
+
+class FramesUnsupportedError(AppException):
+    """抽帧请求的目标不支持（v1）：本地文件来源任务，或非 B站链接的任务。
+
+    与 UnsupportedPlatformError（422，转写入口的平台校验）分开：那条发生在
+    解析/提交转写时，这条发生在结果页抽帧时——动作主体不同（前者换链接，
+    后者是当前任务本身不支持抽帧）。前端按 capabilities.framesConfigured 与
+    任务来源预先隐藏入口，这条兜住直调 API 的情形。
+    """
+
+    def __init__(self, message: str = "该任务暂不支持生成重点帧（目前仅支持 B站链接转写的任务）"):
+        super().__init__(code="FRAMES_UNSUPPORTED", message=message, status_code=422)
+
+
+class FramesTaskNotReadyError(AppException):
+    """任务尚未转写完成，不能抽帧。
+
+    用 409 而不是 404 / 422：任务存在但状态冲突——「等转写完成再来」。
+    语义与幂等重试兼容：前端轮询到 completed 后自然不会再撞上这条。
+    """
+
+    def __init__(self, message: str = "任务尚未完成转写，完成后再生成重点帧"):
+        super().__init__(code="FRAMES_NOT_READY", message=message, status_code=409)

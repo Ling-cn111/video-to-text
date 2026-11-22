@@ -131,6 +131,13 @@ export interface Capabilities {
    * 相对。可选：旧后端不返回该字段，缺省按 false（不显示上传入口）处理。
    */
   fileUploadConfigured?: boolean
+  /**
+   * OSS 是否已配置（PR #89 重点帧）：决定结果页要不要显示「生成重点帧」入口。
+   *
+   * 与 fileUploadConfigured 同源（抽帧产物也要写 OSS）。可选：旧后端不返回该
+   * 字段，缺省按 false（不显示入口）处理。
+   */
+  framesConfigured?: boolean
 }
 
 export type TaskStatus = 'processing' | 'completed' | 'failed' | 'interrupted'
@@ -237,6 +244,37 @@ export interface GetTaskResponse {
   error?: AppError
   /** 文字稿来源（字幕来源任务显示来源 Badge）；缺省视为 asr */
   transcriptSource?: TranscriptSource
+  /** 重点帧状态（PR #89）：任务有 frames 数据时返回；items[].url 为现场签发的限时预签名 */
+  frames?: TaskFrames | null
+}
+
+// ---- 重点帧（PR #89，URL 任务 completed 后的二次抽帧） ----
+
+/** POST /api/frames 请求体：时间戳来自已就绪的 AI 总结（章节起点 + 要点，秒） */
+export interface FramesRequest {
+  taskId: string
+  timestamps: number[]
+}
+
+/** 一帧：time 为秒；url 是预签名 GET（限时，过期重拉任务详情即换新） */
+export interface FrameItem {
+  time: number
+  objectKey: string
+  url: string
+}
+
+/** 重点帧状态（任务详情 frames 字段与 POST /api/frames 响应共用） */
+export interface TaskFrames {
+  status: 'processing' | 'ready' | 'failed'
+  /** 仅 status=failed 时有值 */
+  error?: AppError | null
+  /** 仅 status=ready 时非空 */
+  items: FrameItem[]
+}
+
+export interface FramesStartResponse {
+  taskId: string
+  frames: TaskFrames
 }
 
 // ---- 错误契约 ----
@@ -271,6 +309,13 @@ export type ApiErrorCode =
   | 'FILE_FORMAT_UNSUPPORTED'
   | 'FILE_STORAGE_NOT_CONFIGURED'
   | 'FILE_NOT_FOUND'
+  // 重点帧抽帧（PR #89，见 backend/app/errors.py）：
+  // 目标不支持——文件来源任务 / 非 B站链接（422）；任务未完成转写（409）；
+  // FRAMES_FAILED 只出现在任务详情 frames.error 里，不是 HTTP 错误（Worker
+  // 异步作业的失败收敛进任务详情，前端按 frames.status=failed 展示）
+  | 'FRAMES_UNSUPPORTED'
+  | 'FRAMES_NOT_READY'
+  | 'FRAMES_FAILED'
   | 'INTERNAL_ERROR'
 
 export interface AppError {

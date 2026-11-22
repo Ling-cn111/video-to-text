@@ -5,6 +5,8 @@ import type {
   ByokTestResult,
   Capabilities,
   FileRef,
+  FramesRequest,
+  FramesStartResponse,
   GetTaskResponse,
   HealthResponse,
   StartTaskResponse,
@@ -121,6 +123,19 @@ const mockApi: ApiClient = {
       fetch('/api/byok/test', {
         method: 'POST',
         headers: { ...JSON_HEADERS, ...(key ? { [HEADER_LLM_KEY]: key } : {}) },
+        body: JSON.stringify(request),
+      }).catch(throwNetworkError),
+    ),
+
+  /**
+   * PR #89 重点帧（Mock）：走同源 Mock 路由，ready 随响应立即返回（无状态）。
+   * timestamps 照发：E2E 靠拦截请求体断言「时间点真的来自总结章节/要点」。
+   */
+  requestFrames: (request: FramesRequest): Promise<FramesStartResponse> =>
+    toJson(
+      fetch('/api/frames', {
+        method: 'POST',
+        headers: JSON_HEADERS,
         body: JSON.stringify(request),
       }).catch(throwNetworkError),
     ),

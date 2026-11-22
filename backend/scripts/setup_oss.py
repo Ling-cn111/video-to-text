@@ -20,6 +20,10 @@ OSS_PUBLIC_ENDPOINT = f"oss-{REGION}.aliyuncs.com"
 RAM_USER_NAME = "video-to-text-oss-upload"
 RAM_POLICY_NAME = "vtt-oss-uploads-minimal"
 UPLOAD_PREFIX = "uploads/"
+# 重点帧产物前缀（PR #89）：7 天过期——与任务 TTL（TASK_TTL_SECONDS 默认 7 天）
+# 对齐，避免「任务还在、帧图先没了」；任务删除后孤儿帧也由同一条规则兜底清理。
+FRAMES_PREFIX = "frames/"
+FRAMES_EXPIRATION_DAYS = 7
 
 
 def _decrypt(ciphertext: str, password: str = "SecretKey123") -> str:
@@ -127,14 +131,25 @@ def ensure_bucket(account_id: str, cred: dict) -> str:
     )
     print("CORS 已配置（PUT/HEAD，来源 *，暴露 ETag）")
 
-    # 生命周期：uploads/ 前缀 1 天删除——对象堆积的唯一兜底（成功即删 + 失败留 1 天重试都靠它收尾）
-    rule = oss2.models.LifecycleRule(
+    # 生命周期（put_bucket_lifecycle 是**整体替换**语义：两条规则必须在同一次
+    # 调用里提交，单独再 put 一次会把第一条覆盖掉）：
+    # - uploads/ 前缀 1 天删除——上传对象堆积的唯一兜底（成功即删 + 失败留 1 天重试都靠它收尾）
+    # - frames/ 前缀 7 天删除——重点帧产物（与任务 TTL 对齐，见常量处注释）
+    rule_uploads = oss2.models.LifecycleRule(
         "vtt-uploads-expire",
         UPLOAD_PREFIX.rstrip("/"),
         expiration=oss2.models.LifecycleExpiration(days=1),
     )
-    bucket.put_bucket_lifecycle(oss2.models.BucketLifecycle([rule]))
-    print("生命周期已配置（uploads/ 前缀，1 天删除）")
+    rule_frames = oss2.models.LifecycleRule(
+        "vtt-frames-expire",
+        FRAMES_PREFIX.rstrip("/"),
+        expiration=oss2.models.LifecycleExpiration(days=FRAMES_EXPIRATION_DAYS),
+    )
+    bucket.put_bucket_lifecycle(oss2.models.BucketLifecycle([rule_uploads, rule_frames]))
+    print(
+        "生命周期已配置（uploads/ 1 天删除；frames/ "
+        f"{FRAMES_EXPIRATION_DAYS} 天删除）"
+    )
     return bucket_name
 
 
@@ -160,7 +175,9 @@ def ensure_ram_user_and_ak(bucket_name: str, cred: dict) -> tuple[str, str | Non
         ram.create_user(ram_models.CreateUserRequest(user_name=RAM_USER_NAME))
         print(f"已创建 RAM 用户：{RAM_USER_NAME}")
 
-    # 最小权限策略：只允许操作该 bucket 的 uploads/ 前缀
+    # 最小权限策略：uploads/（上传中转）+ frames/（重点帧产物）。
+    # frames/ 需要 PutObject（Worker 上传帧图）与 GetObject（前端经预签名 GET
+    # 拉图——签名授权底层校验的是 AK 对应主体的 oss:GetObject 权限）。
     policy_document = {
         "Version": "1",
         "Statement": [
@@ -168,7 +185,12 @@ def ensure_ram_user_and_ak(bucket_name: str, cred: dict) -> tuple[str, str | Non
                 "Effect": "Allow",
                 "Action": ["oss:PutObject", "oss:GetObject", "oss:HeadObject", "oss:DeleteObject"],
                 "Resource": f"acs:oss:*:*:{bucket_name}/{UPLOAD_PREFIX}*",
-            }
+            },
+            {
+                "Effect": "Allow",
+                "Action": ["oss:PutObject", "oss:GetObject"],
+                "Resource": f"acs:oss:*:*:{bucket_name}/{FRAMES_PREFIX}*",
+            },
         ],
     }
     try:

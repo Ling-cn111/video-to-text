@@ -407,10 +407,15 @@ role: ${env('FC_ROLE_ARN', '')}
 2. **配 CORS**：bucket → 数据安全 → 跨域设置 → 创建规则：
    - 来源：`*`（Web / 桌面 / 移动三端的 Origin 各不相同，预签名 PUT 不带 Cookie，放宽来源没有凭证面）
    - 允许 Methods：`PUT`、`HEAD`；允许 Headers：`*`；暴露 Headers：`ETag`；超时 7200。
-3. **配生命周期**：bucket → 数据管理 → 生命周期 → 创建规则：
+3. **配生命周期**：bucket → 数据管理 → 生命周期 → 创建规则（**两条都要**）：
    - 策略「指定前缀」= `uploads/`，距最后修改 **1 天**后删除。
    - 这是「对象堆积」的唯一兜底：转写成功后 Worker 会立即删对象，失败任务保留 ≤1 天供重试
      （重试带原 objectKey 重派，用户不用重新上传），但任何清理失败的对象都靠这条规则过期。
+   - 策略「指定前缀」= `frames/`，距最后修改 **7 天**后删除（PR19 重点帧产物；
+     与任务 TTL 默认 7 天对齐，避免「任务还在、帧图先没了」，任务删除后的孤儿帧也由这条兜底）。
+   - 控制台操作或跑 `backend/scripts/setup_oss.py` 皆可（脚本幂等，一次提交两条规则；
+     **注意 `put_bucket_lifecycle` 是整体替换语义**，已手动配过 uploads/ 规则的存量 bucket
+     重跑脚本即可补齐，单独只 put frames/ 一条会把 uploads/ 规则覆盖掉）。
 4. **建 RAM AccessKey（最小权限）**：RAM 控制台 → 用户 → 创建用户（只生成 AccessKey，用于函数签名），
    授权**自定义策略**（最小权限，限定前缀）：
 
@@ -422,11 +427,18 @@ role: ${env('FC_ROLE_ARN', '')}
          "Effect": "Allow",
          "Action": ["oss:PutObject", "oss:GetObject", "oss:HeadObject", "oss:DeleteObject"],
          "Resource": "acs:oss:*:*:<bucket>/uploads/*"
+       },
+       {
+         "Effect": "Allow",
+         "Action": ["oss:PutObject", "oss:GetObject"],
+         "Resource": "acs:oss:*:*:<bucket>/frames/*"
        }
      ]
    }
    ```
 
+   frames/ 需要 `PutObject`（Worker 上传帧图）与 `GetObject`（前端经预签名 GET 拉图——
+   签名授权底层校验的是 AK 主体对目标对象的 oss:GetObject 权限，缺了会 403）。
    不要直接挂 `AliyunOSSFullAccess`——那等于把整个账号的 OSS 读写都交给 FC 函数。
 
 5. **注入部署机变量并重新部署**（与 REDIS_URL 同一层）：

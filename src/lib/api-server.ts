@@ -34,6 +34,12 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   FILE_FORMAT_UNSUPPORTED: 422,
   FILE_STORAGE_NOT_CONFIGURED: 400,
   FILE_NOT_FOUND: 404,
+  // 重点帧（PR #89）：FRAMES_UNSUPPORTED / FRAMES_NOT_READY 由真实后端产生
+  // （Mock 也会产生，见 mock-api.ts 的 frames 注入约定）；FRAMES_FAILED 不是
+  // HTTP 错误——它只出现在任务详情 frames.error 里，映射 500 仅为穷举成立
+  FRAMES_UNSUPPORTED: 422,
+  FRAMES_NOT_READY: 409,
+  FRAMES_FAILED: 500,
   INTERNAL_ERROR: 500,
 }
 

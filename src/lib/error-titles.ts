@@ -41,6 +41,11 @@ export const ERROR_TITLES: Record<ClientErrorCode, string> = {
   FILE_STORAGE_NOT_CONFIGURED: '本地上传未开启',
   // 预签名上传没完成就提交 / 对象已被清理：动作是「重新上传」
   FILE_NOT_FOUND: '上传未完成',
+  // 重点帧（PR #89）：任务本身不支持抽帧 / 还没转写完；FRAMES_FAILED 只出现在
+  // 任务详情 frames.error 里（帧卡片直接展示 message，标题作兜底）
+  FRAMES_UNSUPPORTED: '该任务不支持重点帧',
+  FRAMES_NOT_READY: '转写尚未完成',
+  FRAMES_FAILED: '重点帧生成失败',
   // 兜底
   INTERNAL_ERROR: '服务异常',
   NETWORK_ERROR: '网络异常',

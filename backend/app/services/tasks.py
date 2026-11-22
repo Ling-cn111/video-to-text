@@ -36,6 +36,7 @@ P1 并发修复（update 的 CAS）：
 - RedisTaskStore.update 改 WATCH/MULTI 读-改-写；MemoryTaskStore 在锁内做等价保护
 - 两者都带**终态保护**：任务已是 completed/failed/interrupted 且本次不改 status 时
   放弃写入，防止晚到的进度心跳把 Reaper 刚写的 failed 覆盖回 processing
+  （例外：TERMINAL_MUTABLE_FIELDS——重点帧 frames 在任务完成后异步写入）
 
 环境变量（app/config.py）：
 - TASK_STORE=memory（默认）| redis
@@ -76,6 +77,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# 终态任务（completed/failed/interrupted）仍允许更新的字段：重点帧是任务
+# completed 之后由二次作业异步写入的结果（PR #89），语义上是终态任务的附属
+# 数据。与终态保护的初衷不冲突——那条保护防的是「晚到的转写进度心跳把
+# Reaper 刚写的 failed 覆盖回 processing」，frames 写入不碰 status/stage/progress。
+# update 只放行「字段集合 ⊆ 本集合 ∪ {status}」的写入；混入其他字段仍按
+# 旧语义放弃（防止晚到进度蹭车）。
+TERMINAL_MUTABLE_FIELDS = frozenset({"frames"})
+
 
 @dataclass
 class TranscribeTask:
@@ -96,6 +105,11 @@ class TranscribeTask:
     # file 来源任务的文件引用（FileRef 的 dict 形态：objectKey/fileName/size）。
     # 注意只存引用三元组，不存 URL 凭证——预签名 URL 限时，不落库。
     file: dict | None = None
+    # 重点帧状态（PR #89，URL 任务 completed 后的二次抽帧产物）：
+    # {status: processing|ready|failed, error: {code,message}|None,
+    #  items: [{time: float, objectKey: str}]}。预签名 GET URL 不在这里存——
+    # 限时凭证，序列化（GET 详情）时现场签发。
+    frames: dict | None = None
     attempts: int = 0  # 已执行次数（S2：Worker 重试计数 / reaper 判定依据）
     started_at: float | None = None  # Worker 抢到锁、真正开跑的时刻；None = 还在排队
     created_at: float = field(default_factory=time.time)
@@ -116,6 +130,7 @@ def _payload_dict(task: TranscribeTask) -> dict:
         "transcript_source": task.transcript_source,
         "source": task.source,
         "file": task.file,
+        "frames": task.frames,
         "attempts": task.attempts,
         "started_at": task.started_at,
     }
@@ -145,6 +160,8 @@ def _task_from_payload(
         # 旧数据无 source/file 字段 → url / None（M3 之前全部是 url 来源）
         source=str(payload.get("source") or "url"),
         file=payload.get("file"),
+        # 旧数据无 frames 字段 → None（重点帧是任务完成后的可选产物）
+        frames=payload.get("frames"),
         attempts=int(payload.get("attempts") or 0),
         # started_at 决定 reaper 用哪档陈旧阈值（排队 vs 执行中），必须往返保真；
         # 旧数据无该字段 → None（按「排队中」处理，更保守：不会误杀刚派发的任务）
@@ -367,7 +384,13 @@ class MemoryTaskStore:
             # 终态保护（与 RedisTaskStore.update 语义对齐）：已是 completed/failed/
             # interrupted 且本次不改 status → 放弃，防止晚到的进度心跳把 Reaper
             # 刚写的 failed 覆盖回 processing，导致前端永久转圈。
-            if task.status != "processing" and "status" not in fields:
+            # 例外：纯 TERMINAL_MUTABLE_FIELDS（frames）写入——任务完成后异步写
+            # 入的附属数据，见常量处的注释；混入其他字段仍按旧语义放弃。
+            if (
+                task.status != "processing"
+                and "status" not in fields
+                and not set(fields) <= TERMINAL_MUTABLE_FIELDS
+            ):
                 return
             for key, value in fields.items():
                 setattr(task, key, value)
@@ -555,9 +578,13 @@ class RedisTaskStore:
                     await pipe.unwatch()
                     return
                 task = _loads(raw)
-                if task.status != "processing" and "status" not in fields:
+                if (
+                    task.status != "processing"
+                    and "status" not in fields
+                    and not set(fields) <= TERMINAL_MUTABLE_FIELDS
+                ):
                     await pipe.unwatch()
-                    return  # 终态不可被非状态字段覆盖
+                    return  # 终态不可被非状态字段覆盖（frames 纯写入例外）
                 for name, value in fields.items():
                     setattr(task, name, value)
                 task.updated_at = time.time()

@@ -418,3 +418,33 @@ def test_build_store_unknown_mode_falls_back_to_memory(caplog):
     with caplog.at_level(logging.WARNING):
         built = _build_store("nope", None)
     assert isinstance(built, MemoryTaskStore)
+
+
+# ---- 终态例外（PR #89 重点帧）----
+
+def test_update_frames_on_terminal_task(store):
+    """completed 任务的 frames 纯写入放行（TERMINAL_MUTABLE_FIELDS 例外）。
+
+    重点帧是任务完成后的二次作业产物：终态保护若不豁免 frames，抽帧结果
+    永远落不了库。status 不被连带改动——这条用例同时守护「豁免不越界」。
+    """
+    task_id = asyncio.run(store.create(VIDEO))
+    asyncio.run(store.update(task_id, status="completed"))
+
+    asyncio.run(store.update(task_id, frames={"status": "ready", "items": []}))
+
+    task = asyncio.run(store.get(task_id))
+    assert task.status == "completed"  # status 未被连带改动
+    assert task.frames["status"] == "ready"
+
+
+def test_update_mixed_fields_on_terminal_task_still_dropped(store):
+    """frames 混入其他字段时整次写入仍按旧语义放弃（防晚到进度蹭车）。"""
+    task_id = asyncio.run(store.create(VIDEO))
+    asyncio.run(store.update(task_id, status="completed"))
+
+    asyncio.run(store.update(task_id, frames={"status": "ready", "items": []}, stage="asr"))
+
+    task = asyncio.run(store.get(task_id))
+    assert task.frames is None  # 整次写入被丢弃，不部分生效
+    assert task.stage == "parse_link"

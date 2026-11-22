@@ -24,7 +24,8 @@
 | GET | `/api/transcribe/{taskId}` | 轮询任务 → `{ status, stage, progress, video?, transcript?, plainText?, error?, transcriptSource? }` |
 | POST | `/api/summarize` | 生成总结（无状态）→ `{ summary, keyPoints, chapters }` |
 | POST | `/api/byok/test` | 测活（PR17）：极短真实请求验证「地址+模型+Key」→ `{ ok, latencyMs?, model? }` 或 `{ ok: false, code, message }`（HTTP 200，code 复用 ApiErrorCode）。Key 只走请求头 `X-Vtt-Llm-Key`，不落任何存储；校验类失败走标准错误形状 |
-| GET | `/api/capabilities` | 配置态与依赖探测 → `{ cloudAsrConfigured, summarizeConfigured, localAsrAvailable, fileUploadConfigured }`（只返回布尔，**不含 Key 信息**） |
+| POST | `/api/frames` | 重点帧抽帧（PR19）：按总结时间点生成视频画面截图 → `{ taskId, frames: { status, items? } }`。**异步**：受理后轮询 GET 任务详情读 `frames` 字段（见 §2.4） |
+| GET | `/api/capabilities` | 配置态与依赖探测 → `{ cloudAsrConfigured, summarizeConfigured, localAsrAvailable, fileUploadConfigured, framesConfigured }`（只返回布尔，**不含 Key 信息**） |
 | GET | `/api/health` | 可达性探测 → `{ status: "ok" }` |
 
 ### 2.0 `POST /api/upload/init`（M3 本地上传三步走）
@@ -127,6 +128,49 @@
 
 `keyPoints[].time` 的时间戳强制取自原 `transcript`（后端做就近吸附校验），LLM 不能凭空编造。
 
+### 2.4 `POST /api/frames`（PR19 重点帧，URL 任务）
+
+转写完成且 AI 总结就绪后，结果页可按总结的章节起点与要点时间生成视频画面截图。
+**这是 completed 任务上的二次异步作业**：与转写共用同一个 Worker 函数（不同路由
+`/internal/worker/frames`，事件体带 `kind: "frames"`），不占任务执行锁、不改任务
+status，只写任务详情的 `frames` 字段。
+
+```jsonc
+// POST /api/frames
+{ "taskId": "abc123", "timestamps": [0, 92, 196, 380, 560, 636] }
+// → 受理或幂等返回现状：
+{ "taskId": "abc123", "frames": { "status": "processing", "items": [] } }
+
+// 轮询 GET /api/transcribe/{taskId}（frames 字段）：
+{ "frames": {
+    "status": "ready",
+    "items": [
+      { "time": 92, "objectKey": "frames/<taskId>/00.jpg", "url": "https://<bucket>.oss-...?Signature=...&Expires=..." }
+    ]
+  }
+}
+```
+
+约束：
+
+- **时间戳来源与净化**：`timestamps` 来自前端已拿到的 AI 总结（章节 `timeStart` + 要点 `time`，
+  全是秒）；服务端不信任原始值——钳制到任务时长内（末尾留 1s）、按 2s 间隔去重、
+  截断到 `FRAMES_MAX_COUNT`（默认 12）。请求体 `min_length=1`，缺省/空数组走 pydantic 422。
+- **幂等**：`frames.status` 已是 processing / ready 时直接返回现状，不重复派发（重复点击
+  与重试安全）；failed 允许重新派发。
+- **范围（v1）**：仅 B站 URL 任务。file 任务 → 422 `FRAMES_UNSUPPORTED`（源对象成功即删，
+  无源可抽）；未配 OSS → 400 `FILE_STORAGE_NOT_CONFIGURED`；任务未 completed → 409 `FRAMES_NOT_READY`。
+- **产物**：每帧 1280 宽 JPEG（q:v 3，约 30-50KB），传 OSS `frames/{taskId}/{i}.jpg`，
+  生命周期 7 天（与任务 TTL 对齐，见 setup_oss.py）。视频流经 playurl `try_look=1`
+  取最高 1080P（优先 HEVC，下载代价最小），下载上限 `FRAMES_VIDEO_MAX_MB`。
+- **`url` 是读取时现场签发的预签名 GET**（`FRAMES_PRESIGN_EXPIRES_SECONDS`=3600）：
+  限时凭证不落任务库，过期后重拉任务详情即换新。前端 `<img>` 直连 OSS，无需 CORS。
+- **失败收敛**：单帧失败跳过该时间点；整段失败（下载/全部帧失败）→ `frames.status=failed`
+  + `frames.error={code:"FRAMES_FAILED", message}`——异步作业的失败不是 HTTP 错误，
+  前端轮询任务详情即可见，重试按钮重新派发。
+- capabilities 新增 `framesConfigured`（与 `fileUploadConfigured` 同源 = OSS 四项齐备），
+  前端据此隐藏入口。
+
 ### 2.3 用户自带 Key（BYOK）请求头
 
 两个可选请求头，用于让用户用自己的额度而不是站点额度：
@@ -179,6 +223,11 @@ API 调用方，前端不再发送。
 | 422 | `FILE_FORMAT_UNSUPPORTED` | 扩展名白名单外（mp4/mov/webm 之外，M3） |
 | 400 | `FILE_STORAGE_NOT_CONFIGURED` | 站点未配 OSS（`OSS_BUCKET` 等），本地上传整体不可用（M3） |
 | 404 | `FILE_NOT_FOUND` | 引用的 OSS 对象不存在：预签名上传未完成就发起转写 / 对象已被清理（M3） |
+| 422 | `FRAMES_UNSUPPORTED` | 重点帧目标不支持：文件来源任务 / 非 B站链接（PR19；前端按能力与任务来源预先隐藏入口，此码兜住直调 API） |
+| 409 | `FRAMES_NOT_READY` | 任务尚未转写完成，不能抽帧（PR19） |
+
+`FRAMES_FAILED`（PR19）不是 HTTP 错误码：它只出现在任务详情 `frames.error.code` 里
+（Worker 异步作业的失败收敛进任务详情），前端按 `frames.status=failed` 展示。
 
 状态码映射的代码事实来源是 [`src/lib/api-server.ts`](../src/lib/api-server.ts)（Mock 侧）与 [`backend/app/errors.py`](../backend/app/errors.py)（真实侧），两边必须一致。完整枚举定义见 `src/lib/types.ts` 的 `ApiErrorCode`——新增错误码时要同步改四处：`types.ts`、`api-server.ts` 的 `STATUS_BY_CODE`、`src/lib/error-titles.ts` 的中文标题表（`Record<ClientErrorCode, string>` 会强制穷举）、本文档；漏改会类型报错。
 
@@ -191,6 +240,9 @@ API 调用方，前端不再发送。
 - `taskId` 自含上下文（base64url 编码），不依赖服务端存储
 - 进度按时间推算，全程约 10 秒
 - 演示失败路径：`https://www.bilibili.com/video/BV1FailDemo`（60% 处失败，用于验证重试）
+- 重点帧（PR19）：ready 随 POST /api/frames 响应立即返回（无状态，不模拟 processing 时序——
+  该阶段由 E2E 路由拦截覆盖）；编造 taskId 带 `fr: 1` 注入 frames failed（回归 40c）；
+  capabilities 恒 `framesConfigured: true`；帧图占位复用平台封面 SVG
 
 > 桌面端构建时 `src/app/api/*` 会被临时移出（静态导出不支持 POST Route Handler），构建后还原。详见 [desktop-packaging.md](desktop-packaging.md)。
 

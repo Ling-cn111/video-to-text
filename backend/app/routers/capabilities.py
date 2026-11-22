@@ -42,4 +42,7 @@ def get_capabilities() -> CapabilitiesResponse:
         localAsrAvailable=_local_asr_available(),
         # M3：OSS 配置齐备才显示「上传本地视频」入口（探测不抛异常）
         fileUploadConfigured=storage.is_file_storage_configured(),
+        # PR #89：与 fileUploadConfigured 同源（抽帧产物也要写 OSS），
+        # 决定结果页要不要显示「生成重点帧」入口
+        framesConfigured=storage.is_file_storage_configured(),
     )

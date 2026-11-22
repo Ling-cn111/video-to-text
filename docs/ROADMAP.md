@@ -1,7 +1,7 @@
 # 功能路线图（Roadmap）
 
-> **当前状态（2026-11-21 更新）**：核心产品链路已全部交付——
-> **阶段一** 真实解析（B站 yt-dlp）✅ → **阶段二** 真实转写（字幕快路径四层降级 + 本地/云端 ASR + 绝对 CER 基准）✅ → **阶段三** 真实 AI 总结（DeepSeek，27 分钟视频 ≈¥0.07）✅ → **M3 本地视频上传** ✅（2026-11-21，OSS 直传 + 500MB，见下文）。
+> **当前状态（2026-11-22 更新）**：核心产品链路已全部交付——
+> **阶段一** 真实解析（B站 yt-dlp）✅ → **阶段二** 真实转写（字幕快路径四层降级 + 本地/云端 ASR + 绝对 CER 基准）✅ → **阶段三** 真实 AI 总结（DeepSeek，27 分钟视频 ≈¥0.07）✅ → **M3 本地视频上传** ✅（2026-11-21，OSS 直传 + 500MB，见下文）→ **重点帧抽帧** ✅（2026-11-22，PR19，URL 任务手动触发，见下文）。
 > 验收报告：[阶段二](acceptance-stage-2.md) / [阶段三](acceptance-stage-3.md)；基准与成本：[asr-benchmark](asr-benchmark.md) / [llm-cost](llm-cost.md)。
 > 下文 M2 多平台**未启动**；M4 打包**已部分交付**（Windows 桌面端与 Android 均发到 v0.3.1，macOS 与 iOS 未启动）。
 > 历史说明：本文成文于 M1 前端 Demo 交付时，M2-M4 编号与项目实际的「阶段一/二/三」编号相互独立；
@@ -45,6 +45,22 @@
 - 限制 ✅：mp4 / mov / webm，源文件 ≤500MB（前端预校验 + 后端三重校验）；内容超约 50 分钟会在转码阶段报「视频太长」（转码后 WAV 受 `MAX_AUDIO_SIZE_MB=100` 约束 ≈ 52 分钟）
 - 关键实现：Worker 从 OSS **内网 endpoint** 流式落 /tmp → ffmpeg 按路径转码（500MB 源文件不进内存）→ 与 URL 任务在 ASR 汇合；真实时长按 WAV 字节数回填；成功删对象 / 失败留 ≤1 天供重试
 - E2E：`e2e/pr16-file-upload.spec.ts`（回归 36-36d）；锁定项见 [frontend-features](frontend-features.md) §21
+
+## 重点帧抽帧（已交付 ✅，2026-11-22，PR19）
+
+**目标**：转写完成且 AI 总结就绪后，按总结章节/要点的时间点生成视频画面截图。**已按「URL 任务手动触发二次抽帧」通道交付**。
+
+> 落地前提的实测结论（2026-11-22，`get_video_stream` 的设计依据）：B站未登录 playurl
+> 默认 DASH 只下发 480P/360P；请求参数加 `try_look=1`（B站网页播放器未登录态自带的
+> 「试看」参数）后直接解锁视频本身的最高档（实测 1080P 全长流，CDN UA+Referer 可下）。
+> qn / fnval 位组合 / platform 变体均绕不开。
+
+- 触发 ✅：结果页「生成重点帧」**手动按钮**（抽帧要下载视频流，成本由显式动作承担；不自动触发）；入口由 `capabilities.framesConfigured` + 非 local 平台 + 总结就绪三条件驱动，任一不满足整卡隐藏
+- 数据流 ✅：前端从 summary 派生时间点（chapters.timeStart ∪ keyPoints.time，2s 合并、cap 12）→ `POST /api/frames` → 服务端再净化 → FramesJob 投 Worker（fc 模式走 `/internal/worker/frames` 路由，事件体 `kind:"frames"`；inline 本地直跑）→ playurl 取最高 1080P（优先 HEVC）→ ffmpeg 逐点抽帧（1280 宽 JPEG q:v 3，单张 30-50KB）→ OSS `frames/{taskId}/`（生命周期 7 天与任务 TTL 对齐）→ 任务详情 `frames` 字段轮询可见
+- 关键实现 ✅：抽帧是 completed 任务上的**二次作业**——不占任务执行锁、不改任务 status，只写 `task.frames`（任务库终态保护加 `TERMINAL_MUTABLE_FIELDS` 例外）；幂等靠 frames 状态机（processing/ready 直接 skip）；单帧失败跳过、整段失败收敛进 `frames.error`（非 HTTP 错误）；预签名 GET 读取时现场签发（限时 1h 不落库，`<img>` 直连无需 CORS）
+- 错误码 ✅：`FRAMES_UNSUPPORTED`(422) / `FRAMES_NOT_READY`(409)，四处同步；`FRAMES_FAILED` 只出现在 `frames.error`（异步作业失败收敛）
+- E2E：`e2e/pr19-frames.spec.ts`（回归 40-40e）；锁定项见 [frontend-features](frontend-features.md) §24
+- **v2 方向**：文件任务重点帧（转码时源在 /tmp 顺手均匀抽帧）；非 B站平台；重点帧导出（图片打包是新二进制分支）
 
 ## M4 打包成 App
 

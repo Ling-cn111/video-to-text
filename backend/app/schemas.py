@@ -159,12 +159,15 @@ class CapabilitiesResponse(BaseModel):
     前端据此决定是否显示「本地 / 云端」选择器。
     fileUploadConfigured 是**配置探测**：OSS 四项（bucket/endpoint/AK/SK）是否齐备，
     决定首页要不要显示「上传本地视频」入口（M3）。
+    framesConfigured 同为配置探测（与 fileUploadConfigured 同源，未来可独立）：
+    决定结果页要不要显示「生成重点帧」入口（PR #89）。
     """
 
     cloudAsrConfigured: bool
     summarizeConfigured: bool
     localAsrAvailable: bool = False
     fileUploadConfigured: bool = False
+    framesConfigured: bool = False
 
 
 # ---- 本地文件上传（M3）----
@@ -187,6 +190,46 @@ class UploadInitResponse(BaseModel):
     expiresIn: int
 
 
+# ---- 重点帧抽帧（PR #89，URL 任务）----
+
+class FramesStartRequest(BaseModel):
+    """POST /api/frames 请求体。
+
+    timestamps 来自前端已拿到的 AI 总结（章节起点 timeStart + 要点 time，全是
+    秒）。服务端不信任原始值：钳制到任务时长内、按 2s 间隔去重、截断到
+    FRAMES_MAX_COUNT（默认 12）——前端不必追求精确，超出部分按时间序丢弃。
+    """
+
+    taskId: str
+    timestamps: list[float] = Field(min_length=1, max_length=60)
+
+
+class FramesItem(BaseModel):
+    """一帧：time 为秒；url 是读取时现场签发的预签名 GET（限时，不落库）。"""
+
+    time: float
+    objectKey: str
+    url: str
+
+
+class TaskFramesOut(BaseModel):
+    """任务详情里的重点帧状态（前端 TaskFrames 的后端实现）。
+
+    error 只在 status=failed 时有值；items[].url 只在 ready 时非空。
+    """
+
+    status: Literal["processing", "ready", "failed"]
+    error: AppErrorBody | None = None
+    items: list[FramesItem] = Field(default_factory=list)
+
+
+class FramesStartResponse(BaseModel):
+    """POST /api/frames 响应：受理（processing）或幂等返回现状（ready）。"""
+
+    taskId: str
+    frames: TaskFramesOut
+
+
 class TaskDetailResponse(BaseModel):
     """GET /api/transcribe/{taskId} 响应（前端 GetTaskResponse 的后端实现）"""
 
@@ -200,3 +243,6 @@ class TaskDetailResponse(BaseModel):
     error: AppErrorBody | None = None
     # 文字稿来源：subtitle_cc（B站 CC 字幕）/ subtitle_ai（B站 AI 字幕）/ asr（语音识别）
     transcriptSource: str | None = None
+    # 重点帧状态（PR #89）：仅当任务已有 frames 数据时返回；items[].url 为
+    # 读取时现场签发的预签名 GET（限时，不落库）
+    frames: TaskFramesOut | None = None

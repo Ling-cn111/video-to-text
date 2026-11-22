@@ -5,6 +5,7 @@ import { FAIL_VIDEO_ID, getMockData } from '@/lib/mock-data'
 import type {
   ApiErrorCode,
   FileRef,
+  FramesStartResponse,
   GetTaskResponse,
   Platform,
   StartTaskResponse,
@@ -53,6 +54,8 @@ interface TaskPayload {
   f?: 1
   /** 注入总结失败标记（E2E 锁定 8：验证总结失败降级不拖垮文字稿） */
   sumFail?: 1
+  /** 注入重点帧失败标记（E2E 回归 40c：帧卡片错误态与重试） */
+  fr?: 1
   /** 文字稿来源标记（E2E 锁定 5 用：字幕来源显示「来源：B站字幕」，asr 显示「来源：语音识别」） */
   src?: 'subtitle_cc' | 'subtitle_ai' | 'asr'
   /** 真实解析透传的元数据（M1.5 混合模式：解析真实、转写 Mock） */
@@ -270,6 +273,71 @@ export async function summarizeTask(taskId: string, detail: SummaryDetail = 'sta
   // brief 档连章节也收敛：只留前两段，模拟「精简」在真实 LLM 下的表现
   const chapters = detail === 'brief' ? summary.chapters.slice(0, 2) : summary.chapters
   return { ...summary, keyPoints: summary.keyPoints.slice(0, limit), chapters }
+}
+
+// ---- 重点帧（PR #89） ----
+
+/** Mock 帧数上限：与后端 FRAMES_MAX_COUNT 同意图，Mock 取小值让演示网格轻量 */
+const MOCK_FRAMES_MAX = 8
+/** 与后端 sanitize_timestamps 的 2s 近邻合并同口径 */
+const MOCK_FRAME_MIN_GAP_SECONDS = 2
+
+/**
+ * 重点帧请求（Mock）：无状态，**ready 随响应立即返回**（真实后端是
+ * processing → 轮询任务详情 → ready，processing 阶段的 E2E 覆盖走
+ * Playwright 路由拦截，不依赖 Mock 模拟时序）。
+ *
+ * 校验与真实后端同规则：
+ * - 任务不存在 → INVALID_TASK；未完成转写 → FRAMES_NOT_READY
+ * - 本地文件任务 → FRAMES_UNSUPPORTED（真实后端源对象成功即删，无源可抽）
+ * - 注入失败标记（编造 taskId 的 fr:1）→ frames.status=failed（回归 40c）
+ */
+export async function requestFrames(taskId: string, timestamps: number[]): Promise<FramesStartResponse> {
+  const payload = decodeTaskId(taskId)
+  if (!payload) {
+    throw new MockApiError('INVALID_TASK', '任务不存在或已过期，请重新解析视频链接')
+  }
+  const state = computeTaskState(payload)
+  if (state.status !== 'completed') {
+    throw new MockApiError('FRAMES_NOT_READY', '任务尚未完成转写，完成后再生成重点帧')
+  }
+  if (payload.p === 'local') {
+    throw new MockApiError('FRAMES_UNSUPPORTED', '本地文件任务暂不支持生成重点帧')
+  }
+  if (payload.fr) {
+    return {
+      taskId,
+      frames: {
+        status: 'failed',
+        error: { code: 'FRAMES_FAILED', message: '视频流下载失败，请稍后重试' },
+        items: [],
+      },
+    }
+  }
+
+  // 时间点净化与后端 sanitize_timestamps 同口径：非法丢弃、升序、2s 近邻合并、截断
+  const points: number[] = []
+  for (const value of [...(timestamps ?? [])].sort((a, b) => a - b)) {
+    const point = Number(value)
+    if (!Number.isFinite(point) || point < 0) continue
+    if (points.length > 0 && point - points[points.length - 1] < MOCK_FRAME_MIN_GAP_SECONDS) continue
+    points.push(Math.round(point * 100) / 100)
+    if (points.length >= MOCK_FRAMES_MAX) break
+  }
+  // 帧图占位直接复用平台封面 SVG（Mock 无真实抽帧；E2E 断言网格与时间标签，
+  // 不断言图片内容）。objectKey 仅形状示例，Mock 下不参与任何 OSS 语义。
+  const cover = getMockData(payload.p).video.cover
+  return {
+    taskId,
+    frames: {
+      status: 'ready',
+      items: points.map((time, index) => ({
+        time,
+        objectKey: `frames/mock/${String(index).padStart(2, '0')}.jpg`,
+        url: cover,
+      })),
+    },
+  }
 }
 
 export { getPlatformMeta }

@@ -10,6 +10,7 @@ import type {
   FileRef,
   Summary,
   SummaryDetail,
+  TaskFrames,
   TaskStage,
   TranscribeEngine,
   TranscriptItem,
@@ -68,6 +69,8 @@ interface TaskState {
   hotwordsText: string
   /** 文字稿来源（字幕来源任务在结果页显示来源 Badge） */
   transcriptSource: TranscriptSource | null
+  /** 重点帧状态（PR #89）：轮询/恢复从任务详情同步；抽帧轮询经 setFrames 写入 */
+  frames: TaskFrames | null
   /** 能力探测（M2-P2-A）：null=检测中；会话内加载一次，跨任务保留；不随 reset 清空 */
   capabilities: Capabilities | null
 
@@ -92,6 +95,8 @@ interface TaskState {
   /** 总结失败后重试（文字稿已在手，直接重调 summarize）。
    *  可选传入 detail：结果页切换详细度时复用同一条路径（不走 autoSummary 判断，一定是用户显式要总结）。 */
   retrySummary: (detail?: SummaryDetail) => Promise<void>
+  /** 重点帧状态写入（PR #89）：frames-card 的抽帧轮询用它把最新状态落进 store */
+  setFrames: (frames: TaskFrames | null) => void
   /** 加载能力探测（幂等；失败时乐观放行） */
   loadCapabilities: () => Promise<void>
   /** 首页切换转写模式 */
@@ -317,6 +322,7 @@ const IDLE = {
   summaryError: null,
   error: null,
   transcriptSource: null,
+  frames: null,
 }
 
 function toAppError(error: unknown): UiError {
@@ -513,6 +519,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           transcript: task.transcript ?? null,
           plainText: task.plainText ?? null,
           transcriptSource: task.transcriptSource ?? null,
+          // 重点帧（PR #89）：详情里带 frames 就同步（真实后端 recovery 场景）
+          frames: task.frames ?? null,
         }
         // P1-7：确认有稿才把记录标成 done（首页据此决定是「继续看」还是「看结果」）。
         // 有 video 就整条重记（顺带刷新 savedAt 排到最前），没有则只改状态位。
@@ -604,6 +612,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           transcript: readyTranscript,
           plainText: task.plainText ?? null,
           transcriptSource: task.transcriptSource ?? null,
+          frames: task.frames ?? null,
         })
         return
       }
@@ -706,6 +715,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   setEngine: (engine) => {
     set({ engine })
     persistEngine(engine)
+  },
+
+  setFrames: (frames) => {
+    set({ frames })
   },
 
   setAutoSummary: (enabled) => {
